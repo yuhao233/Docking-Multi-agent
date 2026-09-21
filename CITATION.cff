@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite this repository."
+title: "Docking-Multi-agent: 分子对接多 Agent 协作系统"
+abstract: >-
+  一个面向小分子筛选与结合模式评估的多 Agent 协作系统。协调智能体负责任务决策、工具分发与
+  结果汇总，四个职能子智能体分别完成结合口袋定盒、理化性质评估、真实分子对接与结合模式检测；
+  对接得分、理化性质与结合模式指标全部来自确定性计算内核（AutoDock Vina、RDKit、Meeko、
+  P2Rank 等），可逐条回溯到工具输出。每次运行的请求、参数、产物与降级说明都写入自包含的
+  运行目录，支持离线复现。系统提供网页界面、命令行与 HTTP 接口，可在单机环境离线部署。
+type: software
+authors:
+  # 正式发表前请替换为真实姓名与单位（GitHub 会据此生成 “Cite this repository” 条目）
+  - name: "yuhao233"
+    alias: "yuhao233"
+    email: "91658284+yuhao233@users.noreply.github.com"
+repository-code: "https://github.com/yuhao233/Docking-Multi-agent"
+url: "https://github.com/yuhao233/Docking-Multi-agent"
+license: AGPL-3.0-or-later
+version: 0.6.0
+date-released: "2026-09-21"
+keywords:
+  - molecular docking
+  - virtual screening
+  - multi-agent system
+  - large language model agents
+  - binding mode analysis
+  - reproducibility
+  - AutoDock Vina
+  - RDKit

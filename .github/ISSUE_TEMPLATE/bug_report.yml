@@ -1,0 +1,52 @@
+name: 问题反馈 / Bug report
+description: 运行时出错、结果异常或界面异常
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量附上**运行编号**（界面历史区可见）与相关产物片段，
+        这样问题可以直接定位到那一次运行的输入、参数与日志。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 期望发生什么，实际发生了什么
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 输入（指令或表单参数）、受体与分子库来源、操作顺序
+      placeholder: |
+        1. 使用受体 …，分子库 …（可附示例 SMILES）
+        2. 在对话/参数模式中提交 …
+        3. 观察到 …
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 运行记录
+      description: 运行编号；`var/runs/<run_id>/run.json` 的 notes、日志末尾，或报告相应章节
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 仓库提交号（`git rev-parse --short HEAD`）或版本标签
+      placeholder: e.g. ee5355a
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      description: 可粘贴 `bash scripts/doctor.sh` 的输出（其中不含任何密钥）
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已阅读 docs/技术文档.md 与 projects/docs/api.md 的相关章节
+        - label: 未在内容中包含任何 API Key、个人路径或未公开数据
+          required: true
