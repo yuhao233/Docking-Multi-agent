@@ -138,7 +138,18 @@ def test_root_readme_links_and_images_exist() -> None:
                    "docs/images/ui-chat.webp", "docs/images/ui-results.webp",
                    "docs/images/ui-report.webp", "docs/images/ui-artifacts.webp"):
         assert (repo_root / needed).is_file(), f"缺少 README 图片 {needed}"
-    assert "```mermaid" in text, "架构图应附 Mermaid 版本（GitHub 可直接渲染、可复制）"
+    doc = (repo_root / "docs" / "技术文档.md")
+    assert doc.is_file(), "缺少技术文档 docs/技术文档.md"
+    doc_text = doc.read_text(encoding="utf-8")
+    assert "```mermaid" in text or "```mermaid" in doc_text, \
+        "架构应附 Mermaid 版本（GitHub 可直接渲染、可复制）"
+    # 技术文档的内链（图片与其它文档）必须存在
+    doc_links = re.findall(r"\]\(([^)#][^)]*)\)", doc_text)
+    doc_local = [l for l in doc_links if not l.startswith(("http://", "https://", "mailto:"))]
+    doc_missing = [l for l in sorted(set(doc_local)) if not (doc.parent / l).exists()]
+    assert doc_missing == [], f"技术文档引用了不存在的路径：{doc_missing}"
+    for needed in ("images/layers.png", "images/dataflow.png"):
+        assert (doc.parent / needed).is_file(), f"技术文档缺少配图 {needed}"
     # 图由脚本生成/抓取：脚本必须随仓库提供，否则图无法随代码更新
     for script in ("scripts/render_architecture.py", "scripts/capture_readme_shots.py"):
         assert (PROJECT_DIR / script).is_file(), f"缺少图像生成脚本 {script}"

@@ -40,6 +40,34 @@ CHAT_REPLY = """## 筛选结论（thrombin · PGR 库）
 或提高 exhaustiveness 复算；报告已按你的要求带上 `id` 列（覆盖 2/2）。"""
 
 
+#: 抓图前的脱敏脚本：文档与仓库里不出现本机绝对路径与具体模型/端点名。
+#: 只改**页面文本**（DOM 文本节点），不改任何真实数据与接口。
+SANITIZE_JS = r"""
+() => {
+  const mask = (text) => String(text)
+    .replace(/\/home\/[^\s'\")]+/g, '（运行目录）')
+    .replace(/\/Users\/[^\s'\")]+/g, '（运行目录）')
+    .replace(/api\.deepseek\.com|openai\.com|localhost:\d+|127\.0\.0\.1:\d+/g, '（LLM 端点）')
+    .replace(/deepseek[-\w.]*/gi, '（模型）');
+  const walk = (node) => {
+    if (node.nodeType === 3) {
+      const next = mask(node.nodeValue);
+      if (next !== node.nodeValue) node.nodeValue = next;
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName.toLowerCase();
+    if (['script', 'style', 'textarea'].indexOf(tag) >= 0) return;
+    if (node.hasAttribute && node.hasAttribute('title')) {
+      node.setAttribute('title', mask(node.getAttribute('title')));
+    }
+    Array.prototype.forEach.call(node.childNodes, walk);
+  };
+  walk(document.body);
+}
+"""
+
+
 def _stub_events() -> List[Dict[str, Any]]:
     return [
         {"type": "start", "run_id": "SHOT-1",
@@ -133,6 +161,8 @@ def capture(base: str, run_id: str, out_dir: Path, *, live_chat_run: str = "") -
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(300)
         png = tmp / "ui-chat.png"
+        page.evaluate(SANITIZE_JS)
+        page.wait_for_timeout(120)
         page.screenshot(path=str(png))
         _compress(png, out_dir / "ui-chat.webp")
         written.append(out_dir / "ui-chat.webp")
@@ -157,6 +187,8 @@ def capture(base: str, run_id: str, out_dir: Path, *, live_chat_run: str = "") -
         }""")
         page.wait_for_timeout(600)
         png = tmp / "ui-results.png"
+        page.evaluate(SANITIZE_JS)
+        page.wait_for_timeout(120)
         page.screenshot(path=str(png))
         _compress(png, out_dir / "ui-results.webp")
         written.append(out_dir / "ui-results.webp")
@@ -170,6 +202,8 @@ def capture(base: str, run_id: str, out_dir: Path, *, live_chat_run: str = "") -
         }""")
         page.wait_for_timeout(1500)
         png = tmp / "ui-report.png"
+        page.evaluate(SANITIZE_JS)
+        page.wait_for_timeout(120)
         page.screenshot(path=str(png))
         _compress(png, out_dir / "ui-report.webp")
         written.append(out_dir / "ui-report.webp")
@@ -183,6 +217,8 @@ def capture(base: str, run_id: str, out_dir: Path, *, live_chat_run: str = "") -
         }""")
         page.wait_for_timeout(700)
         png = tmp / "ui-artifacts.png"
+        page.evaluate(SANITIZE_JS)
+        page.wait_for_timeout(120)
         page.screenshot(path=str(png))
         _compress(png, out_dir / "ui-artifacts.webp")
         written.append(out_dir / "ui-artifacts.webp")

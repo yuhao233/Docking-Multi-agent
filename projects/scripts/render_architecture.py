@@ -200,6 +200,88 @@ def render_lifecycle(out: Path) -> Path:
     return out
 
 
+
+
+def render_layers(out: Path) -> Path:
+    """分层与依赖方向：接入层 → 编排层 → 计算层 → 产物层（依赖单向向下）。"""
+    fig = plt.figure(figsize=(13.0, 8.2), dpi=160)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.text(0.5, 0.975, "系统分层与依赖方向", ha="center", va="top",
+            fontsize=21, fontweight="bold", color="#1f2733")
+    ax.text(0.5, 0.936, "依赖单向向下：上层可以调用下层，下层不感知上层",
+            ha="center", va="top", fontsize=11.5, color="#5a6472")
+
+    bands = [
+        ("接入层", "网页（对话 / 参数表单） · 标准 Agent Protocol 接口 · 命令行 · LangGraph Studio",
+         "api/ · web/ · cli.py", COLORS["user"]),
+        ("编排层", "整体协调 Agent 与 4 个子 Agent：决策、分发、汇总、报告定制",
+         "agents/ · tools/", COLORS["agent"]),
+        ("计算层", "对接、性质、口袋、结合模式：真实计算，不依赖大模型",
+         "core/", COLORS["engine"]),
+        ("记录层", "运行目录：请求、结果、报告、图表、位姿、受体结构与产物清单",
+         "runs.py · reporting/", COLORS["store"]),
+    ]
+    y = 0.80
+    for label, detail, modules, color in bands:
+        _box(ax, 0.06, y, 0.88, 0.125, label, [detail, modules], color,
+             title_size=15, line_size=11)
+        if y > 0.20:
+            _arrow(ax, (0.5, y), (0.5, y - 0.055), color="#5a6472")
+        y -= 0.185
+
+    ax.text(0.06, 0.055,
+            "边界：模型只负责选择与措辞，数值一律来自计算层；外部工具（P2Rank / pdb2pqr / AutoDock4 / "
+            "GPU 对接引擎）由用户提供，缺失时按既定策略降级并在报告中说明。",
+            ha="left", va="top", fontsize=10, color="#6b7280")
+    fig.savefig(out, facecolor="white")
+    plt.close(fig)
+    return out
+
+
+def render_dataflow(out: Path) -> Path:
+    """一次筛选的数据流：从分子库到报告，标注中间产物文件与小状态交接。"""
+    fig = plt.figure(figsize=(13.6, 6.6), dpi=160)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.text(0.5, 0.965, "一次筛选的数据流与产物", ha="center", va="top",
+            fontsize=20, fontweight="bold", color="#1f2733")
+
+    steps = [
+        ("分子库导入", "归一化 · 去重 · 结构校验", "molecules.json", COLORS["user"]),
+        ("性质评估", "RDKit 物化性质与类药性", "properties.json", COLORS["worker"]),
+        ("口袋与定盒", "P2Rank 或几何法 · 盒子溯源", "pockets.json", COLORS["worker"]),
+        ("真实对接", "Vina / AutoDock4 · 两阶段漏斗", "docking.json · poses/", COLORS["engine"]),
+        ("结合模式", "指纹与阳性对照比较", "binding.json", COLORS["worker"]),
+        ("排序与报告", "综合评分 · 图表 · 报告", "ranking.csv · report.md/pdf", COLORS["store"]),
+    ]
+    x = 0.028
+    width = 0.140
+    for i, (title, detail, artifact, color) in enumerate(steps):
+        _box(ax, x, 0.52, width, 0.30, title, [detail, artifact], color,
+             title_size=12.5, line_size=9.6)
+        if i < len(steps) - 1:
+            _arrow(ax, (x + width, 0.67), (x + width + 0.016, 0.67), color="#5a6472")
+        x += width + 0.020
+
+    _box(ax, 0.035, 0.20, 0.44, 0.22, "共享黑板（小状态）",
+         ["受体 · 位点盒 · 分子库标识 · 阳性对照", "跨子 Agent 交接，不放大表"],
+         COLORS["share"], title_size=12.5, line_size=10)
+    _box(ax, 0.525, 0.20, 0.44, 0.22, "运行目录（大表）",
+         ["中间产物按文件交接，不进入模型上下文", "整包 ZIP 自包含，可离线复现"],
+         COLORS["store"], title_size=12.5, line_size=10)
+    _arrow(ax, (0.30, 0.52), (0.25, 0.42), color=COLORS["share"])
+    _arrow(ax, (0.70, 0.52), (0.75, 0.42), color=COLORS["store"])
+    fig.savefig(out, facecolor="white")
+    plt.close(fig)
+    return out
+
+
+
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="渲染架构图（README / 技术报告）")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="输出目录（默认 docs/images/）")
@@ -208,7 +290,9 @@ def main(argv: List[str] | None = None) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     for path in (render_architecture(out_dir / "architecture.png"),
-                 render_lifecycle(out_dir / "lifecycle.png")):
+                 render_lifecycle(out_dir / "lifecycle.png"),
+                 render_layers(out_dir / "layers.png"),
+                 render_dataflow(out_dir / "dataflow.png")):
         print(f"[render] 已生成 {path}（{path.stat().st_size // 1024} KB）")
     return 0
 
