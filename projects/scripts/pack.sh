@@ -43,6 +43,7 @@ done
 EXCLUDES=(
   '.venv'
   '.uv-cache'
+  '.git'            # 版本库元数据：交付包不需要（也不该外泄历史）
   'var'
   '__pycache__'
   '*.pyc'
