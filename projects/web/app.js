@@ -2928,18 +2928,27 @@ function setPendingChoices(items, note, kind) {
 /** 点选某个候选：清空面板 → 把等价追问写进输入框 → 以同一 conversation_id 继续运行 */
 function pickChoice(index) {
   const pending = state.pendingChoices || {};
-  const choice = (pending.items || [])[index];
+  applyChoice((pending.items || [])[index]);
+}
+
+/**
+ * 点选某个候选的唯一实现（气泡与面板共用）：清空两处承载面 → 以显式参数续跑
+ * → 清空输入框（选项内容与上一轮草稿都不留在对话框里）。
+ */
+function applyChoice(choice) {
   if (!choice) return;
   const text = String(choice.prompt || choice.value || choice.label || '');
   if (!text) return;
-  setPendingChoices([], '', '');
-  const input = $('chat-input');
-  if (input) {
-    input.value = text;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  }
+  clearChoicesEverywhere();               // 气泡 + 面板一起清空，避免重复提交/残留
+  state.pendingMessage = text;
   logLine('已选择：' + (choice.label || text), 'cmd');
-  startRun();
+  startRun(text);                         // 追问作为显式参数下发，不依赖输入框
+  ['chat-input', 'manual-description'].forEach((id) => {
+    const node = $(id);
+    if (!node || !node.value) return;
+    node.value = '';
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 /**
@@ -2964,27 +2973,7 @@ function handleChoicesEvent(data) {
 /* 点选某个候选：清空按钮 → 把等价追问写进输入框 → 以同一 conversation_id 继续运行 */
 function pickChatChoice(messageId, index) {
   const message = findChatMessage(messageId);
-  if (!message || !message.choices || !message.choices[index]) return;
-  const choice = message.choices[index];
-  const text = String(choice.prompt || choice.value || choice.label || '');
-  if (!text) return;
-  message.choices = [];
-  message.choiceNote = '';
-  renderChatHistory();
-  // 追问要写进**当前可见面板**的输入框：按 DOM 的激活面板判断（`state.page` 与实际
-  // 显示的面板可能不一致），并双写兜底 —— 写错地方会让用户看到"点了没反应"（真实缺陷）。
-  const manualActive = !!($('manual-pane') && $('manual-pane').classList.contains('is-active'));
-  const ids = manualActive ? ['manual-description', 'chat-input'] : ['chat-input', 'manual-description'];
-  ids.forEach((id) => {
-    const node = $(id);
-    if (!node) return;
-    node.value = text;
-    node.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  state.pendingMessage = text;
-  logLine('已选择：' + (choice.label || text), 'cmd');
-  // 追问以**显式参数**下发，不依赖输入框回填（面板重渲染/表单重挂会清空输入框）
-  startRun(text);
+  applyChoice(message && message.choices && message.choices[index]);
 }
 
 function finishAssistant(status) {

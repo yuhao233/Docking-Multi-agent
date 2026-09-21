@@ -239,6 +239,7 @@ def run_layout(page: Any, rep: Report) -> None:
             return { vw: window.innerWidth, vh: window.innerHeight, layout, stream,
                      left: box('#config-panel'), center: box('#workbench-center'),
                      right: box('.main-col'), log: box('#log-box'), molecules: box('#molecules-tbody'),
+                     orch: box('#orchestration-panel'),
                      scrollW: document.documentElement.scrollWidth,
                      detailsOpen: details ? details.open : null,
                      noRun: view ? view.classList.contains('no-run') : null,
@@ -262,10 +263,12 @@ def run_layout(page: Any, rep: Report) -> None:
     rep.check(float(metrics.get("scrollW") or 0) <= float(metrics["vw"]) + 1,
               "三栏布局无横向滚动",
               f"scrollWidth {metrics.get('scrollW')} / 视口 {metrics['vw']}")
-    rep.check(bool(metrics.get("log")) and (metrics["log"]["width"] or 0) > 120
-              and bool(metrics.get("molecules")) is not None,
-              "右栏可见阶段日志与实时逐分子结果",
+    rep.check(bool(metrics.get("log")) and (metrics["log"]["width"] or 0) > 120,
+              "运行详情（阶段日志 / 实时逐分子结果）在对话下方可见",
               f"log 宽 {round((metrics.get('log') or {}).get('width', 0))}px")
+    rep.check(metrics.get("orch") is not None and right_col.get("width", 0) > 100,
+              "右栏保留多 Agent 编排",
+              f"右栏宽 {round(right_col.get('width', 0))}px")
     rep.check(metrics["detailsOpen"] is False, "运行详情默认收起")
     rep.check(metrics["noRun"] is True and metrics["toolbarDisplay"] == "none",
               "首屏收起空排序工具条（无结果时不铺开空控件）",

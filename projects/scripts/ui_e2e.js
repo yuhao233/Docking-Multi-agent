@@ -718,6 +718,9 @@ async function runChatChoicesScenario(check, sleep) {
     check(!!bodies[1] && String(bodies[1].message || '').indexOf('Q9SJQ6') >= 0,
       '点选追问里带上了所选候选（Q9SJQ6）', String(bodies[1] && bodies[1].message).slice(0, 70));
     check(doc.querySelectorAll('.chat-choice').length === 0, '点选后按钮被清空，避免重复提交');
+    check(String($('#chat-input').value || '') === '',
+      '点选后输入框保持为空（选项内容不残留在对话框里）',
+      JSON.stringify(String($('#chat-input').value || '').slice(0, 40)));
   }
   /* 等第二轮真正跑完再关窗：否则收尾的异步续体（loadRun → refreshHistory）
      会在 document 失效后抛错，把 e2e 进程带崩。 */

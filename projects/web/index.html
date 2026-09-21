@@ -206,6 +206,95 @@
         <div class="alert alert-error hidden" id="chat-error"></div>
       </section>
 
+  <!-- 运行详情（阶段日志 / 工具轨迹 / 实时逐分子结果）：紧邻对话下方；右侧只留多 Agent 编排 -->
+      <details class="panel run-details motion-in" id="run-details">
+        <summary class="run-details-summary">
+          <span class="run-details-title">运行详情</span>
+          <span class="hint-inline run-details-sub">多 Agent 编排时间轴 · 阶段日志 · 工具轨迹 · 实时逐分子结果</span>
+          <span class="run-details-caret" aria-hidden="true">▾</span>
+        </summary>
+        <div class="run-details-body">
+
+
+      <div class="panel panel-exec motion-in" id="exec-panel">
+        <div class="panel-head">
+          <h2 class="panel-title">执行区</h2>
+          <span class="run-id" id="exec-conversation-id" title="当前会话 id（同一 id = 同一段对话）">conv —</span>
+          <span class="run-id" id="exec-run-id">run_id —</span>
+        </div>
+        <div class="panel-body">
+
+          <div class="progress-block">
+            <div class="progress-meta">
+              <span id="stage-current">阶段 —</span>
+              <span class="mono" id="stage-counter">— / —</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+            <div class="progress-terminal">
+              <span class="mono" id="progress-bar-text">[░░░░░░░░░░░░░░░░░░░░] 0%</span>
+              <span class="mono" id="progress-eta-text">ETA --:--</span>
+            </div>
+            <div class="progress-meta">
+              <span id="progress-percent" class="mono">0%</span>
+              <span id="progress-done" class="mono">已完成 0/0</span>
+              <span id="exec-elapsed" class="mono">用时 —</span>
+              <span id="progress-eta" class="mono">剩余时间 —</span>
+            </div>
+          </div>
+
+          <!-- 对话模式的对话历史区（与下方结果区共用，两种模式都显示） -->
+
+          <div class="exec-grid">
+            <div class="exec-col">
+              <h3 class="sub-head">阶段日志</h3>
+              <div class="log" id="log-box"><p class="empty">等待运行…</p></div>
+            </div>
+
+            <div class="exec-col">
+              <h3 class="sub-head">
+                实时逐分子结果 <span class="mono counter" id="live-count">0</span>
+                <span class="hint-inline" id="live-note">仅最近 300 条</span>
+              </h3>
+              <div class="table-wrap table-scroll">
+                <table class="data-table" id="molecules-table">
+                  <thead>
+                    <tr>
+                      <th class="num">#</th>
+                      <th>名称</th>
+                      <th class="num">亲和力 (kcal/mol)</th>
+                      <th>引擎</th>
+                      <th class="num">exh.</th>
+                      <th class="num">分子量</th>
+                      <th class="num">LogP</th>
+                      <th class="num">TPSA</th>
+                      <th class="num">相似度</th>
+                    </tr>
+                  </thead>
+                  <tbody id="molecules-tbody"></tbody>
+                </table>
+              </div>
+              <p class="empty" id="molecules-empty">尚未产生分子结果。运行开始后这里会逐条显示。</p>
+            </div>
+          </div>
+
+          <div class="agent-box hidden" id="agent-box">
+            <div class="agent-col">
+              <h3 class="sub-head" id="agent-stream-title">模型增量文本</h3>
+              <pre class="token-stream" id="token-stream">等待模型输出…</pre>
+            </div>
+            <div class="agent-col">
+              <h3 class="sub-head" id="agent-box-title">工具调用轨迹</h3>
+              <div class="tool-trace" id="tool-trace"><p class="empty">暂无工具调用。</p></div>
+            </div>
+          </div>
+
+          <div class="alert alert-error hidden" id="exec-error"></div>
+        </div>
+      </div>
+        </div>
+      </details>
+
+
   <!-- 需要用户确认的候选（受体/分子解析不确定时由后端下发 choices；参数模式与刷新后同样可见） -->
   <section class="choice-panel hidden" id="choice-box" aria-live="polite">
     <div class="choice-head">
@@ -470,166 +559,82 @@
   <section class="main-col section-stack">
     <button type="button" class="col-toggle" id="btn-toggle-live"
             aria-expanded="true" title="收起/展开运行详情侧栏">收起</button>
-    <details class="panel run-details motion-in" id="run-details">
-      <summary class="run-details-summary">
-        <span class="run-details-title">运行详情</span>
-        <span class="hint-inline run-details-sub">多 Agent 编排时间轴 · 阶段日志 · 工具轨迹 · 实时逐分子结果</span>
-        <span class="run-details-caret" aria-hidden="true">▾</span>
-      </summary>
-      <div class="run-details-body">
 
-    <!-- ------------------- 多 Agent 编排示意图（始终可见） ------------------- -->
-    <div class="panel panel-orch motion-in" id="orchestration-panel">
-      <div class="panel-head">
-        <h2 class="panel-title">多 Agent 编排</h2>
-        <span class="orch-head-tags">
-          <span class="tag tag-wait" id="orch-parallel">[ -- ]</span>
-          <span class="tag tag-wait" id="orch-run-state">[ WAIT ]</span>
-        </span>
-      </div>
-      <div class="panel-body">
-        <div class="orch-meta">
-          <p class="orch-task" id="orch-task">当前任务：待机</p>
-          <p class="orch-coord mono" id="orch-coord">协调动作：待机</p>
-          <p class="orch-coord mono" id="orch-box">对接盒：待确定（未给出显式位点时会用工具预测口袋）</p>
-        </div>
-
-        <div class="orch-flow" id="orch-flow">
-          <div class="orch-level orch-level-root">
-            <div class="orch-node" id="orch-node-coordinator" data-state="wait">
-              <span class="orch-name">整体协调 Agent</span>
-              <span class="tag tag-wait" id="orch-tag-coordinator">[ WAIT ]</span>
-              <span class="orch-note" id="orch-note-coordinator">dispatching</span>
-            </div>
+        <!-- ------------------- 多 Agent 编排示意图（始终可见） ------------------- -->
+        <div class="panel panel-orch motion-in" id="orchestration-panel">
+          <div class="panel-head">
+            <h2 class="panel-title">多 Agent 编排</h2>
+            <span class="orch-head-tags">
+              <span class="tag tag-wait" id="orch-parallel">[ -- ]</span>
+              <span class="tag tag-wait" id="orch-run-state">[ WAIT ]</span>
+            </span>
           </div>
-          <div class="orch-edge" aria-hidden="true"></div>
-          <div class="orch-level orch-level-children">
-            <div class="orch-node" id="orch-node-properties" data-state="wait">
-              <span class="orch-name">分子属性评估</span>
-              <span class="tag tag-wait" id="orch-tag-properties">[ WAIT ]</span>
-              <span class="orch-note" id="orch-note-properties">properties</span>
+          <div class="panel-body">
+            <div class="orch-meta">
+              <p class="orch-task" id="orch-task">当前任务：待机</p>
+              <p class="orch-coord mono" id="orch-coord">协调动作：待机</p>
+              <p class="orch-coord mono" id="orch-box">对接盒：待确定（未给出显式位点时会用工具预测口袋）</p>
             </div>
-            <div class="orch-node" id="orch-node-pocket" data-state="wait">
-              <span class="orch-name">口袋分析</span>
-              <span class="tag tag-wait" id="orch-tag-pocket">[ WAIT ]</span>
-              <span class="orch-note" id="orch-note-pocket">pocket</span>
-            </div>
-            <div class="orch-node" id="orch-node-docking" data-state="wait">
-              <span class="orch-name">Docking 执行</span>
-              <span class="tag tag-wait" id="orch-tag-docking">[ WAIT ]</span>
-              <span class="orch-note" id="orch-note-docking">docking</span>
-            </div>
-            <div class="orch-node" id="orch-node-binding" data-state="wait">
-              <span class="orch-name">结合模式检测</span>
-              <span class="tag tag-wait" id="orch-tag-binding">[ WAIT ]</span>
-              <span class="orch-note" id="orch-note-binding">binding</span>
-            </div>
-          </div>
-          <div class="orch-edge" aria-hidden="true"></div>
-          <div class="orch-level orch-level-report">
-            <div class="orch-node" id="orch-node-report" data-state="wait">
-              <span class="orch-name">报告生成</span>
-              <span class="tag tag-wait" id="orch-tag-report">[ WAIT ]</span>
-              <span class="orch-note" id="orch-note-report">report</span>
-            </div>
-          </div>
-        </div>
 
-        <div class="orch-lanes-wrap">
-          <p class="hint" id="orch-lanes-hint">
-            实测时间轴（重叠 = 并行）
-            <span class="tip-icon" tabindex="0" role="button" aria-label="实测时间轴说明"
-              data-tip-html="按服务端事件时间戳绘制各节点的真实起止时间。<br><b>同层条带重叠即为并行</b>，依次排列即为串行；悬停条带可看该节点的起止时刻。">?</span>
-          </p>
-          <div class="orch-lanes" id="orch-lanes"></div>
-        </div>
+            <div class="orch-flow" id="orch-flow">
+              <div class="orch-level orch-level-root">
+                <div class="orch-node" id="orch-node-coordinator" data-state="wait">
+                  <span class="orch-name">整体协调 Agent</span>
+                  <span class="tag tag-wait" id="orch-tag-coordinator">[ WAIT ]</span>
+                  <span class="orch-note" id="orch-note-coordinator">dispatching</span>
+                </div>
+              </div>
+              <div class="orch-edge" aria-hidden="true"></div>
+              <div class="orch-level orch-level-children">
+                <div class="orch-node" id="orch-node-properties" data-state="wait">
+                  <span class="orch-name">分子属性评估</span>
+                  <span class="tag tag-wait" id="orch-tag-properties">[ WAIT ]</span>
+                  <span class="orch-note" id="orch-note-properties">properties</span>
+                </div>
+                <div class="orch-node" id="orch-node-pocket" data-state="wait">
+                  <span class="orch-name">口袋分析</span>
+                  <span class="tag tag-wait" id="orch-tag-pocket">[ WAIT ]</span>
+                  <span class="orch-note" id="orch-note-pocket">pocket</span>
+                </div>
+                <div class="orch-node" id="orch-node-docking" data-state="wait">
+                  <span class="orch-name">Docking 执行</span>
+                  <span class="tag tag-wait" id="orch-tag-docking">[ WAIT ]</span>
+                  <span class="orch-note" id="orch-note-docking">docking</span>
+                </div>
+                <div class="orch-node" id="orch-node-binding" data-state="wait">
+                  <span class="orch-name">结合模式检测</span>
+                  <span class="tag tag-wait" id="orch-tag-binding">[ WAIT ]</span>
+                  <span class="orch-note" id="orch-note-binding">binding</span>
+                </div>
+              </div>
+              <div class="orch-edge" aria-hidden="true"></div>
+              <div class="orch-level orch-level-report">
+                <div class="orch-node" id="orch-node-report" data-state="wait">
+                  <span class="orch-name">报告生成</span>
+                  <span class="tag tag-wait" id="orch-tag-report">[ WAIT ]</span>
+                  <span class="orch-note" id="orch-note-report">report</span>
+                </div>
+              </div>
+            </div>
 
-        <div class="orch-metrics">
-          <span class="orch-metric"><span class="orch-metric-label">DONE</span><span class="mono" id="orch-metric-done">0/0</span></span>
-          <span class="orch-metric"><span class="orch-metric-label">PCT</span><span class="mono" id="orch-metric-percent">0%</span></span>
-          <span class="orch-metric"><span class="orch-metric-label">ELAPSED</span><span class="mono" id="orch-metric-elapsed">00:00</span></span>
-          <span class="orch-metric"><span class="orch-metric-label">ETA</span><span class="mono" id="orch-metric-eta">--:--</span></span>
-        </div>
-      </div>
-    </div>
+            <div class="orch-lanes-wrap">
+              <p class="hint" id="orch-lanes-hint">
+                实测时间轴（重叠 = 并行）
+                <span class="tip-icon" tabindex="0" role="button" aria-label="实测时间轴说明"
+                  data-tip-html="按服务端事件时间戳绘制各节点的真实起止时间。<br><b>同层条带重叠即为并行</b>，依次排列即为串行；悬停条带可看该节点的起止时刻。">?</span>
+              </p>
+              <div class="orch-lanes" id="orch-lanes"></div>
+            </div>
 
-    <div class="panel panel-exec motion-in" id="exec-panel">
-      <div class="panel-head">
-        <h2 class="panel-title">执行区</h2>
-        <span class="run-id" id="exec-conversation-id" title="当前会话 id（同一 id = 同一段对话）">conv —</span>
-        <span class="run-id" id="exec-run-id">run_id —</span>
-      </div>
-      <div class="panel-body">
-
-        <div class="progress-block">
-          <div class="progress-meta">
-            <span id="stage-current">阶段 —</span>
-            <span class="mono" id="stage-counter">— / —</span>
-          </div>
-          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
-          <div class="progress-terminal">
-            <span class="mono" id="progress-bar-text">[░░░░░░░░░░░░░░░░░░░░] 0%</span>
-            <span class="mono" id="progress-eta-text">ETA --:--</span>
-          </div>
-          <div class="progress-meta">
-            <span id="progress-percent" class="mono">0%</span>
-            <span id="progress-done" class="mono">已完成 0/0</span>
-            <span id="exec-elapsed" class="mono">用时 —</span>
-            <span id="progress-eta" class="mono">剩余时间 —</span>
+            <div class="orch-metrics">
+              <span class="orch-metric"><span class="orch-metric-label">DONE</span><span class="mono" id="orch-metric-done">0/0</span></span>
+              <span class="orch-metric"><span class="orch-metric-label">PCT</span><span class="mono" id="orch-metric-percent">0%</span></span>
+              <span class="orch-metric"><span class="orch-metric-label">ELAPSED</span><span class="mono" id="orch-metric-elapsed">00:00</span></span>
+              <span class="orch-metric"><span class="orch-metric-label">ETA</span><span class="mono" id="orch-metric-eta">--:--</span></span>
+            </div>
           </div>
         </div>
 
-        <!-- 对话模式的对话历史区（与下方结果区共用，两种模式都显示） -->
-
-        <div class="exec-grid">
-          <div class="exec-col">
-            <h3 class="sub-head">阶段日志</h3>
-            <div class="log" id="log-box"><p class="empty">等待运行…</p></div>
-          </div>
-
-          <div class="exec-col">
-            <h3 class="sub-head">
-              实时逐分子结果 <span class="mono counter" id="live-count">0</span>
-              <span class="hint-inline" id="live-note">仅最近 300 条</span>
-            </h3>
-            <div class="table-wrap table-scroll">
-              <table class="data-table" id="molecules-table">
-                <thead>
-                  <tr>
-                    <th class="num">#</th>
-                    <th>名称</th>
-                    <th class="num">亲和力 (kcal/mol)</th>
-                    <th>引擎</th>
-                    <th class="num">exh.</th>
-                    <th class="num">分子量</th>
-                    <th class="num">LogP</th>
-                    <th class="num">TPSA</th>
-                    <th class="num">相似度</th>
-                  </tr>
-                </thead>
-                <tbody id="molecules-tbody"></tbody>
-              </table>
-            </div>
-            <p class="empty" id="molecules-empty">尚未产生分子结果。运行开始后这里会逐条显示。</p>
-          </div>
-        </div>
-
-        <div class="agent-box hidden" id="agent-box">
-          <div class="agent-col">
-            <h3 class="sub-head" id="agent-stream-title">模型增量文本</h3>
-            <pre class="token-stream" id="token-stream">等待模型输出…</pre>
-          </div>
-          <div class="agent-col">
-            <h3 class="sub-head" id="agent-box-title">工具调用轨迹</h3>
-            <div class="tool-trace" id="tool-trace"><p class="empty">暂无工具调用。</p></div>
-          </div>
-        </div>
-
-        <div class="alert alert-error hidden" id="exec-error"></div>
-      </div>
-    </div>
-      </div>
-    </details>
   </section>
 
 </main>

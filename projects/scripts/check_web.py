@@ -287,10 +287,16 @@ def main() -> int:
     check(bool(params_side) and 'id="chat-form"' not in params_side.group(0)
           and 'id="manual-params-mount"' in params_side.group(0),
           "左栏只放参数设置（对话输入不再留在左栏）")
+    # v0.33 布局：右栏只留「多 Agent 编排」；运行详情（阶段日志/工具轨迹/实时逐分子结果）
+    # 紧邻对话下方（中栏），保证主阅读动线是「对话 → 运行详情 → 结果」
     live_side = html[html.index('<section class="main-col'):]
-    check('id="run-details"' in live_side and 'id="molecules-tbody"' in live_side
-          and 'id="tool-trace"' in live_side,
-          "右栏放阶段日志（运行详情/工具轨迹）与实时逐分子结果")
+    check('id="orchestration-panel"' in live_side
+          and 'id="run-details"' not in live_side,
+          "右栏保留多 Agent 编排（运行详情不再占用右栏）")
+    center_side = html[html.index('id="workbench-center"'):html.index('<section class="main-col')]
+    check('id="run-details"' in center_side and 'id="molecules-tbody"' in center_side
+          and 'id="tool-trace"' in center_side and 'id="log-box"' in center_side,
+          "运行详情（阶段日志/工具轨迹/实时逐分子结果）在对话下方的中栏")
     check('id="chat-file-input"' in html and 'id="chat-attachments"' in html
           and 'id="chat-mention"' in html,
           "对话框支持上传附件与 @ 引用（文件输入 / chips / 引用选择器）")
