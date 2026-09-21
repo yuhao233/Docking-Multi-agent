@@ -161,7 +161,7 @@ var/runs/<run_id>/
 
 | 文档 | 内容 |
 | --- | --- |
-| [`docs/技术文档.md`](docs/技术文档.md) | 框架、运行原理、使用说明（含系统结构图与数据流图） |
+| [`docs/技术文档.md`](docs/技术文档.md) · [PDF](docs/技术文档.pdf) · [Word](docs/技术文档.docx) | 框架、运行原理、使用说明（含结构图、数据流图与界面图；由 `projects/scripts/build_tech_doc_pdf.py` 生成） |
 | [`projects/README.md`](projects/README.md) | 工程主文档：全部配置项、接口契约、运行记录格式与逐轮改造记录 |
 | [`projects/docs/architecture.md`](projects/docs/architecture.md) | 架构与设计决策、非目标与硬约束 |
 | [`projects/docs/adr/`](projects/docs/adr/) | 架构决策记录 |

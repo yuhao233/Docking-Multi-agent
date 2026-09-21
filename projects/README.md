@@ -9,7 +9,7 @@
 - 所有数值均来自**真实计算引擎**（RDKit / AutoDock Vina / AutoDock4），并有独立取证脚本证明（见 §13）。
 
 **仓库**：<https://github.com/yuhao233/Docking-Multi-agent> ·
-**概述与技术文档**：[`docs/技术文档.md`](../docs/技术文档.md)（框架 / 运行原理 / 使用说明）·
+**概述与技术文档**：[`docs/技术文档.md`](../docs/技术文档.md) / [PDF](../docs/技术文档.pdf) / [Word](../docs/技术文档.docx)（框架 / 运行原理 / 使用说明）·
 **许可**：AGPL-3.0-or-later（见仓库根目录 `LICENSE`）
 
 本文件是工程主文档：包含全部配置项、接口契约、运行记录格式与逐轮改造记录，偏细节；
