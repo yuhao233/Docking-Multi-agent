@@ -125,6 +125,25 @@ def test_adr_documents_both_surfaces_and_single_home_rule() -> None:
     assert "路线 A" in text and "已采纳" in text, "ADR 必须写明已采纳的路线"
 
 
+def test_root_readme_links_and_images_exist() -> None:
+    """根 README 是 GitHub 门面：本地链接与图片必须真实存在（含架构图与界面截图）。"""
+    repo_root = PROJECT_DIR.parent
+    text = (repo_root / "README.md").read_text(encoding="utf-8")
+    links = re.findall(r"\]\(([^)#][^)]*)\)", text)
+    local = [l for l in links if not l.startswith(("http://", "https://", "mailto:", "#"))
+             and not l.startswith("<")]
+    missing = [l for l in sorted(set(local)) if not (repo_root / l).exists()]
+    assert missing == [], f"根 README 引用了不存在的路径：{missing}"
+    for needed in ("docs/images/architecture.png", "docs/images/lifecycle.png",
+                   "docs/images/ui-chat.webp", "docs/images/ui-results.webp",
+                   "docs/images/ui-report.webp", "docs/images/ui-artifacts.webp"):
+        assert (repo_root / needed).is_file(), f"缺少 README 图片 {needed}"
+    assert "```mermaid" in text, "架构图应附 Mermaid 版本（GitHub 可直接渲染、可复制）"
+    # 图由脚本生成/抓取：脚本必须随仓库提供，否则图无法随代码更新
+    for script in ("scripts/render_architecture.py", "scripts/capture_readme_shots.py"):
+        assert (PROJECT_DIR / script).is_file(), f"缺少图像生成脚本 {script}"
+
+
 def test_architecture_and_api_point_to_adr() -> None:
     architecture = (PROJECT_DIR / "docs" / "architecture.md").read_text(encoding="utf-8")
     api = (PROJECT_DIR / "docs" / "api.md").read_text(encoding="utf-8")
