@@ -125,3 +125,54 @@ def test_api_runs_search_and_backward_compat(populated: Path) -> None:
 
         empty = client.get("/api/runs", params={"q": "不存在的分子"}).json()
         assert empty["total"] == 0 and empty["runs"] == []
+
+
+# --------------------------------------------------------------------------- #
+# 4) 被中断的运行必须收尾：进程重启后不可能还有运行在执行
+# --------------------------------------------------------------------------- #
+def test_reconcile_marks_stale_running_runs_as_interrupted(populated: Path) -> None:
+    """残留的 running 只能来自进程被杀/崩溃 —— 收尾为 interrupted 并留下说明。
+
+    真实缺陷：用户看到历史里某次运行一直「运行中」、`finished_at` 为空，实际早已中断。
+    """
+    from docking_agent.runs import get_run_store
+
+    store = get_run_store()
+    stale = populated / "var" / "runs" / "20260921-100000-aaaa" / "run.json"
+    meta = json.loads(stale.read_text(encoding="utf-8"))
+    meta["status"] = "running"
+    meta["finished_at"] = None
+    meta["duration_sec"] = None
+    meta["choices"] = [{"id": "x", "kind": "molecule", "label": "候选", "prompt": "继续"}]
+    stale.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    fixed = store.reconcile_interrupted()
+    assert fixed == ["20260921-100000-aaaa"], fixed
+    after = json.loads(stale.read_text(encoding="utf-8"))
+    assert after["status"] == "interrupted"
+    assert after["finished_at"] and after["duration_sec"] is not None
+    assert "进程重启" in str(after["error"])
+    assert any("已中断" in line for line in after["log"]), after["log"][-2:]
+    # 候选必须保留：用户仍需从中点选（点选会以同一会话发起新运行）
+    assert len(after["choices"]) == 1
+
+    # 已完成/失败的运行不受影响；重复调用是幂等的
+    assert store.reconcile_interrupted() == []
+    assert json.loads((populated / "var" / "runs" / "20260920-090000-bbbb" / "run.json")
+                      .read_text(encoding="utf-8"))["status"] == "ok"
+
+
+def test_app_startup_reconciles_interrupted_runs(populated: Path) -> None:
+    """启动钩子必须真的调用收尾（否则重启后仍会显示「运行中」）。"""
+    from fastapi.testclient import TestClient
+
+    from docking_agent.api.app import app
+
+    stale = populated / "var" / "runs" / "20260919-080000-cccc" / "run.json"
+    meta = json.loads(stale.read_text(encoding="utf-8"))
+    meta["status"] = "running"
+    stale.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    with TestClient(app):
+        pass
+    assert json.loads(stale.read_text(encoding="utf-8"))["status"] == "interrupted"

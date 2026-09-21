@@ -47,6 +47,9 @@ BIG_FILE_EXEMPT = {
     # 本轮新增「推荐排行/质子化溯源」两节后超过 700 行；拆分需单独一轮（见 README 待办）。
     "src/docking_agent/reporting/report.py",
     "src/docking_agent/core/normalize.py",
+    # 运行记录仓库：本轮加入「历史检索索引」与「被中断运行收尾」后超过 700 行；
+    # 检索索引应拆到独立模块（core/run_index.py）是独立一轮的事，先登记豁免。
+    "src/docking_agent/runs.py",
     # 协调 Agent 的分发工具集合：P2-b 把 runtime 显式透传到每个工具（去掉隐式 ContextVar），
     # 每个工具多出一行参数与一处 data bus 传参后超过 700 行；按角色拆模块是独立一轮的事。
     "src/docking_agent/tools/dispatch.py",

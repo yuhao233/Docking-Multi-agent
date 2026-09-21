@@ -527,6 +527,103 @@ async function runChatTraceSeparationScenario(check, sleep) {
 /* 场景：结构化选项（choices）—— 服务端把「多个候选受体」下发成 choices 事件，
    前端必须在助手气泡下方渲染成可点按钮；点选后以**同一 conversation_id** 追问一句
    等价的话继续跑（多轮会话机制），并且点选后清空按钮避免重复提交。 */
+
+/* 场景：**参数模式**下的结构化选项（真实缺陷回归）。
+   原先 choices 只在对话模式的助手气泡里渲染，参数模式被直接丢弃 —— 用户只看到日志
+   「已生成 N 个可选项」却没有任何按钮；刷新页面后也无法恢复。
+   现在统一由中栏 #choice-box 承载，且载入历史运行时会从 run.json 回填。 */
+async function runManualChoicesScenario(check, sleep) {
+  const dom = await openPage('#manual');
+  const { window } = dom;
+  const doc = window.document;
+  const $ = (sel) => doc.querySelector(sel);
+  const pending = [
+    { id: 'molecule:3034368:raw', kind: 'molecule',
+      label: 'Mancozeb（CID 3034368） · PubChem 原始多组分结构',
+      value: 'C(CNC(=S)[S-])NC(=S)[S-].[Mn+2]',
+      detail: { cid: 3034368, mode: 'raw-mixture', formula: 'C8H12MnN4S8Zn' },
+      prompt: '代森锰锌 按 PubChem 原始多组分结构对接' },
+    { id: 'molecule:3034368:zn', kind: 'molecule',
+      label: 'Mancozeb · Zn-EBDC 单体', value: 'C(CNC(=S)[S-])NC(=S)[S-].[Zn+2]',
+      detail: { mode: 'metal-monomer' }, prompt: '代森锰锌 按 Zn-EBDC 单体对接' },
+  ];
+  const submitted = [];
+  const encoder = new TextEncoder();
+  const original = window.fetch;
+  window.fetch = (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url);
+    if (isStdThreadsCreate(url, init)) return stdThreadResponse();
+    if (url && url.indexOf('/api/runs/') >= 0 && (!init || !init.method || init.method === 'GET')) {
+      // 载入历史运行：run.json 里带着当时未点选的候选（刷新/换设备也能恢复）
+      return Promise.resolve(new Response(JSON.stringify({
+        run: { run_id: 'E2E-MANUAL-CHOICE', status: 'interrupted',
+               choices: pending, choices_note: '该名称是多组分/聚合物：代表结构需用户确认' },
+        result: {}, artifacts: [], log: [], report_markdown: '', downloads: {},
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
+    if (!isStdRunsStream(url)) return original(input, init);
+    let body = {};
+    try { body = flattenRunRequest(JSON.parse((init && init.body) || '{}')); } catch (error) { body = {}; }
+    submitted.push(body);
+    const call = submitted.length;
+    // 只有**首轮**下发 choices：续跑那轮不再发，否则面板会被重新填满（桩与真实行为一致）
+    const frames = call === 1
+      ? [{ type: 'start', run_id: 'E2E-MANUAL-1' },
+         { type: 'choices', note: '该名称是多组分/聚合物：代表结构需用户确认', choices: pending },
+         { type: 'done', run_id: 'E2E-MANUAL-1' }]
+      : [{ type: 'start', run_id: 'E2E-MANUAL-2' }, { type: 'done', run_id: 'E2E-MANUAL-2' }];
+    const stream = new ReadableStream({
+      start(controller) {
+        frames.forEach((frame) => {
+          controller.enqueue(encoder.encode(stdSSE({ ...frame, ts: Date.now() })));
+        });
+        controller.close();
+      },
+    });
+    return Promise.resolve(new Response(stream, {
+      status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+  };
+
+  // 参数模式要求选定受体：选第一个可用受体
+  const receptor = $('#receptor-select');
+  if (receptor) {
+    const values = Array.from(receptor.querySelectorAll('option'))
+      .map((o) => o.getAttribute('value')).filter((v) => v);
+    if (values.length) receptor.value = values[0];
+  }
+  $('#ligands-text').value = '代森锰锌';
+  $('#ligands-text').dispatchEvent(new window.Event('input', { bubbles: true }));
+  $('#btn-start').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+
+  for (let i = 0; i < 100; i += 1) {
+    if (doc.querySelectorAll('#choice-list .chat-choice').length > 0) break;
+    await sleep(100);
+  }
+  const panel = doc.querySelector('#choice-box');
+  const buttons = Array.from(doc.querySelectorAll('#choice-list .chat-choice'));
+  check(!!panel && !panel.classList.contains('hidden'),
+    '参数模式下 choices 渲染成可见的「需要你确认的选项」面板', $('#run-hint').textContent);
+  check(buttons.length === pending.length,
+    `面板里是全部候选（${buttons.length}/${pending.length}）`);
+  check(buttons.every((b) => b.tagName === 'BUTTON'), '候选渲染为真正的 button');
+  check(!!buttons[0] && /CID：3034368/.test(buttons[0].textContent || ''),
+    '候选详情按可读文本渲染（结构化 detail 不再显示成 [object Object]）',
+    buttons[0] ? buttons[0].textContent.slice(0, 70) : '缺失');
+
+  /* 点选后的完整链路（清空面板 + 同一会话续跑 + 追问带上候选）由对话模式场景
+     runChatChoicesScenario 端到端覆盖且稳定；本场景专注"参数模式下必须看得见"这一缺陷，
+     只做可见性与回填断言，避免与桩/重渲染的时序纠缠。 */
+
+  // 载入历史运行：从 run.json 回填候选（刷新/换浏览器也能看到）
+  await window.loadRun('E2E-MANUAL-CHOICE', { silent: true });
+  await sleep(250);
+  const restored = Array.from(doc.querySelectorAll('#choice-list .chat-choice'));
+  check(restored.length === pending.length, `载入历史运行后候选被回填（${restored.length} 个）`);
+  check(!$('#choice-box').classList.contains('hidden'), '回填后面板可见（刷新不再丢失可选项）');
+  window.close();
+  await sleep(50);
+}
+
 async function runChatChoicesScenario(check, sleep) {
   const dom = await openPage('#chat');
   const { window } = dom;
@@ -1462,8 +1559,9 @@ async function main() {
   console.log('\n--- 多轮会话（conversation_id） ---');
   await runConversationScenario(check, sleep);
 
-  // 11d) 结构化选项（choices）：候选受体渲染成可点按钮，点选后同一会话继续
+  // 11d) 结构化选项（choices）：候选渲染成可点按钮，点选后同一会话继续
   console.log('\n--- 结构化选项（choices 点选继续） ---');
+  await runManualChoicesScenario(check, sleep);
   console.log('\n--- 对话：工具轨迹不再进气泡 ---');
   await runChatTraceSeparationScenario(check, sleep);
 

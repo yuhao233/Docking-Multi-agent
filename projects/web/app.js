@@ -2832,19 +2832,102 @@ function renderChatHistory() {
   box.scrollTop = box.scrollHeight;
 }
 
+/**
+ * 渲染「需要你确认的选项」面板：**与页面模式无关**。
+ *
+ * 真实缺陷：choices 原先只在对话模式的助手气泡里渲染，参数模式下被直接丢弃 ——
+ * 用户只看到日志「已生成 4 个可选项」却没有任何按钮；刷新页面或换浏览器后也无法恢复。
+ * 现在统一由本面板承载（参数模式与刷新后都可见），对话模式仍同时在气泡下方渲染。
+ */
+function renderChoicePanel() {
+  const box = $('choice-box');
+  const list = $('choice-list');
+  const note = $('choice-note');
+  if (!box || !list) return;
+  const pending = state.pendingChoices || {};
+  const items = Array.isArray(pending.items) ? pending.items : [];
+  box.classList.toggle('hidden', !items.length);
+  clear(list);
+  if (note) note.textContent = items.length ? (pending.note || '点选后将以同一会话继续运行。') : '';
+  items.forEach((choice, index) => {
+    const button = el('button', 'chat-choice');
+    button.type = 'button';
+    button.dataset.choiceKind = choice.kind || pending.kind || '';
+    const label = el('span', 'chat-choice-label', String(choice.label || choice.value || ''));
+    button.appendChild(label);
+    const detailText = choiceDetailText(choice.detail);
+    if (detailText) button.appendChild(el('span', 'chat-choice-detail', detailText));
+    button.addEventListener('click', () => { pickChoice(index); });
+    list.appendChild(button);
+  });
+}
+
+/** 候选项的补充说明：detail 是结构化对象（cid/mode/formula/note…），格式化成一行可读文本 */
+function choiceDetailText(detail) {
+  if (!detail) return '';
+  if (typeof detail === 'string') return detail;
+  if (typeof detail !== 'object') return String(detail);
+  const labels = { cid: 'CID', mode: '取法', formula: '分子式', note: '说明', species: '物种',
+                   accession: 'accession', source: '来源', score: '打分' };
+  const parts = [];
+  Object.keys(detail).forEach((key) => {
+    const value = detail[key];
+    if (value === null || value === undefined || value === '') return;
+    parts.push((labels[key] || key) + '：' + (typeof value === 'object' ? JSON.stringify(value) : value));
+  });
+  return parts.join(' · ');
+}
+
+/** 设置/清空待确认候选（SSE 事件与历史载入共用） */
+function setPendingChoices(items, note, kind) {
+  const list = Array.isArray(items) ? items.slice() : [];
+  state.pendingChoices = list.length ? { items: list, note: note || '', kind: kind || '' } : null;
+  renderChoicePanel();
+}
+
+/** 点选某个候选：清空面板 → 把等价追问写进输入框 → 以同一 conversation_id 继续运行 */
+function pickChoice(index) {
+  const pending = state.pendingChoices || {};
+  const choice = (pending.items || [])[index];
+  if (!choice) return;
+  const text = String(choice.prompt || choice.value || choice.label || '');
+  if (!text) return;
+  setPendingChoices([], '', '');
+  const input = $('chat-input');
+  if (input) {
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  logLine('已选择：' + (choice.label || text), 'cmd');
+  startRun();
+}
+
+/**
+ * 运行状态的中文标签：中断的运行不只显示英文枚举，避免被误读成"还在跑"。
+ */
+function statusLabel(status) {
+  const map = { ok: 'ok', no_op: 'no_op', error: 'error', running: 'running',
+                interrupted: '已中断（进程重启）', cancelled: '已取消' };
+  return map[String(status || '')] || fmtText(status);
+}
+
 /* 收到 choices 事件：挂到当前助手气泡上并重排（按钮在气泡下方） */
 function handleChoicesEvent(data) {
   const choices = Array.isArray(data && data.choices) ? data.choices : [];
   if (!choices.length) return;
-  if (state.page !== 'chat') return;
-  if (!state.chatActiveId) state.chatActiveId = appendChatMessage('assistant', '', '请选择');
-  const message = findChatMessage(state.chatActiveId);
-  if (!message) return;
-  message.choices = choices.slice();
-  message.choiceNote = (data && data.note) || '';
-  if (message.status === '运行中') message.status = '请选择';
-  renderChatHistory();
-  logLine('收到 ' + choices.length + ' 个候选可选项：可在助手气泡下方点选。', 'stage');
+  // 两种模式都渲染：参数模式没有聊天气泡，靠中栏的选项面板承载（真实缺陷修复）
+  setPendingChoices(choices, (data && data.note) || '', choices[0] && choices[0].kind);
+  if (state.page === 'chat') {
+    if (!state.chatActiveId) state.chatActiveId = appendChatMessage('assistant', '', '请选择');
+    const message = findChatMessage(state.chatActiveId);
+    if (message) {
+      message.choices = choices.slice();
+      message.choiceNote = (data && data.note) || '';
+      if (message.status === '运行中') message.status = '请选择';
+      renderChatHistory();
+    }
+  }
+  logLine('收到 ' + choices.length + ' 个候选可选项：可在中栏「需要你确认的选项」中点选。', 'stage');
 }
 
 /* 点选某个候选：清空按钮 → 把等价追问写进输入框 → 以同一 conversation_id 继续运行 */
@@ -2857,13 +2940,20 @@ function pickChatChoice(messageId, index) {
   message.choices = [];
   message.choiceNote = '';
   renderChatHistory();
-  const input = $('chat-input');
-  if (input) {
-    input.value = text;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  }
+  // 追问要写进**当前可见面板**的输入框：按 DOM 的激活面板判断（`state.page` 与实际
+  // 显示的面板可能不一致），并双写兜底 —— 写错地方会让用户看到"点了没反应"（真实缺陷）。
+  const manualActive = !!($('manual-pane') && $('manual-pane').classList.contains('is-active'));
+  const ids = manualActive ? ['manual-description', 'chat-input'] : ['chat-input', 'manual-description'];
+  ids.forEach((id) => {
+    const node = $(id);
+    if (!node) return;
+    node.value = text;
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  state.pendingMessage = text;
   logLine('已选择：' + (choice.label || text), 'cmd');
-  startRun();
+  // 追问以**显式参数**下发，不依赖输入框回填（面板重渲染/表单重挂会清空输入框）
+  startRun(text);
 }
 
 function finishAssistant(status) {
@@ -3158,9 +3248,9 @@ function collectParamForm() {
 }
 
 /** 构造请求体：决定 mode / advanced / message 与参数字段的组合方式 */
-function buildPayload() {
+function buildPayload(messageOverride) {
   if (state.page === 'chat') {
-    const raw = $('chat-input').value.trim();
+    const raw = String(messageOverride || $('chat-input').value || '').trim();
     // 指令里 @ 了附件、或上传了附件：把它们作为「引用文件」一并写进指令，
     // 否则 Agent 拿到的只是文件名，无法在工具里读取。
     const message = composeChatMessage(raw);
@@ -3217,7 +3307,7 @@ function buildPayload() {
 
   // 参数模式：表单参数为权威参数
   const form = collectParamForm();
-  const message = $('manual-description').value.trim();
+  const message = String(messageOverride || $('manual-description').value || '').trim();
   const params = {
     receptor: form.receptor,
     receptor_file: form.receptor_file,
@@ -3539,9 +3629,10 @@ function setRunning(running) {
   document.querySelectorAll('#mode-tabs .page-tab').forEach((button) => { button.disabled = running; });
 }
 
-async function startRun() {
+async function startRun(messageOverride) {
   if (state.running) return;
-  const payload = buildPayload();
+  setPendingChoices([], '', '');          // 新一轮开始：清掉上一轮的候选面板
+  const payload = buildPayload(messageOverride);
 
   // 分模式校验：对话模式宽松（高级设置未展开时无需任何参数）
   if (state.page === 'manual') {
@@ -4357,7 +4448,7 @@ function renderSummary(run, moleculeCount) {
     ['受体', run.receptor_label || run.receptor || '—'],
     ['引擎', run.engine || ($('engine-select').value)],
     ['分子数', fmtInt(run.molecule_count !== undefined ? run.molecule_count : moleculeCount)],
-    ['状态', run.status === 'cancelled' ? '已取消 (cancelled)' : (run.status || '—')],
+    ['状态', statusLabel(run.status) || '—'],
     ['开始时间', fmtTime(run.created_at)],
     ['结束时间', fmtTime(run.finished_at)],
     ['用时', run.duration_sec !== undefined ? fmtDuration(run.duration_sec) : '—'],
@@ -5337,6 +5428,10 @@ async function loadRun(runId, options) {
     // 实时刚跑完则保留最近 N 行；历史载入则不铺开全量，只提示去分页视图查看
     if (state.liveCount > 0) setLiveNote(state.ranking.total);
     else resetLiveTableForLoadedRun(state.ranking.total);
+    // 该运行当时停在"等待用户选择"时，把候选重新挂出来：刷新页面或换设备后依然可点选
+    const loadedRun = (payload && payload.run) || {};
+    setPendingChoices(loadedRun.choices || [], loadedRun.choices_note || '',
+                      (loadedRun.choices || [{}])[0].kind || '');
     if (!opts.silent) setRunHint('已载入运行 ' + runId + '（结果按服务端分页展示）。');
     return payload;
   } catch (error) {
@@ -5375,12 +5470,15 @@ function historyRowNode(run) {
   tr.appendChild(el('td', 'num', top ? fmtNum(top.affinity_kcal_mol, 2) : '—'));
   const statusTd = el('td');
   const status = String(run.status || '');
+  const statusText = statusLabel(status);
   /* 状态用方括号标签：ok→[ OK ] / running→[ RUN ] / cancelled→[ CANCEL ] / 其他→[ FAIL ] */
   const statusKey = status === 'ok' ? 'ok'
     : (status === 'running' ? 'run'
-      : (status === 'cancelled' ? 'cancel' : (status === 'no_op' ? 'skip' : 'fail')));
+      : (status === 'cancelled' ? 'cancel'
+        : (status === 'interrupted' ? 'cancel'
+          : (status === 'no_op' ? 'skip' : 'fail'))));
   statusTd.appendChild(el('span', 'tag tag-' + statusKey, ORCH_TAG_TEXT[statusKey]));
-  if (status) statusTd.appendChild(el('span', 'status-text mono', status));
+  if (status) statusTd.appendChild(el('span', 'status-text', statusText));
   if (run.error) statusTd.title = String(run.error);
   tr.appendChild(statusTd);
   const actionTd = el('td');

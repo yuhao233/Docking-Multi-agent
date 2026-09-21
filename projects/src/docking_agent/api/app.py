@@ -458,6 +458,13 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("未配置 LLM_API_KEY：多 Agent 模式不可用；确定性流水线不受影响")
     logger.info("引擎可用性：%s", _engine_available())
+    try:
+        # 进程重启后不可能还有运行在执行：把残留的 running 如实标记为 interrupted
+        fixed = get_run_store().reconcile_interrupted()
+        if fixed:
+            logger.info("已收尾 %d 个被中断的运行：%s", len(fixed), ", ".join(fixed[:5]))
+    except Exception as exc:  # noqa: BLE001 - 收尾失败不能影响服务启动
+        logger.warning("收尾被中断的运行失败（忽略）：%s", exc)
     yield
 
 

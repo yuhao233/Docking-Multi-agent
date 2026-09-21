@@ -3816,3 +3816,17 @@ body.cols-live-collapsed .main-col > *:not(.col-toggle) { display: none; }
 .ext-ok { color: var(--ok, #46c07a); font-weight: 600; }
 .ext-none { color: var(--text-dim); }
 .ext-bad { color: var(--warn, #d08a2a); font-weight: 600; }
+
+/* 需要用户确认的候选面板（v0.32）：参数模式与刷新后都必须可见 */
+.choice-panel {
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-soft));
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.choice-panel.hidden { display: none; }
+.choice-head { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
+.choice-title { font-weight: 600; color: var(--accent); }

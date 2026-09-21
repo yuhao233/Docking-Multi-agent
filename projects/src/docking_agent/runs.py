@@ -436,6 +436,48 @@ class RunStore:
                 break
         return items
 
+    def reconcile_interrupted(self) -> List[str]:
+        """把残留的 `running` 运行标记为 `interrupted`，返回被收尾的 run_id 列表。
+
+        运行只存在于本进程内（checkpointer 在内存、运行注册表在内存），因此**进程重启后
+        不可能还有正在运行的运行**：残留的 `running` 一定是进程被杀/崩溃留下的。
+        不处理会让它们永久显示"运行中"（真实缺陷：历史列表一直转圈、`finished_at` 为空）。
+        这里如实标记并留下说明，而不是假装完成；`choices` 等既有字段原样保留，
+        用户仍可点选候选（点选会以同一会话发起新的运行）。
+        """
+        fixed: List[str] = []
+        if not self.root.is_dir():
+            return fixed
+        now = datetime.now()
+        for d in sorted(self.root.iterdir(), reverse=True):
+            if not d.is_dir():
+                continue
+            meta = self.meta(d.name)
+            if not meta or str(meta.get("status") or "") != "running":
+                continue
+            meta["status"] = "interrupted"
+            meta["finished_at"] = meta.get("finished_at") or now.isoformat(timespec="seconds")
+            if not meta.get("duration_sec"):
+                created = str(meta.get("created_at") or "")
+                try:
+                    started = datetime.fromisoformat(created)
+                    meta["duration_sec"] = round((now - started).total_seconds(), 2)
+                except ValueError:
+                    meta["duration_sec"] = None
+            meta["error"] = meta.get("error") or "进程重启，运行被中断"
+            meta["log"] = list(meta.get("log") or []) + [
+                f"[{now.strftime('%H:%M:%S')}] 进程重启：该运行已中断（原状态 running）"]
+            tmp = d / (RUN_META + ".tmp")
+            try:
+                tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+                os.replace(tmp, d / RUN_META)
+            except OSError as exc:
+                logger.warning("收尾中断运行失败（%s）：%s", d.name, exc)
+                continue
+            fixed.append(d.name)
+            logger.info("已将中断的运行标记为 interrupted：%s", d.name)
+        return fixed
+
     def detail(self, run_id: str) -> Optional[Dict[str, Any]]:
         """返回 {run, artifacts, report_markdown, log, result}。"""
         meta = self.meta(run_id)

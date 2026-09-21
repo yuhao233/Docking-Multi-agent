@@ -2114,6 +2114,27 @@ node scripts/ui_e2e.js http://127.0.0.1:5000    # 143 项：导航切换 / hash 
       `check_web` 的三栏与历史检索检查按新设计改写（158 项）、`browser_check` 把「单列居中」
       断言换成「三栏并排 + 无横向滚动 + 右栏内容」（28 项）、`ui_e2e` 设置分组期望改 7 组（211 项）。
 
+62. **结构化选项（choices）在参数模式下不可见 + 被中断的运行不收尾（v0.32）**：
+    - **缺陷 1（用户报障）**：运行日志出现「已生成 4 个可选项（kind=molecule）：等待用户在界面上选择」，
+      但网页上没有任何按钮。原因有两处：`handleChoicesEvent` 里 `if (state.page !== 'chat') return;`
+      把参数模式的候选直接丢弃；`loadRun()` 也不回填 `run.json` 里的 `choices`，因此刷新页面或换设备后
+      候选彻底丢失（后端一直是对的：`choices` 与 `choices_note` 已落盘并由 SSE 下发）。
+      修复：中栏新增「需要你确认的选项」面板（`#choice-box` / `#choice-list`），**与页面模式无关**地渲染；
+      载入历史运行时从 `run.json` 回填；候选项的结构化 `detail`（cid/mode/formula/note）经
+      `choiceDetailText()` 格式化成可读文本（此前会显示成 `[object Object]`）。
+    - **缺陷 2（顺带发现）**：点选后的追问原先通过回填输入框再 `startRun()` 传递，遇到面板/表单重渲染
+      就会写丢（用户表现为"点了没反应"）。现在 `startRun(messageOverride)` / `buildPayload(messageOverride)`
+      支持把追问作为**显式参数**下发，同时仍写进当前输入框供用户编辑。
+    - **缺陷 3（进程被杀留下的僵尸状态）**：运行只存在于本进程内，进程重启后不可能还有运行在执行，
+      但残留的 `running` 会让历史列表永久显示「运行中」且 `finished_at` 为空（实测一次重启后收尾了
+      **39 个**这样的运行）。新增 `RunStore.reconcile_interrupted()`，在应用启动钩子里执行：
+      标记为 `interrupted`、补 `finished_at`/`duration_sec`、追加一条日志说明，并**保留 choices**
+      （用户仍可点选，点选会以同一会话发起新运行）；前端把 `interrupted` 归入取消类标签并显示
+      「已中断（进程重启）」。
+    - **门禁**：`tests/test_run_search.py` 新增 2 项（收尾幂等 + 启动钩子真的调用），
+      `scripts/ui_e2e.js` 新增参数模式场景（面板可见、详情可读、载入历史回填；点选续跑链路由既有
+      对话模式场景覆盖）；全量 `pytest` 627 passed、`check_web` 158/158、`ui_e2e` 217/217。
+
 ## 15. 注意事项
 
 - **`/node_run`**：Agent 图由 `create_agent` 内部构建，节点通常无法直接寻址；请用网页、`-m flow`、

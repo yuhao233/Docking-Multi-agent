@@ -206,6 +206,15 @@
         <div class="alert alert-error hidden" id="chat-error"></div>
       </section>
 
+  <!-- 需要用户确认的候选（受体/分子解析不确定时由后端下发 choices；参数模式与刷新后同样可见） -->
+  <section class="choice-panel hidden" id="choice-box" aria-live="polite">
+    <div class="choice-head">
+      <span class="choice-title">需要你确认的选项</span>
+      <span class="hint-inline" id="choice-note"></span>
+    </div>
+    <div class="chat-choices" id="choice-list"></div>
+  </section>
+
   <div class="panel panel-result motion-in">
     <div class="panel-head">
       <h2 class="panel-title">结果与产物</h2>
