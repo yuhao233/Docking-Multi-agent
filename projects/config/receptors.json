@@ -1,0 +1,41 @@
+{
+  "_comment": "受体注册表：登记每个受体的结构文件与其【已知结合位点】。新增受体只需在此追加条目，无需改代码。相对路径基于项目根目录。",
+  "default": "thrombin",
+  "aliases": {
+    "default": "thrombin",
+    "1dwc": "thrombin",
+    "thrombin/1dwc": "thrombin",
+    "1ptu": "trypsin",
+    "trypsin_1ptu": "trypsin"
+  },
+  "receptors": {
+    "thrombin": {
+      "key": "thrombin",
+      "name": "thrombin",
+      "pdb": "1DWC",
+      "protein": "人α-凝血酶 (human alpha-thrombin, PDB 1DWC)",
+      "pdbqt": "assets/receptors/registry/thrombin_1DWC.pdbqt",
+      "site": {
+        "center": [31.5, 13.74, 24.36],
+        "size": [22.0, 22.0, 22.0],
+        "source": "共晶配体质心",
+        "description": "凝血酶 S1 口袋 / 催化位点",
+        "residues": ["HIS57", "ASP102", "SER195"]
+      }
+    },
+    "trypsin": {
+      "key": "trypsin",
+      "name": "trypsin",
+      "pdb": "1PTU",
+      "protein": "牛胰蛋白酶 (bovine trypsin, PDB 1PTU)",
+      "pdbqt": "assets/receptors/registry/trypsin_1PTU.pdbqt",
+      "site": {
+        "center": [55.91, 10.1, 45.96],
+        "size": [22.0, 22.0, 22.0],
+        "source": "共晶配体质心",
+        "description": "胰蛋白酶 S1 口袋 / 催化位点",
+        "residues": ["HIS57", "ASP102", "SER195"]
+      }
+    }
+  }
+}

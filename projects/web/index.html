@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>分子对接多 Agent 协作系统</title>
+<!-- 所有资源均为本地相对路径，禁止任何外部 CDN / 字体 / JS 库（离线可用） -->
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+
+<!-- 顶层视图容器：一次只显示一个（工作台 / 设置），由导航栏与 URL hash 切换 -->
+<div class="view is-active no-run" id="view-workbench">
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true" focusable="false">
+        <circle cx="8" cy="16" r="4"></circle>
+        <circle cx="24" cy="8" r="3.2"></circle>
+        <circle cx="24" cy="24" r="3.2"></circle>
+        <line x1="11.4" y1="13.9" x2="20.9" y2="9.6"></line>
+        <line x1="11.4" y1="18.1" x2="20.9" y2="22.4"></line>
+      </svg>
+      <div class="brand-text">
+        <h1>分子对接多 Agent 协作系统</h1>
+        <p class="brand-sub">对话下达指令，或手动填写参数</p>
+      </div>
+    </div>
+
+    <!-- 主导航：工作台 / 设置（两个顶层页面，hash 深链接 #/settings） -->
+    <nav class="topnav" id="topnav" role="tablist" aria-label="主导航">
+      <button type="button" class="nav-btn active" id="nav-workbench" data-view="workbench"
+        role="tab" aria-selected="true" title="运行任务与查看结果">
+        <span class="nav-idx">01</span><span class="nav-label">工作台</span>
+      </button>
+      <button type="button" class="nav-btn" id="nav-settings" data-view="settings"
+        role="tab" aria-selected="false" title="全局参数 · API 与模型 · 各 Agent 参数">
+        <span class="nav-idx">02</span><span class="nav-label">设置</span>
+        <span class="nav-dot hidden" id="nav-settings-dot" aria-hidden="true"></span>
+      </button>
+    </nav>
+
+    <div class="health" id="health-box">
+      <div class="health-row">
+        <span class="dot dot-unknown" id="health-dot"></span>
+        <span class="health-text" id="health-text">正在检查后端服务…</span>
+      </div>
+      <div class="health-row health-detail">
+        <span class="meta" id="health-llm">LLM：检测中</span>
+        <span class="meta-sep">·</span>
+        <span class="meta" id="health-engine">引擎：检测中</span>
+        <span class="meta-sep">·</span>
+        <span class="meta" id="health-version">版本 —</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="layout" id="workbench-layout">
+
+  <!-- ======================= 左：任务配置 ======================= -->
+  <aside class="panel panel-config motion-in" id="config-panel">
+    <div class="panel-head">
+      <h2 class="panel-title">任务配置</h2>
+      <span class="hint" id="config-head-hint"><span class="req">*</span> 必填</span>
+    </div>
+    <div class="panel-body">
+
+      <!-- 两个子页：对话模式 / 参数模式（只切换配置区，下方结果区共用） -->
+      <div class="pages" id="mode-tabs" role="tablist" aria-label="交互模式">
+        <button type="button" class="page-tab active" id="mode-tab-chat" data-page="chat" role="tab" aria-selected="true">
+          <span class="page-tab-title">对话模式</span>
+          <span class="page-tab-sub">用自然语言下达指令</span>
+        </button>
+        <button type="button" class="page-tab" id="mode-tab-manual" data-page="manual" role="tab" aria-selected="false">
+          <span class="page-tab-title">参数模式</span>
+          <span class="page-tab-sub">手动填写全部参数</span>
+        </button>
+      </div>
+
+      <!-- 两个子页叠放在同一容器中，通过 .is-active 切换 opacity/transform（不使用 display:none 硬切） -->
+      <div class="mode-panels" id="mode-panels">
+
+      <!-- ------------------------- 子页一：对话模式 ------------------------- -->
+      <section class="page-pane is-active" id="chat-pane" role="tabpanel" aria-labelledby="mode-tab-chat">
+        <div class="chat-toolbar">
+        <p class="hint chat-hint-line" id="chat-hint">
+          描述任务目标即可；参数只下发你改动过的项。
+          <span class="tip-icon" tabindex="0" role="button" aria-label="对话模式说明"
+            data-tip-html="协调 Agent 会自行调度分子属性评估 / 分子对接 / 结合模式检测子 Agent，并出具排序结论。<br>下方的「运行参数」<b>只把你改动过的项作为默认值下发</b>；未改动的走系统默认，指令里明确写到的（如「搜索强度用 32」）优先。<br><b>受体与位点盒在对话模式不发送</b>：由指令内容或口袋分析决定（需要指定就先上传受体文件、或在指令里写清楚）。<br>上传的附件属于明确意图，会作为 <code>receptor_file</code> / <code>molecule_file</code> 一并下发；指令与参数不会冲突。">?</span>
+        </p>
+
+        <!-- 运行参数：直接放在对话框上（不折叠）。改动即作为默认值下发，指令里明确指定的以指令为准 -->
+        <div class="chat-quick" id="chat-quick-params">
+          <p class="chat-quick-title">
+            运行参数
+            <span class="tip-icon" tabindex="0" role="button" aria-label="运行参数说明"
+              data-tip-html="这里的参数<b>直接对本次运行生效</b>（作为默认值下发）；<br>指令里明确写到的（例如「搜索强度用 32」）仍然优先于这里。<br>未改动时使用系统默认值：引擎 vina、质子化 ph(7.4)、n_poses 1、搜索强度 16。">?</span>
+            <span class="hint-inline" id="chat-quick-hint">只下发改动过的项 · 未改动 = 自动/系统默认</span>
+          </p>
+        </div>
+
+        <!-- 其余设置：配体来源 / 位点盒 / 上传受体等，收进折叠避免主流程太长 -->
+        <details class="field-group adv-group" id="chat-advanced">
+          <summary>
+            <span>其他设置 · 配体来源 / 位点盒 / 上传受体</span>
+            <span class="adv-summary-vals" id="chat-advanced-summary">· 配体来源 / 位点盒 / 上传受体</span>
+          </summary>
+          <p class="hint adv-hint" id="chat-advanced-hint">
+            这些项不是每次都要调：配体来源可用指令或附件指定，位点盒留空由口袋分析自动确定，
+            上传受体也可直接用「附件」。
+          </p>
+          <div class="adv-mount" id="chat-advanced-mount"></div>
+        </details>
+        </div><!-- /.chat-toolbar -->
+
+        <!-- 对话区：气泡 + 输入框（页面视觉中心） -->
+        <section class="chat-panel chat-dock" id="chat-history-panel">
+          <h3 class="sub-head chat-head">
+            <span>对话</span>
+            <span class="hint-inline" id="chat-history-hint">Markdown 渲染 · 长回复自动折叠</span>
+          </h3>
+          <div class="chat-stream" id="chat-history"></div>
+          <p class="empty" id="chat-history-empty">在下方输入指令，按 Enter 或点「发送」开始。</p>
+
+          <form class="chat-form" id="chat-form" autocomplete="off">
+            <div class="chat-attachments" id="chat-attachments"></div>
+            <textarea id="chat-input" rows="4" spellcheck="false"
+              placeholder="描述任务目标；可点「附件」上传受体/分子文件，或输入 @ 引用已上传的文件"></textarea>
+            <div class="chat-attach-row">
+              <button type="button" class="btn btn-ghost btn-sm" id="chat-attach-btn"
+                      title="上传受体（.pdb/.ent/.cif/.pdbqt）或小分子库（.sdf/.smi/.csv/.mol2）">附件</button>
+              <input type="file" id="chat-file-input" class="hidden" multiple
+                     accept=".pdb,.ent,.pdb1,.cif,.mmcif,.pdbqt,.sdf,.sd,.smi,.smiles,.txt,.csv,.mol2,.mol">
+              <button type="button" class="btn btn-ghost btn-sm hidden" id="chat-mention-btn"
+                      title="引用已上传的文件">@ 引用</button>
+              <span class="hint" id="chat-attach-hint">拖拽文件到此，或输入 @ 引用</span>
+            </div>
+            <div class="chat-mention hidden" id="chat-mention" role="listbox" aria-label="引用文件"></div>
+            <div class="chat-actions">
+              <button type="button" class="btn btn-primary chat-send" id="chat-send">
+                <span class="spinner hidden" id="chat-send-spinner"></span><span id="chat-send-label">发送</span>
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-chat-new"
+                      title="清空对话气泡并开始一段新会话（服务端不再延续上一轮上下文）">新对话</button>
+              <span class="hint chat-send-hint">Enter 发送 · Shift+Enter 换行</span>
+            </div>
+          </form>
+          <div class="alert alert-error hidden" id="chat-error"></div>
+        </section>
+      </section>
+
+      <!-- ------------------------- 子页二：参数模式 ------------------------- -->
+      <section class="page-pane" id="manual-pane" role="tabpanel" aria-labelledby="mode-tab-manual">
+        <p class="hint" id="manual-hint">
+          表单参数即权威参数。
+          <span class="tip-icon" tabindex="0" role="button" aria-label="参数模式说明"
+            data-tip-html="本模式下<b>上方表单参数为权威参数</b>，服务端会将其作为「本次运行参数（权威）」追加到指令中；<br>下方的「目标描述」只补充要求，<b>不会覆盖任何参数</b>。">?</span>
+        </p>
+
+        <!-- 共享参数面板在参数模式下会挂载到这里（与对话模式的高级设置是同一份表单） -->
+        <div class="params-mount" id="manual-params-mount"></div>
+
+        <details class="field-group" open>
+          <summary>目标描述 / 额外要求（可选）</summary>
+          <label class="field">
+            <span class="field-label">目标描述 / 额外要求（可选）
+              <span class="tip-icon" tabindex="0" role="button" aria-label="目标描述说明"
+                data-tip-html="<b>参数以上方表单为准</b>，此处的文字仅作为目标描述 / 额外要求随指令下发给协调 Agent，不会覆盖任何参数。<br>留空则不发送 <code>message</code> 字段。">?</span>
+            </span>
+            <textarea id="manual-description" rows="4" spellcheck="false"
+              placeholder="例如：优先关注与阳性对照结合模式一致的分子，并在报告中说明取舍理由。&#10;参数以上方表单为准，此处的文字不会覆盖参数。"></textarea>
+          </label>
+        </details>
+
+        <details class="field-group" open>
+          <summary>运行方式</summary>
+          <div class="segmented mode" id="mode-switch" role="tablist" aria-label="运行方式">
+            <button type="button" class="seg-btn active" data-mode="pipeline" role="tab">确定性流水线（不需要 LLM）</button>
+            <button type="button" class="seg-btn" data-mode="agent" role="tab">多 Agent 协作（需要 LLM）</button>
+          </div>
+          <p class="hint" id="mode-hint">流水线：不需要 LLM，速度快、可复现。</p>
+
+          <div id="agent-only" class="hidden">
+            <p class="hint">
+              多 Agent 协作模式（需要 LLM）。
+              <span class="tip-icon" tabindex="0" role="button" aria-label="多 Agent 手动模式说明"
+                data-tip-html="请求体带 <code>mode=manual</code>：表单参数为权威参数，目标描述仅作补充。<br>协调 Agent 会调度子 Agent 并出具 Markdown 报告（需要 LLM）。">?</span>
+            </p>
+          </div>
+        </details>
+      </section>
+
+      </div><!-- /.mode-panels -->
+
+      <div class="alert alert-info hidden" id="config-info-bar"></div>
+
+      <div class="run-actions">
+        <button type="button" class="btn btn-primary" id="btn-start">
+          <span class="spinner hidden" id="start-spinner"></span><span id="start-label">开始运行</span>
+        </button>
+        <button type="button" class="btn btn-danger" id="btn-stop" disabled
+          title="中断本次运行：先通知后端取消对接进程池，再断开本地数据流">
+          <span id="btn-stop-label">■ 停止</span>
+        </button>
+      </div>
+      <p class="hint" id="run-hint">尚未运行。</p>
+    </div>
+  </aside>
+
+  <!-- 结果与产物 -->
+    <div class="panel panel-result motion-in">
+      <div class="panel-head">
+        <h2 class="panel-title">结果与产物</h2>
+        <div class="download-bar" id="download-bar">
+          <a class="btn btn-primary btn-sm download-btn disabled" id="btn-download-pdf" href="#"
+             aria-disabled="true" title="下载本次运行的报告 PDF">报告 PDF</a>
+          <a class="btn btn-ghost btn-sm download-btn disabled" id="btn-download-report" href="#"
+             aria-disabled="true" title="下载 Markdown 版报告">报告 MD</a>
+          <a class="btn btn-ghost btn-sm download-btn disabled" id="btn-download-csv" href="#"
+             aria-disabled="true" title="下载完整排序 CSV">排序 CSV</a>
+          <a class="btn btn-ghost btn-sm download-btn disabled" id="btn-download-poses" href="#"
+             aria-disabled="true" title="下载全部位姿（zip）">位姿 ZIP</a>
+          <a class="btn btn-ghost btn-sm download-btn disabled" id="btn-download-zip" href="#"
+             aria-disabled="true" title="下载本次运行的全部数据与产物（zip）">打包下载</a>
+          <span class="download-name" id="download-name-hint" title="当前运行的文件命名前缀"></span>
+        </div>
+      </div>
+      <div class="tabs" id="tabs" role="tablist" aria-label="结果视图">
+        <button type="button" class="tab-btn active" data-tab="overview" role="tab">结果总览</button>
+        <button type="button" class="tab-btn" data-tab="molecules" role="tab">分子详情</button>
+        <button type="button" class="tab-btn" data-tab="report" role="tab">报告</button>
+        <button type="button" class="tab-btn" data-tab="artifacts" role="tab">中间数据</button>
+        <button type="button" class="tab-btn" data-tab="history" role="tab">历史运行</button>
+      </div>
+
+      <div class="tab-body">
+
+        <!-- 结果总览 -->
+        <div class="tab-pane active" id="tab-overview" role="tabpanel">
+
+          <div class="kpi-row" id="run-kpis"></div>
+          <div class="summary-bar" id="run-summary"></div>
+          <div class="summary-bar aggregates-bar" id="aggregates-bar"></div>
+          <!-- 运行笔记：默认每条只显示 2 行（超长备注不再把页面拉长），点「展开」看全文 -->
+          <div class="run-notes hidden" id="run-notes"></div>
+
+          <h3 class="sub-head">
+            排序推荐表
+            <span class="hint-inline">点击表头通过服务端排序（全库排序，非仅当前页）· 结果分页加载</span>
+          </h3>
+
+          <div class="ranking-toolbar" id="ranking-toolbar">
+            <label class="toolbar-field">
+              <span class="toolbar-label">搜索</span>
+              <input type="search" id="ranking-search" placeholder="按名称 / SMILES 过滤" spellcheck="false">
+            </label>
+            <label class="check-row toolbar-check">
+              <input type="checkbox" id="hits-only">
+              <span>只看优于阳性对照</span>
+            </label>
+            <label class="toolbar-field">
+              <span class="toolbar-label">每页</span>
+              <select id="page-size">
+                <option value="50" selected>50 条</option>
+                <option value="100">100 条</option>
+                <option value="200">200 条</option>
+              </select>
+            </label>
+            <a class="btn btn-ghost btn-sm disabled" id="btn-export-csv" href="#" aria-disabled="true" download>导出完整 CSV</a>
+          </div>
+          <p class="hint" id="ranking-hint">尚未载入排序结果。</p>
+
+          <div class="table-wrap">
+            <table class="data-table sortable" id="result-table">
+              <thead>
+                <tr>
+                  <th class="num" data-key="rank" data-type="num" data-label="排名">排名 <span class="sort-mark"></span></th>
+                  <th data-key="name" data-type="str" data-label="名称">名称 <span class="sort-mark"></span></th>
+                  <th class="num" data-key="affinity_kcal_mol" data-type="num" data-label="亲和力">亲和力 (kcal/mol) <span class="sort-mark"></span></th>
+                  <th data-label="引擎">引擎</th>
+                  <th class="num" data-label="搜索强度">exhaustiveness</th>
+                  <th class="num" data-key="molecular_weight" data-type="num" data-label="分子量">分子量 <span class="sort-mark"></span></th>
+                  <th class="num" data-key="logP" data-type="num" data-label="LogP">LogP <span class="sort-mark"></span></th>
+                  <th class="num" data-key="tpsa" data-type="num" data-label="TPSA">TPSA <span class="sort-mark"></span></th>
+                  <th class="num" data-key="lipinski_violations" data-type="num" data-label="类药性">类药性 <span class="sort-mark"></span></th>
+                  <th class="num" data-key="similarity_to_positive_control" data-type="num" data-label="相似度">相似度 <span class="sort-mark"></span></th>
+                  <th class="num" data-label="MACCS 相似度">MACCS</th>
+                  <th class="num" data-label="综合相似度">综合相似度</th>
+                  <th class="num" data-label="结构一致性">结构一致性</th>
+                </tr>
+              </thead>
+              <tbody id="result-tbody"></tbody>
+            </table>
+          </div>
+
+          <div class="pager" id="ranking-pager">
+            <button type="button" class="btn btn-ghost btn-sm" id="pager-prev">← 上一页</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="pager-next">下一页 →</button>
+            <span class="pager-info" id="pager-info">共 0 条，第 1/1 页</span>
+            <label class="pager-jump">
+              <span>跳至</span>
+              <input type="number" id="pager-jump" min="1" step="1" value="1">
+              <span>页</span>
+            </label>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-pager-go">跳转</button>
+          </div>
+
+          <p class="empty" id="overview-empty">还没有结果：在上方输入指令开始一次筛选，或到「历史运行」载入既往记录。</p>
+
+          <h3 class="sub-head">亲和力强度图例</h3>
+          <div class="legend">
+            <span class="legend-item"><span class="swatch sw-strong"></span>强结合（≤ -9）</span>
+            <span class="legend-item"><span class="swatch sw-good"></span>较好（-8 ~ -9）</span>
+            <span class="legend-item"><span class="swatch sw-mid"></span>中等（-6 ~ -8）</span>
+            <span class="legend-item"><span class="swatch sw-weak"></span>较弱（≥ -6）</span>
+            <span class="legend-item" id="legend-positive"><span class="swatch sw-pc"></span>阳性对照行</span>
+          </div>
+
+          <h3 class="sub-head">产物图表</h3>
+          <div class="charts" id="charts-box">
+            <p class="empty">尚无图表产物。运行完成后，服务端产出的对接对比图与相似度图会显示在这里。</p>
+          </div>
+        </div>
+
+        <!-- 分子详情 -->
+        <div class="tab-pane" id="tab-molecules" role="tabpanel">
+          <div class="cards-toolbar">
+            <span class="hint" id="cards-hint">每页只渲染当前页的分子卡片（二维结构图懒加载），避免上万张图片同时请求。</span>
+            <label class="toolbar-field">
+              <span class="toolbar-label">每页</span>
+              <select id="cards-page-size">
+                <option value="12" selected>12 张</option>
+                <option value="24">24 张</option>
+                <option value="48">48 张</option>
+              </select>
+            </label>
+          </div>
+          <div class="cards" id="cards-box"></div>
+          <p class="empty" id="cards-empty">尚未载入分子。先在左侧配置任务并点击「开始运行」。</p>
+          <div class="pager hidden" id="cards-pager">
+            <button type="button" class="btn btn-ghost btn-sm" id="cards-prev">← 上一页</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="cards-next">下一页 →</button>
+            <span class="pager-info" id="cards-pager-info">共 0 条，第 1/1 页</span>
+          </div>
+        </div>
+
+        <!-- 报告 -->
+        <div class="tab-pane" id="tab-report" role="tabpanel">
+          <div class="report-actions">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-report">复制 Markdown 原文</button>
+            <span class="hint" id="copy-report-hint"></span>
+          </div>
+          <nav class="report-toc" id="report-toc" aria-label="报告章节导航"></nav>
+          <article class="markdown" id="report-box"></article>
+          <p class="empty" id="report-empty">尚无报告。运行多 Agent 协作模式后，协调 Agent 出具的 Markdown 报告会渲染在这里。</p>
+        </div>
+
+        <!-- 中间数据 -->
+        <div class="tab-pane" id="tab-artifacts" role="tabpanel">
+          <div class="btn-row">
+            <a class="btn btn-ghost btn-sm disabled" id="btn-zip-all" href="#" aria-disabled="true">打包下载全部（zip）</a>
+            <a class="btn btn-ghost btn-sm disabled" id="btn-zip-poses" href="#" aria-disabled="true">下载全部位姿（zip）</a>
+            <span class="hint" id="zip-hint"></span>
+          </div>
+          <div class="alert alert-info hidden" id="zip-message"></div>
+          <div class="artifact-grid" id="artifact-grid"></div>
+          <p class="empty" id="artifacts-empty">尚无中间数据产物。运行结束后，molecules/properties/docking/binding/ranking.csv/图表/报告/位姿 等清单会显示在这里。</p>
+
+          <!-- 结合位点与口袋预测（工具定盒的溯源） -->
+          <h3 class="sub-head">
+            结合位点与口袋预测
+            <span class="hint-inline">对接盒来自实验位点 / 口袋预测工具 / 用户指定，均记录来源</span>
+          </h3>
+          <div class="collab-stats" id="pocket-stats"></div>
+          <div class="table-wrap" id="pocket-table-wrap">
+            <table class="data-table" id="pocket-table">
+              <thead>
+                <tr>
+                  <th class="num">#</th>
+                  <th>口袋</th>
+                  <th class="num">score</th>
+                  <th class="num">中心 (Å)</th>
+                  <th class="num">范围 (Å)</th>
+                  <th>附近残基</th>
+                  <th>选择</th>
+                </tr>
+              </thead>
+              <tbody id="pocket-tbody"></tbody>
+            </table>
+          </div>
+          <p class="empty" id="pocket-empty">尚无口袋预测数据。多 Agent 模式下由「口袋分析 Agent」用 P2Rank / 内置几何法预测；确定性流水线在未指定位点时会自动分析。</p>
+
+          <!-- 多 Agent 协作痕迹（共享黑板统计 + 各 Agent 备注） -->
+          <h3 class="sub-head">
+            多 Agent 协作记录
+            <span class="hint-inline">共享黑板</span>
+            <span class="tip-icon" tabindex="0" role="button" aria-label="多 Agent 协作记录说明"
+              data-tip="各子 Agent 写入共享黑板的统计与备注，供交叉核验与追溯。">?</span>
+          </h3>
+          <div class="collab-stats" id="collab-stats"></div>
+          <div class="collab-notes" id="collab-notes"></div>
+          <p class="empty" id="collab-empty">确定性流水线不产生多 Agent 协作记录。</p>
+        </div>
+
+        <!-- 历史运行 -->
+        <div class="tab-pane" id="tab-history" role="tabpanel">
+          <div class="btn-row">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-refresh-history">刷新列表</button>
+            <button type="button" class="btn btn-ghost btn-sm hidden" id="history-more">显示更多</button>
+            <span class="hint" id="history-hint">点击任意一行可载入该次运行的结果、报告与中间数据。</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="history-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>模式</th>
+                  <th>受体</th>
+                  <th class="num">分子数</th>
+                  <th>最佳分子</th>
+                  <th class="num">最佳亲和力</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody"></tbody>
+            </table>
+          </div>
+          <p class="empty" id="history-empty">尚未载入历史运行列表。</p>
+        </div>
+
+      </div>
+    </div>
+  <!-- ======================= 运行详情（默认收起，跑起来才自动展开） ======================= -->
+  <section class="main-col section-stack">
+    <details class="panel run-details motion-in" id="run-details">
+      <summary class="run-details-summary">
+        <span class="run-details-title">运行详情</span>
+        <span class="hint-inline run-details-sub">多 Agent 编排时间轴 · 阶段日志 · 工具轨迹 · 实时逐分子结果</span>
+        <span class="run-details-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div class="run-details-body">
+
+    <!-- ------------------- 多 Agent 编排示意图（始终可见） ------------------- -->
+    <div class="panel panel-orch motion-in" id="orchestration-panel">
+      <div class="panel-head">
+        <h2 class="panel-title">多 Agent 编排</h2>
+        <span class="orch-head-tags">
+          <span class="tag tag-wait" id="orch-parallel">[ -- ]</span>
+          <span class="tag tag-wait" id="orch-run-state">[ WAIT ]</span>
+        </span>
+      </div>
+      <div class="panel-body">
+        <div class="orch-meta">
+          <p class="orch-task" id="orch-task">当前任务：待机</p>
+          <p class="orch-coord mono" id="orch-coord">协调动作：待机</p>
+          <p class="orch-coord mono" id="orch-box">对接盒：待确定（未给出显式位点时会用工具预测口袋）</p>
+        </div>
+
+        <div class="orch-flow" id="orch-flow">
+          <div class="orch-level orch-level-root">
+            <div class="orch-node" id="orch-node-coordinator" data-state="wait">
+              <span class="orch-name">整体协调 Agent</span>
+              <span class="tag tag-wait" id="orch-tag-coordinator">[ WAIT ]</span>
+              <span class="orch-note" id="orch-note-coordinator">dispatching</span>
+            </div>
+          </div>
+          <div class="orch-edge" aria-hidden="true"></div>
+          <div class="orch-level orch-level-children">
+            <div class="orch-node" id="orch-node-properties" data-state="wait">
+              <span class="orch-name">分子属性评估</span>
+              <span class="tag tag-wait" id="orch-tag-properties">[ WAIT ]</span>
+              <span class="orch-note" id="orch-note-properties">properties</span>
+            </div>
+            <div class="orch-node" id="orch-node-pocket" data-state="wait">
+              <span class="orch-name">口袋分析</span>
+              <span class="tag tag-wait" id="orch-tag-pocket">[ WAIT ]</span>
+              <span class="orch-note" id="orch-note-pocket">pocket</span>
+            </div>
+            <div class="orch-node" id="orch-node-docking" data-state="wait">
+              <span class="orch-name">Docking 执行</span>
+              <span class="tag tag-wait" id="orch-tag-docking">[ WAIT ]</span>
+              <span class="orch-note" id="orch-note-docking">docking</span>
+            </div>
+            <div class="orch-node" id="orch-node-binding" data-state="wait">
+              <span class="orch-name">结合模式检测</span>
+              <span class="tag tag-wait" id="orch-tag-binding">[ WAIT ]</span>
+              <span class="orch-note" id="orch-note-binding">binding</span>
+            </div>
+          </div>
+          <div class="orch-edge" aria-hidden="true"></div>
+          <div class="orch-level orch-level-report">
+            <div class="orch-node" id="orch-node-report" data-state="wait">
+              <span class="orch-name">报告生成</span>
+              <span class="tag tag-wait" id="orch-tag-report">[ WAIT ]</span>
+              <span class="orch-note" id="orch-note-report">report</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="orch-lanes-wrap">
+          <p class="hint" id="orch-lanes-hint">
+            实测时间轴（重叠 = 并行）
+            <span class="tip-icon" tabindex="0" role="button" aria-label="实测时间轴说明"
+              data-tip-html="按服务端事件时间戳绘制各节点的真实起止时间。<br><b>同层条带重叠即为并行</b>，依次排列即为串行；悬停条带可看该节点的起止时刻。">?</span>
+          </p>
+          <div class="orch-lanes" id="orch-lanes"></div>
+        </div>
+
+        <div class="orch-metrics">
+          <span class="orch-metric"><span class="orch-metric-label">DONE</span><span class="mono" id="orch-metric-done">0/0</span></span>
+          <span class="orch-metric"><span class="orch-metric-label">PCT</span><span class="mono" id="orch-metric-percent">0%</span></span>
+          <span class="orch-metric"><span class="orch-metric-label">ELAPSED</span><span class="mono" id="orch-metric-elapsed">00:00</span></span>
+          <span class="orch-metric"><span class="orch-metric-label">ETA</span><span class="mono" id="orch-metric-eta">--:--</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel panel-exec motion-in" id="exec-panel">
+      <div class="panel-head">
+        <h2 class="panel-title">执行区</h2>
+        <span class="run-id" id="exec-conversation-id" title="当前会话 id（同一 id = 同一段对话）">conv —</span>
+        <span class="run-id" id="exec-run-id">run_id —</span>
+      </div>
+      <div class="panel-body">
+
+        <div class="progress-block">
+          <div class="progress-meta">
+            <span id="stage-current">阶段 —</span>
+            <span class="mono" id="stage-counter">— / —</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+          <div class="progress-terminal">
+            <span class="mono" id="progress-bar-text">[░░░░░░░░░░░░░░░░░░░░] 0%</span>
+            <span class="mono" id="progress-eta-text">ETA --:--</span>
+          </div>
+          <div class="progress-meta">
+            <span id="progress-percent" class="mono">0%</span>
+            <span id="progress-done" class="mono">已完成 0/0</span>
+            <span id="exec-elapsed" class="mono">用时 —</span>
+            <span id="progress-eta" class="mono">剩余时间 —</span>
+          </div>
+        </div>
+
+        <!-- 对话模式的对话历史区（与下方结果区共用，两种模式都显示） -->
+
+        <div class="exec-grid">
+          <div class="exec-col">
+            <h3 class="sub-head">阶段日志</h3>
+            <div class="log" id="log-box"><p class="empty">等待运行…</p></div>
+          </div>
+
+          <div class="exec-col">
+            <h3 class="sub-head">
+              实时逐分子结果 <span class="mono counter" id="live-count">0</span>
+              <span class="hint-inline" id="live-note">仅最近 300 条</span>
+            </h3>
+            <div class="table-wrap table-scroll">
+              <table class="data-table" id="molecules-table">
+                <thead>
+                  <tr>
+                    <th class="num">#</th>
+                    <th>名称</th>
+                    <th class="num">亲和力 (kcal/mol)</th>
+                    <th>引擎</th>
+                    <th class="num">exh.</th>
+                    <th class="num">分子量</th>
+                    <th class="num">LogP</th>
+                    <th class="num">TPSA</th>
+                    <th class="num">相似度</th>
+                  </tr>
+                </thead>
+                <tbody id="molecules-tbody"></tbody>
+              </table>
+            </div>
+            <p class="empty" id="molecules-empty">尚未产生分子结果。运行开始后这里会逐条显示。</p>
+          </div>
+        </div>
+
+        <div class="agent-box hidden" id="agent-box">
+          <div class="agent-col">
+            <h3 class="sub-head" id="agent-stream-title">模型增量文本</h3>
+            <pre class="token-stream" id="token-stream">等待模型输出…</pre>
+          </div>
+          <div class="agent-col">
+            <h3 class="sub-head" id="agent-box-title">工具调用轨迹</h3>
+            <div class="tool-trace" id="tool-trace"><p class="empty">暂无工具调用。</p></div>
+          </div>
+        </div>
+
+        <div class="alert alert-error hidden" id="exec-error"></div>
+      </div>
+    </div>
+      </div>
+    </details>
+  </section>
+
+</main>
+</div><!-- /#view-workbench -->
+
+<!-- ==========================================================================
+     设置页面（第二个顶层视图）
+     字段表由服务端 /api/settings 驱动渲染（specs + values + effective + sources），
+     前端不硬编码字段，避免前后端配置项走样。
+     ========================================================================== -->
+<div class="view" id="view-settings">
+  <main class="settings-layout">
+    <section class="panel motion-in">
+      <div class="panel-head settings-head">
+        <button type="button" class="btn btn-ghost btn-sm settings-back" id="btn-settings-back"
+          title="返回工作台（Esc 也可以）">← 返回工作台</button>
+        <h2 class="panel-title">系统设置</h2>
+        <span class="hint settings-file-hint" id="settings-file-hint">配置文件 —</span>
+        <div class="settings-toolbar">
+          <button type="button" class="btn btn-primary" id="btn-settings-save">保存设置</button>
+          <button type="button" class="btn btn-ghost" id="btn-settings-reload"
+            title="丢弃已构建的 Agent 与模型实例，使模型/端点改动在下一次运行生效">重新加载 Agent</button>
+          <button type="button" class="btn btn-ghost" id="btn-fetch-models"
+            title="从当前端点 GET /models 拉取可用模型">拉取可用模型</button>
+          <button type="button" class="btn btn-danger" id="btn-settings-reset"
+            title="删除 config/local_settings.json，回到 .env + 内置默认">清除界面设置</button>
+          <span class="hint" id="settings-status">正在加载设置…</span>
+        </div>
+      </div>
+      <div class="panel-body">
+
+        <div class="alert alert-error hidden" id="settings-error"></div>
+        <div class="alert alert-info hidden" id="settings-info"></div>
+
+        <p class="hint" id="settings-priority-hint">
+          每项右侧标注生效来源；留空 = 继承上一级。
+          <span class="tip-icon" tabindex="0" role="button" aria-label="优先级说明"
+            data-tip-html="每项右侧标注当前生效值的来源（界面设置 / 环境变量 / 内置默认）。<br>留空表示继承上一级：角色级字段留空即跟随全局设置。">?</span>
+        </p>
+
+        <div class="settings-grid">
+          <nav class="settings-anchor" id="settings-anchor" aria-label="设置分区导航"></nav>
+          <div class="settings-groups" id="settings-groups"></div>
+        </div>
+        <!-- 模型名自动补全候选（内容由 /api/models 拉取后填充） -->
+        <datalist id="settings-model-list"></datalist>
+      </div>
+    </section>
+  </main>
+</div><!-- /#view-settings -->
+
+<!-- ==========================================================================
+     共享参数面板（既有 id 全部保持原样）
+     由 app.js 在「对话模式 / 参数模式」之间移动挂载，全站只有这一份 DOM，
+     避免出现两套同名字段导致参数互相覆盖。
+     ========================================================================== -->
+<div class="panel-body params-body hidden" id="params-panel">
+
+  <!-- 常用参数：2 列紧凑栅格（受体 / 引擎 / 质子化 + 目标 pH / 搜索强度 / 位姿数 / 阳性对照 / 上限）
+       对话模式挂到对话框上方常驻显示；参数模式仍在参数区顶部 -->
+  <div class="param-common" id="param-common">
+
+  <!-- 一键预设 + 恢复系统默认：只改界面值，不写任何设置文件（设置页已保存的配置不受影响） -->
+  <div class="preset-bar" id="param-presets">
+    <span class="preset-bar-label">一键预设</span>
+    <button type="button" class="btn btn-ghost btn-sm preset-btn" id="preset-fast"
+      data-exhaustiveness="4" data-n-poses="1"
+      title="快速初筛：exhaustiveness=4、n_poses=1（大库先看趋势）">快速初筛</button>
+    <button type="button" class="btn btn-ghost btn-sm preset-btn" id="preset-balanced"
+      data-exhaustiveness="16" data-n-poses="1"
+      title="平衡：exhaustiveness=16、n_poses=1（默认，推荐）">平衡</button>
+    <button type="button" class="btn btn-ghost btn-sm preset-btn" id="preset-accuracy"
+      data-exhaustiveness="32" data-n-poses="3"
+      title="高精度：exhaustiveness=32、n_poses=3（少而精，耗时最长）">高精度</button>
+    <button type="button" class="btn btn-ghost btn-sm preset-reset" id="btn-restore-defaults"
+      title="把本面板所有字段清回系统默认（placeholder）；不改动「设置」页已保存的配置">恢复系统默认</button>
+    <span class="preset-note" id="preset-note" role="status" aria-live="polite"></span>
+  </div>
+
+    <!-- 注册表受体下拉 + 信息卡：参数模式保留；对话模式通过 .chat-mode 隐藏（受体由指令/系统默认决定） -->
+    <div class="receptor-manual-block" id="receptor-manual-block">
+      <label class="field">
+        <span class="field-label">受体 <span class="req">*</span>
+          <span class="tip-icon" tabindex="0" role="button" aria-label="受体说明"
+            data-tip-html="从注册表选择受体。<br>留空则由指令或系统默认决定；也可在「更多参数」里上传 <code>.pdb</code> / <code>.pdbqt</code> 覆盖它。">?</span>
+        </span>
+        <select id="receptor-select">
+          <option value="">正在加载受体列表…</option>
+        </select>
+      </label>
+
+      <div class="site-card" id="receptor-info">
+        <p class="site-empty" id="receptor-meta">尚未加载受体信息。</p>
+      </div>
+      <p class="hint" id="site-hint">中心/尺寸留空时使用该受体注册的已知结合位点。</p>
+    </div>
+
+    <label class="field">
+      <span class="field-label">对接引擎
+        <span class="tip-icon" tabindex="0" role="button" aria-label="对接引擎说明"
+          data-tip-html="<b>auto</b> = 自动挑选可用引擎；<b>vina</b> = AutoDock Vina（通常最快）；<b>autodock</b> = 经典 AutoDock4。<br>默认取「设置 → 对接引擎」，未配置时为 <code>vina</code>。">?</span>
+      </span>
+      <select id="engine-select">
+        <option value="auto">auto（自动选择可用引擎）</option>
+        <option value="vina">vina</option>
+        <option value="autodock">autodock</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span class="field-label">质子化态策略
+        <span class="tip-icon" tabindex="0" role="button" aria-label="质子化态策略说明"
+          data-tip-html="<b>ph</b>（默认推荐）= 按「目标 pH」（默认 7.4 生理 pH）分配质子化态：羧酸/胺/脒/胍/咪唑等按内置 pKa 规则表处理，逐分子记录命中的规则（规则近似，非 pKa 预测）；<br><b>neutralize</b> = 只把带净电荷的分子中和（盐/羧酸根/多质子化碱），中性分子一字不改；<br><b>keep</b> = 完全保持输入形式，仅在结果里告警。<br>策略是<b>运行级</b>的（同一批分子同口径），原始 SMILES 始终保留；理化性质与对接用同一种形式。">?</span>
+      </span>
+      <select id="protonation-select">
+        <option value="ph" selected>ph（默认推荐：按目标 pH，生理 7.4）</option>
+        <option value="neutralize">neutralize（只中和带净电荷的分子）</option>
+        <option value="keep">keep（保持输入形式，仅告警）</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span class="field-label">目标 pH（质子化）
+        <span class="tip-icon" tabindex="0" role="button" aria-label="目标 pH 说明"
+          data-tip-html="仅当「质子化态策略」选 <b>ph</b> 时生效，默认 <b>7.4</b>（生理 pH）。<br>常用：胃酸 <b>1.5</b>、溶酶体 <b>4.5</b>、生理 <b>7.4</b>、弱碱 <b>8.0</b>。<br>做法：先中和到中性形式，再按内置 pKa 规则表把羧酸/胺/脒/胍/咪唑等加到目标 pH 的状态，并<b>逐分子记录命中的规则</b>。属规则近似（非 pKa 预测）。">?</span>
+      </span>
+      <input type="number" id="protonation-ph" min="0.5" max="14" step="0.1" value="7.4"
+        list="ph-presets" inputmode="decimal">
+      <datalist id="ph-presets">
+        <option value="1.5">胃酸 1.5</option>
+        <option value="2.0">胃 2.0</option>
+        <option value="4.5">溶酶体 4.5</option>
+        <option value="5.5">弱酸 5.5</option>
+        <option value="7.4">生理 7.4</option>
+        <option value="8.0">弱碱 8.0</option>
+      </datalist>
+    </label>
+
+    <label class="field">
+      <span class="field-label">输出位姿数 n_poses
+        <span class="tip-icon" tabindex="0" role="button" aria-label="位姿数说明"
+          data-tip="每个分子保留的对接位姿数，默认 1。需要看结合模式 / 姿态对比时调大；位姿越多越慢、产物越大。">?</span>
+      </span>
+      <input type="number" id="n-poses" min="1" max="20" step="1" value="1">
+    </label>
+
+    <label class="field field-wide">
+      <span class="field-label">搜索强度 exhaustiveness：<span class="mono" id="exhaustiveness-value">16</span>
+        <span class="tip-icon" tabindex="0" role="button" aria-label="搜索强度说明"
+          data-tip-html="每个分子的采样次数：值越大越准、越慢，<b>默认 16</b>（平衡档）。<br>系统仍会按任务/库/盒做<b>自动规划</b>：<code>clamp(round(base × f_rot × f_box), 2, 32)</code>；<br>这里<b>显式给出数值就不再自动改写</b>（source=user），留空/未改动时才走自动规划。">?</span>
+      </span>
+      <input type="range" id="exhaustiveness" min="1" max="32" step="1" value="16">
+      <label class="check-row check-inline">
+        <input type="checkbox" id="exhaustiveness-auto" checked>
+        <span>自动（系统按库柔性/盒体积规划；取消勾选才使用上面的数值）</span>
+      </label>
+    </label>
+
+    <label class="field field-wide">
+      <span class="field-label">阳性对照 SMILES（可选）
+        <span class="tip-icon" tabindex="0" role="button" aria-label="阳性对照说明"
+          data-tip-html="已知能结合该受体的分子（如共晶配体）。填了它系统会<b>一并对接</b>，从而能判断哪些候选<b>比对照更强</b>、结合模式是否相似 —— 这是结果可靠性的关键基线。<br>留空 = 跳过对照分析（报告会写明）。">?</span>
+      </span>
+      <input type="text" id="positive-control" spellcheck="false"
+        placeholder="例如 NC(=N)c1ccccc1（苯甲脒，凝血酶对照）">
+      <div class="btn-row">
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-fill-positive">填入示例对照（苯甲脒）</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-positive">清空（不做对照分析）</button>
+      </div>
+      <p class="hint" id="positive-hint">留空则不做阳性对照分析。</p>
+    </label>
+
+    <label class="field">
+      <span class="field-label">最大分子数（0 = 不限）
+        <span class="tip-icon" tabindex="0" role="button" aria-label="最大分子数说明"
+          data-tip="本次最多对接多少个分子，0 = 不限。新手建议先填 200 试跑，确认流程与耗时后再放开全量。">?</span>
+      </span>
+      <input type="number" id="max-ligands" min="0" step="1" value="0">
+    </label>
+  </div>
+
+  <!-- 其余设置（配体来源 / 更多参数 / 上传受体）：对话模式收进「其他设置」折叠 -->
+  <div id="params-rest">
+
+  <!-- 配体来源（四选一） -->
+  <details class="field-group" open>
+    <summary>配体来源
+      <span class="tip-icon" tabindex="0" role="button" aria-label="配体来源说明"
+        data-tip-html="四种来源任选其一：直接粘贴 SMILES、上传小分子库文件、服务端路径 / URL、内置示例库。<br>留空则由指令或系统默认决定。">?</span>
+    </summary>
+
+    <div class="segmented" id="ligand-source" role="tablist" aria-label="配体来源">
+      <button type="button" class="seg-btn active" data-source="text" role="tab">SMILES 文本</button>
+      <button type="button" class="seg-btn" data-source="upload" role="tab">上传文件</button>
+      <button type="button" class="seg-btn" data-source="file" role="tab">服务端路径 / URL</button>
+      <button type="button" class="seg-btn" data-source="library" role="tab">使用示例库</button>
+    </div>
+
+    <div class="source-pane" id="pane-text">
+      <label class="field">
+        <span class="field-label">SMILES 列表
+          <span class="tip-icon" tabindex="0" role="button" aria-label="SMILES 格式说明"
+            data-tip-html="每行一个分子；名称可用 <code>名称:SMILES</code> 或 <code>名称,SMILES</code> 指定。<br>留空则由指令或系统默认决定。">?</span>
+        </span>
+        <textarea id="ligands-text" rows="5" spellcheck="false"
+          placeholder="每行一个分子，支持「名称:SMILES」或「名称,SMILES」&#10;阿司匹林:CC(=O)Oc1ccccc1C(=O)O&#10;benzamidine,NC(=N)c1ccccc1"></textarea>
+      </label>
+    </div>
+
+    <div class="source-pane hidden" id="pane-upload">
+      <p class="field-label">上传小分子库文件
+        <span class="tip-icon" tabindex="0" role="button" aria-label="上传分子库说明"
+          data-tip-html="上传成功后解析为分子库，提交时以服务端返回的 <code>path</code> 作为 <code>molecule_file</code> 下发。">?</span>
+      </p>
+      <input type="file" class="upload-input" id="ligand-file-input"
+        accept=".sdf,.sd,.smi,.smiles,.txt,.csv,.mol2,.mol" aria-label="选择小分子库文件">
+      <div class="upload-zone" id="ligand-upload-zone" role="button" tabindex="0"
+        aria-label="拖拽或点击上传小分子库文件">
+        <span class="upload-zone-title">拖拽小分子库文件到此处，或点击选择</span>
+        <span class="upload-zone-sub mono">支持 .sdf / .sd / .smi / .smiles / .txt / .csv / .mol2 / .mol · 上限 200MB</span>
+      </div>
+      <div class="upload-status" id="ligand-upload-status"></div>
+    </div>
+
+    <div class="source-pane hidden" id="pane-file">
+      <label class="field">
+        <span class="field-label">服务端文件路径或 URL
+          <span class="tip-icon" tabindex="0" role="button" aria-label="文件路径说明"
+            data-tip="支持服务端可读的 CSV / SDF / SMI 路径，也支持可下载的 URL。留空则由指令或系统默认决定。">?</span>
+        </span>
+        <input type="text" id="molecule-file" spellcheck="false"
+          placeholder="例如：assets/libraries/mol_library.csv 或 assets/ligands_user.sdf">
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="allow-example-fallback">
+        <span>文件为空或读取失败时，回退使用示例分子库</span>
+      </label>
+    </div>
+
+    <div class="source-pane hidden" id="pane-library">
+      <label class="field">
+        <span class="field-label">选择示例分子库</span>
+        <select id="library-select">
+          <option value="">正在加载示例分子库…</option>
+        </select>
+      </label>
+      <div class="preview" id="library-preview">
+        <p class="preview-empty">正在加载示例分子库…</p>
+      </div>
+    </div>
+  </details>
+
+  <!-- 更多参数：次要项收进二级折叠，不展开也能从摘要行看到关键值 -->
+  <details class="field-group more-group" id="more-params">
+    <summary>更多参数（结合位点盒 / 口袋引擎 / 位姿保存 / 上传受体）<span class="summary-vals" id="more-params-summary">· 口袋 auto · 自动定盒 · 保存位姿</span></summary>
+    <div class="more-body">
+
+      <!-- 结合位点盒：参数模式保留；对话模式通过 .chat-mode 隐藏（盒子由指令/系统默认决定） -->
+      <div class="receptor-manual-block field-wide">
+        <p class="field-label">结合位点盒（中心 / 尺寸，Å）
+          <span class="tip-icon" tabindex="0" role="button" aria-label="结合位点盒说明"
+            data-tip-html="手工指定对接盒的中心与边长（Å）。<br>留空 = 使用受体注册的已知位点，未注册时由口袋预测引擎自动定盒。<br>实验位点（共晶配体 / 注册表）优先，工具预测作为独立验证。">?</span>
+        </p>
+        <div class="field-row-3">
+          <label class="field">
+            <span class="field-label">中心 X</span>
+            <input type="number" step="any" id="center-x" placeholder="自动">
+          </label>
+          <label class="field">
+            <span class="field-label">中心 Y</span>
+            <input type="number" step="any" id="center-y" placeholder="自动">
+          </label>
+          <label class="field">
+            <span class="field-label">中心 Z</span>
+            <input type="number" step="any" id="center-z" placeholder="自动">
+          </label>
+        </div>
+
+        <div class="field-row-3">
+          <label class="field">
+            <span class="field-label">尺寸 X</span>
+            <input type="number" step="any" min="1" id="size-x" placeholder="自动">
+          </label>
+          <label class="field">
+            <span class="field-label">尺寸 Y</span>
+            <input type="number" step="any" min="1" id="size-y" placeholder="自动">
+          </label>
+          <label class="field">
+            <span class="field-label">尺寸 Z</span>
+            <input type="number" step="any" min="1" id="size-z" placeholder="自动">
+          </label>
+        </div>
+
+        <div class="btn-row">
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-fill-site">填入注册位点</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-site">清空（用默认）</button>
+        </div>
+      </div>
+
+      <label class="field">
+        <span class="field-label">结合位点来源（口袋引擎）
+          <span class="tip-icon" tabindex="0" role="button" aria-label="口袋引擎说明"
+            data-tip-html="未显式填写位点盒时，用哪种方式确定对接盒：<br><b>auto</b> 优先 P2Rank、不可用则内置几何法；<b>geometric</b> 只用内置几何法；<b>known_site</b> 只用受体已知位点。<br>默认值与盒子尺寸可在「设置」页调整。">?</span>
+        </span>
+        <select id="pocket-engine-select">
+          <option value="">auto（默认：优先 P2Rank，不可用时用内置几何法）</option>
+          <option value="p2rank">p2rank（需要本地部署）</option>
+          <option value="geometric">geometric（内置几何法）</option>
+          <option value="known_site">known_site（只用受体已知位点）</option>
+        </select>
+      </label>
+
+      <p class="hint field-wide" id="pocket-engine-hint">未显式指定位点盒时，由该引擎真实预测口袋来确定盒子。</p>
+
+      <label class="check-row field-wide">
+        <input type="checkbox" id="save-poses" checked>
+        <span>保存对接位姿文件（可在分子详情中下载）
+          <span class="tip-icon" tabindex="0" role="button" aria-label="保存位姿说明"
+            data-tip="保存每个分子的位姿文件（.pdbqt），可在「分子详情」下载。关闭可省磁盘与打包时间。">?</span>
+        </span>
+      </label>
+
+      <!-- 上传受体文件（.pdb / .ent / .cif / .pdbqt）：两种模式都保留；提交时 receptor_file 优先于 receptor -->
+      <div class="upload-block field-wide" id="receptor-upload-block">
+        <p class="field-label">上传受体文件（可选）
+          <span class="tip-icon" tabindex="0" role="button" aria-label="上传受体说明"
+            data-tip-html="上传的受体文件会现场准备为 PDBQT，并<b>优先于</b>注册表受体（请求字段 <code>receptor_file</code> &gt; <code>receptor</code>）。<br>支持 .pdb / .ent / .pdb1 / .cif / .mmcif / .pdbqt，上限 200MB。">?</span>
+        </p>
+        <input type="file" class="upload-input" id="receptor-file-input"
+          accept=".pdb,.ent,.pdb1,.cif,.mmcif,.pdbqt" aria-label="选择受体文件">
+        <div class="upload-zone" id="receptor-upload-zone" role="button" tabindex="0"
+          aria-label="拖拽或点击上传受体文件（.pdb / .ent / .pdbqt）">
+          <span class="upload-zone-title">拖拽受体文件到此处，或点击选择</span>
+          <span class="upload-zone-sub mono">支持 .pdb / .ent / .cif / .pdbqt · 上限 200MB</span>
+        </div>
+        <div class="upload-status" id="receptor-upload-status"></div>
+      </div>
+    </div>
+  </details>
+  </div><!-- /#params-rest -->
+</div>
+
+</body>
+</html>

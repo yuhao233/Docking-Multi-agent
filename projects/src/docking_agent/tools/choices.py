@@ -1,0 +1,187 @@
+"""解析「不确定」时的结构化选择通道与失败回执（供 tools/online.py 调用）。
+
+为什么单独一个模块：受体/分子的自动解析会出现三种结果，除了「高置信直接跑」之外，
+另外两种都要把**证据**交回用户：
+  1. ``ambiguous`` / ``low_confidence``：检索到多个同样合理的候选（或单一候选置信度不足）
+     → 生成 ``choices``（前端可点选的结构化选项），让用户选，绝不替用户决定；
+  2. ``not_found``：一个都没查到 → 回执里**逐条列出已尝试的检索**。
+
+同时提供两条「写回运行上下文」的能力：
+  * ``mark_receptor_unresolved``：把解析失败写进 ``task_spec.receptor.source``，
+    让 ``run_docking`` 的护栏在调用任何对接引擎之前拦下（产品底线：不明确就不算）；
+  * ``publish_choices``：把可选项写进 ``run.data``，由 SSE ``choices`` 事件下发前端。
+
+choices 每项结构：``{id, kind, label, value, prompt, detail}``（kind ∈ receptor|molecule），
+``label`` 给人看、``value`` 是机器可用值（accession/CID/SMILES）、``prompt`` 是点选后原样发出的追问。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any, Dict, List
+
+from docking_agent.core.resolve import candidate_brief, summarize_attempts
+from docking_agent.runtime.context import active_run
+
+logger = logging.getLogger(__name__)
+
+
+def mark_receptor_unresolved(source: str, status: str, resolution: Dict[str, Any],
+                             runtime: Any = None) -> None:
+    """把「点名受体在线自动解析失败/歧义」写回本次运行规约。
+
+    为什么必须写回而不是只靠提示词：``run_docking`` 的护栏读的就是
+    ``task_spec.receptor.source == "unresolved"``。主管 Agent 若没照提示停下来提问，
+    护栏仍会在调用任何对接引擎之前拦下 —— 产品底线（不明确计算对象时绝不计算）由代码保证，
+    而不是靠模型自觉。
+    """
+    run = active_run(runtime)
+    if run is None:
+        return
+    spec = dict(getattr(run, "data", {}).get("task_spec") or {})
+    receptor = dict(spec.get("receptor") or {})
+    if str(receptor.get("source") or "") not in ("named", "unresolved"):
+        return
+    receptor.update({
+        "name": receptor.get("name") or source,
+        "source": "unresolved",
+        "resolution": {"status": status, "requested": source,
+                       "attempts": resolution.get("attempts") or [],
+                       "candidates": [candidate_brief(c)
+                                      for c in (resolution.get("candidates") or [])]},
+    })
+    spec["receptor"] = receptor
+    run.data["task_spec"] = spec
+    try:
+        run.log(f"受体「{source}」在线自动解析未成功（{status}）：已阻断后续对接，等待用户确认")
+    except Exception:  # noqa: BLE001
+        logger.debug("写运行日志失败", exc_info=True)
+
+
+def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
+                    runtime: Any = None) -> None:
+    """把「候选选择项」写进本次运行数据，供 SSE / 运行详情下发给前端点选。
+
+    结构化选择通道（而不是只把候选写进正文段落）：前端在聊天气泡下方渲染成按钮，
+    点选后以**同一 conversation_id** 追问一句等价的 `prompt`，从而延续同一段对话继续跑。
+    """
+    run = active_run(runtime)
+    if run is None:
+        return
+    if not choices:
+        run.data.pop("choices", None)
+        run.data.pop("choices_note", None)
+        return
+    run.data["choices"] = [{**(c or {}), "kind": (c or {}).get("kind") or kind} for c in choices]
+    if note:
+        run.data["choices_note"] = note
+    try:
+        run.log(f"已生成 {len(choices)} 个可选项（kind={kind}）：等待用户在界面上选择")
+    except Exception:  # noqa: BLE001
+        logger.debug("写运行日志失败", exc_info=True)
+
+
+def clear_choices(kind: str = "",
+                  runtime: Any = None) -> None:
+    """解析成功后清掉**同类型**的陈旧候选，避免误显示上一轮的 choices。
+
+    只清 `kind` 指定的那一类（receptor / molecule）：同一次运行里「分子是混合物要选、
+    受体已高置信解析」是完全正常的组合，受体的成功不能把分子的可选项一起抹掉。
+    """
+    run = active_run(runtime)
+    if run is None:
+        return
+    current = run.data.get("choices") or []
+    if not current:
+        return
+    kept = [c for c in current if not kind or c.get("kind") != kind]
+    if kept:
+        run.data["choices"] = kept
+        return
+    run.data.pop("choices", None)
+    run.data.pop("choices_note", None)
+
+
+def resolution_failure_json(src: str, resolution: Dict[str, Any]) -> str:
+    """解析失败/歧义时的可操作返回：逐条列出已尝试检索 + 找到的候选。"""
+    attempts = summarize_attempts(resolution.get("attempts") or [])
+    briefs = [candidate_brief(c) for c in (resolution.get("candidates") or [])]
+    if resolution.get("status") == "ambiguous":
+        lines = []
+        for c in briefs[:6]:
+            pdb = "/".join(c.get("pdb_ids") or [])
+            source = f"RCSB {pdb}" if pdb else "AlphaFold 预测"
+            lines.append(f"{c.get('accession')} | {c.get('organism')} | {c.get('protein')} | "
+                         f"结构来源：{source} | 打分 {c.get('score')} | 基因 "
+                         f"{'/'.join(c.get('gene_names') or []) or '—'}")
+        return json.dumps({
+            "status": "ambiguous", "requested": src,
+            "attempts": attempts, "candidates": briefs,
+            "message": ("检索到多个同样合理的候选，物种/上下文不足以消歧 —— "
+                        "**不要自行挑选、不要对接**，请把下列候选列给用户选择：\n"
+                        + "\n".join(lines) + "\n用户选定后可再用 accession 直接获取结构。"),
+        }, ensure_ascii=False)
+    return json.dumps({
+        "status": "error", "reason": "not_found", "requested": src,
+        "attempts": attempts, "candidates": briefs,
+        "message": ("在线数据库未找到与该名称匹配的蛋白。已尝试的检索："
+                    + "；".join(attempts)
+                    + "。请让用户三选一：① 提供 PDB ID（如 1DWC）；② 提供 UniProt accession"
+                      "（如 Q9SJQ6）；③ 上传受体文件（.pdb/.ent/.cif/.pdbqt），或明确同意改用系统默认受体"
+                      " 凝血酶（thrombin, 1DWC）。"),
+    }, ensure_ascii=False)
+
+
+def mixture_choices(comp: Dict[str, Any], query: str) -> List[Dict[str, Any]]:
+    """为多组分/配位聚合物生成「代表结构怎么取」的可选项（片段重组，不臆造新化学）。
+
+    选项值都是 PubChem 原始 SMILES 里**真实存在**的片段组合：
+      ① 原始多组分（Zn/Mn-EBDC 聚合物，如实保留全部片段）；
+      ② 每种金属各一条 M-EBDC 单体（金属 + 最大有机片段）；
+      ③ 最大有机片段本身（无金属代表结构）。
+    """
+    name = str(comp.get("name") or query)
+    # 追问里的名称优先用用户原始写法（中文名不会被 RDKit 误当成 SMILES 而丢掉）
+    display = str(query or name)
+    cid = comp.get("cid")
+    raw = str(comp.get("smiles") or "")
+    main = str(comp.get("representative_smiles") or "")
+    components = comp.get("components") or []
+    label_suffix = f"（CID {cid}）" if cid else ""
+    choices: List[Dict[str, Any]] = []
+    if raw:
+        choices.append({
+            "id": f"molecule:{cid or query}:raw", "kind": "molecule",
+            "label": f"{name}{label_suffix} · PubChem 原始多组分结构（{comp.get('formula') or '多片段'}）",
+            "value": raw,
+            "prompt": f"{display} {raw} （按 PubChem 原始多组分结构继续对接，金属与配体片段原样保留）",
+            "detail": {"cid": cid, "mode": "raw-mixture", "formula": comp.get("formula"),
+                       "note": "对接引擎通常不支持金属配位，实际分数需谨慎解读"},
+        })
+    for item in components:
+        smi = str(item.get("smiles") or "")
+        role = str(item.get("role") or "")
+        if not smi or smi == main or "反离子" not in role:
+            continue
+        metal_hits = re.findall(r"[A-Z][a-z]?", smi)
+        metal = metal_hits[0] if metal_hits else "M"
+        monomer = f"{main}.{smi}"
+        choices.append({
+            "id": f"molecule:{cid or query}:{metal}", "kind": "molecule",
+            "label": f"{name} · {metal}-EBDC 单体（金属 {smi}，可能被对接引擎剥离）",
+            "value": monomer,
+            "prompt": f"{display}-{metal} {monomer} （按 {metal}-EBDC 单体继续对接）",
+            "detail": {"cid": cid, "mode": "metal-monomer", "metal": smi,
+                       "note": "Vina/AD4 对金属配位支持有限，分数不可直接与外面对接结果比较"},
+        })
+    if main:
+        choices.append({
+            "id": f"molecule:{cid or query}:organic", "kind": "molecule",
+            "label": f"{name} · 最大有机片段 EBDC（无金属代表结构）",
+            "value": main,
+            "prompt": f"{display}-EBDC {main} （按最大有机片段/无金属代表结构继续对接）",
+            "detail": {"cid": cid, "mode": "organic-fragment",
+                       "note": "只对有机配体片段建模，忽略 Zn/Mn 配位"},
+        })
+    return choices

@@ -1,0 +1,27 @@
+# 本地依赖（Python 3.12）- 由 scripts/setup.sh 使用
+# Agent 编排
+langchain>=1.0.3
+langchain-openai>=1.0.1
+langgraph>=1.0.2
+langgraph-checkpoint>=3.0.0
+# 本地服务
+fastapi>=0.121,<1
+uvicorn>=0.38,<1
+pydantic>=2.12,<3
+python-dotenv>=1.2,<2
+rich>=14,<15
+requests>=2.31
+# 真实计算引擎
+rdkit>=2026.3.6
+vina>=1.2.7
+meeko>=0.8.0
+scipy>=1.14
+gemmi>=0.7.5
+matplotlib>=3.11.1
+numpy<3
+python-multipart>=0.0.9
+# Excel 分子库（.xlsx）：内容嗅探命中后真读表，而不是让用户先转 CSV
+openpyxl>=3.1
+# 可选（开发期门禁，不是运行时依赖）：真实浏览器验证 scripts/browser_check.py
+#   .venv/bin/pip install playwright && .venv/bin/python -m playwright install chromium
+#   PLAYWRIGHT_BROWSERS_PATH=var/cache/ms-playwright .venv/bin/python scripts/browser_check.py http://127.0.0.1:5106

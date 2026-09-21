@@ -1,0 +1,17 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "coordinator": "./docking_graphs/graphs.py:coordinator",
+    "pipeline": "./docking_graphs/graphs.py:pipeline",
+    "intake": "./docking_graphs/graphs.py:intake",
+    "property": "./docking_graphs/graphs.py:property_agent",
+    "pocket": "./docking_graphs/graphs.py:pocket_agent",
+    "docking": "./docking_graphs/graphs.py:docking_agent",
+    "binding": "./docking_graphs/graphs.py:binding_agent"
+  },
+  "env": ".env",
+  "python_version": "3.12",
+  "image_distro": "debian",
+  "pip_config_file": "pip.conf"
+}

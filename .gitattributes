@@ -1,0 +1,14 @@
+# 统一行尾（仓库内一律 LF），并标记二进制类型，避免 diff/合并误伤
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.docx binary
+*.pdbqt binary
+*.pdb binary
+*.sdf binary
+*.xlsx binary

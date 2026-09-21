@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docking-agent"
+version = "0.6.0"
+description = "蛋白质受体已知位点 × 小分子库 的多 Agent 分子对接筛选系统（本地部署：协调 Agent + 属性评估 / 分子对接 / 结合模式检测 3 个子 Agent，含交互式网页）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # --- Agent 编排 ---
+    "langchain>=1.0.3",
+    "langchain-openai>=1.0.1",
+    "langgraph>=1.0.2",
+    "langgraph-checkpoint>=3.0.0",
+    # --- 本地服务 ---
+    "fastapi>=0.121,<1",
+    "uvicorn>=0.38,<1",
+    "pydantic>=2.12,<3",
+    "python-dotenv>=1.2,<2",
+    "python-multipart>=0.0.9",   # 上传接口（multipart/form-data）
+    "rich>=14,<15",
+    "requests>=2.31",
+    # --- 真实计算引擎（RDKit 物化性质 / Morgan 指纹；Vina 对接；meeko 受体与配体准备）---
+    "rdkit>=2026.3.6",
+    "vina>=1.2.7",
+    "meeko>=0.8.0",
+    "scipy>=1.14",
+    "gemmi>=0.7.5",
+    "matplotlib>=3.11.1",
+    "numpy<3",
+    # Excel 分子库（.xlsx）
+    "openpyxl>=3.1",
+]
+
+[project.scripts]
+docking-agent = "docking_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/docking_agent"]
+
+[tool.uv]
+# 使用阿里云镜像作为默认源，替代 pypi.org
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+# pypi 仅供显式引用（镜像同步新版有延迟时使用）
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple/"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio>=0.23,<1",
+    # 前端视觉验证（可选）：真浏览器截图 / 视觉回归 / 布局体检，见 scripts/ui_shot.py
+    # 首次需下载浏览器：PLAYWRIGHT_BROWSERS_PATH=$PWD/var/cache/ms-playwright \
+    #   .venv/bin/python -m playwright install chromium
+    "playwright>=1.60",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

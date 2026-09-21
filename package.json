@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "jsdom": "^30.0.1",
+    "sharp": "^0.35.4"
+  }
+}

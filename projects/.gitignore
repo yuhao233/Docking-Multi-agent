@@ -1,0 +1,82 @@
+node_modules
+dist
+.DS_Store
+*.swp
+.git/*
+__pycache__/
+*.pyc
+.venv
+*.o
+*.a
+/vendor
+*.egg-info/
+/.env
+.env
+.cozeproj/reduction
+
+# 视频文件
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+*.webm
+*.m4v
+*.mpeg
+*.mpg
+*.3gp
+*.f4v
+*.rmvb
+*.vob
+
+# 归档文件
+*.iso
+*.dmg
+*.rar
+*.zip
+*.gz
+
+# 文档类也默认加入
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.xls
+*.ppt
+*.pptx
+*.xlsx
+*.csv
+
+# Preview files
+.preview
+
+# CodeGraph index
+.codegraph
+
+# 本地部署新增
+var/
+.uv-cache/
+.pytest_cache/
+docking-agent-local.tar.gz
+
+# 示例资产需要纳入版本管理（上面的 *.csv 规则会误伤）
+!assets/mol_library.csv
+!assets/positive_control.csv
+
+# 设置页面保存的本地覆盖（可能包含 API Key，绝不入库）
+config/local_settings.json
+
+# 外部工具（如 P2Rank，体积大且可自行下载），不纳入版本管理
+assets/tools/
+
+# ---- 本轮补充（OOTB P0）：缓存与用户上传体积大 / 含用户数据，必须排除 ----
+assets/cache/
+assets/uploads/
+assets/receptor/
+
+# ---- 交付文档与示例库需要入库（上面的 *.pdf / *.docx / *.csv 规则会误伤）----
+!docs/*.pdf
+!docs/*.docx
+!assets/libraries/*.csv
+!assets/libraries/*.sdf

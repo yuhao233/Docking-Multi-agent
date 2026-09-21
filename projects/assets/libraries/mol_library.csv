@@ -1,0 +1,9 @@
+name,smiles
+benzamidine,NC(=N)c1ccccc1
+nafamostat,NC(=N)c1ccc2cc(OC(=O)c3ccc(NC(=N)N)cc3)ccc2c1
+melagatran,O=C(O)C1CCCN1C(=O)C(Cc1ccc(CN=C(N)N)cc1)NC(=O)C1CC1
+argatroban,CC1CCCN1C(=O)C(CCCN=C(N)N)NS(=O)(=O)c1ccc2c(c1)CCCN2C(=O)O
+aspirin,CC(=O)Oc1ccccc1C(=O)O
+caffeine,Cn1cnc2c1c(=O)n(C)c(=O)n2C
+ibuprofen,CC(C)Cc1ccc(C(C)C(=O)O)cc1
+acetaminophen,CC(=O)Nc1ccc(O)cc1

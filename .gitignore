@@ -1,0 +1,55 @@
+# ============================================================================
+# 仓库根 .gitignore（Docking Agent 多 Agent 协作系统）
+#
+# 原则：**只入库源码与可复现资源**；运行产物、缓存、用户上传、外部工具、
+# 虚拟环境、密钥一律不入库。详见 README 记录 58 与 scripts/pack.sh / doctor.sh。
+# ============================================================================
+
+# ---- 虚拟环境 / 依赖缓存 ----
+.venv/
+venv/
+.uv-cache/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+
+# ---- 运行产物与日志（projects/var 2.8 GB、根 var 15 MB）----
+var/
+*.log
+
+# ---- 缓存与用户数据（绝不能入库）----
+projects/assets/cache/
+projects/assets/uploads/
+projects/assets/receptor/
+projects/assets/tools/
+projects/config/local_settings.json
+
+# ---- 密钥与本地配置 ----
+.env
+.env.local
+*.pem
+*.key
+
+# ---- 打包产物 / 快照归档 ----
+*.tar.gz
+*.tgz
+*.zip
+docking-agent-local.tar.gz
+
+# ---- LangGraph 平台侧的机器本地状态 ----
+langgraph-deploy/.venv/
+langgraph-deploy/.langgraph_api/
+langgraph-deploy/var/
+langgraph-deploy/.env
+.langgraph_api/
+
+# ---- 编辑器 / 系统 ----
+.DS_Store
+*.swp
+.vscode/
+.idea/

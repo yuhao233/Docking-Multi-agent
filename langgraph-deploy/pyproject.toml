@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docking-agent-langgraph"
+version = "0.1.0"
+description = "把 docking-agent（多 Agent 分子对接筛选系统）加载进 LangGraph Studio / LangGraph CLI 的部署层：图入口 + 运行上下文适配 + 自检脚本"
+requires-python = ">=3.12"
+# 依赖与 ../projects/pyproject.toml **保持一致**（单一事实来源是项目本身）。
+# scripts/check.sh 会逐条比对两份清单，任何一方新增依赖都会在自检里报出来，
+# 避免"部署环境缺一个包，跑到某个工具才炸"。
+dependencies = [
+    "langchain>=1.0.3",
+    "langchain-openai>=1.0.1",
+    "langgraph>=1.0.2",
+    "langgraph-checkpoint>=3.0.0",
+    "fastapi>=0.121,<1",
+    "uvicorn>=0.38,<1",
+    "pydantic>=2.12,<3",
+    "python-dotenv>=1.2,<2",
+    "python-multipart>=0.0.9",
+    "rich>=14,<15",
+    "requests>=2.31",
+    "rdkit>=2026.3.6",
+    "vina>=1.2.7",
+    "meeko>=0.8.0",
+    "scipy>=1.14",
+    "gemmi>=0.7.5",
+    "matplotlib>=3.11.1",
+    "numpy<3",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+# LangGraph CLI + Studio 连接必需（dev 模式用的内存运行时）
+studio = ["langgraph-cli[inmem]>=0.4"]
+# 离线测试（不联网 / 不调 LLM / 不做真实对接）：uv pip install -e ".[test]"
+test = ["pytest>=8", "pytest-asyncio>=0.23,<2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["docking_graphs"]
+
+[tool.uv]
+# 与项目一致：默认走阿里云镜像（构建 Docker 镜像时由 pip.conf 提供同一镜像）
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[tool.pytest.ini_options]
+# 离线测试全部在 deploy/tests 下；pythonpath 兜底保证未安装 editable 时也能 import docking_graphs
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "offline: 不联网、不调 LLM、不做真实对接的确定性测试",
+    "blockbuster: 事件循环阻塞调用回归（langgraph dev 默认开启 blockbuster）",
+    "live: 真实服务集成测试（自起 langgraph dev / 真实对接 / 真实 LLM；需 LG_LIVE=1）",
+]
+
