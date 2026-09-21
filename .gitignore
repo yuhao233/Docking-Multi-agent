@@ -32,6 +32,8 @@ projects/config/local_settings.json
 # ---- 密钥与本地配置 ----
 .env
 .env.local
+.env.bak*
+*.env.bak.*
 *.pem
 *.key
 
