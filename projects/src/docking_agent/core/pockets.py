@@ -416,6 +416,68 @@ def cocrystal_ligand(pdb_path: Optional[str], *, min_atoms: int = 6) -> Optional
 # --------------------------------------------------------------------------- #
 # 引擎一：P2Rank（成熟工具）
 # --------------------------------------------------------------------------- #
+def cocrystal_ligand_smiles(pdb_path: Optional[str],
+                            ligand: Optional[Dict[str, Any]] = None) -> str:
+    """解出共晶配体的 SMILES（用于「是否作为阳性对照」的询问）。
+
+    做法：按 `chain:resid:resname` 取出该配体的 HETATM/ATOM 记录与它自己的 CONECT 记录，
+    拼成最小 PDB 块交给 RDKit（proximity bonding + 标准化）；解析不出来返回空串 ——
+    宁可**不询问**（并在结果里说明原因），也不给用户一个错误的对照结构。
+    """
+    if not pdb_path or not ligand:
+        return ""
+    key = str((ligand or {}).get("key") or "")
+    if not key:
+        return ""
+    chain, resid, resname = (key.split(":") + ["", "", ""])[:3]
+    try:
+        from rdkit import Chem
+    except Exception as exc:  # noqa: BLE001 - RDKit 不可用时如实返回空
+        logger.warning("RDKit 不可用，无法解析共晶配体 SMILES：%s", exc)
+        return ""
+    lines: List[str] = []
+    serial_to_index: Dict[str, int] = {}
+    conect: List[str] = []
+    try:
+        with open(pdb_path, "r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                record = raw[:6].strip().upper()
+                if record in ("ATOM", "HETATM") and len(raw) >= 26:
+                    same = (raw[21:22].strip() == chain and raw[22:26].strip() == resid
+                            and raw[17:20].strip() == resname)
+                    if same:
+                        serial_to_index[raw[6:11].strip()] = len(lines)
+                        lines.append(raw.rstrip("\n"))
+                elif record == "CONECT":
+                    conect.append(raw.rstrip("\n"))
+    except OSError as exc:
+        logger.warning("读取受体结构失败（无法解析共晶配体）：%s", exc)
+        return ""
+    if not lines:
+        return ""
+    # 只保留与该配体原子相关的连接记录，并重新编号，避免把整篇 CONECT 带进小块
+    keep = set(serial_to_index)
+    for raw in conect:
+        parts = raw.split()
+        if len(parts) >= 2 and parts[1] in keep:
+            pairs = [p for p in parts[2:] if p in keep]
+            if pairs:
+                lines.append("CONECT" + "".join(f"{int(p):5d}" for p in [parts[1], *pairs]))
+    block = "\n".join(lines) + "\nEND\n"
+    try:
+        mol = Chem.MolFromPDBBlock(block, sanitize=True, removeHs=False)
+    except Exception as exc:  # noqa: BLE001 - 解析失败属预期可能（缺键级/缺氢）
+        logger.info("共晶配体 PDB 块解析失败：%s", exc)
+        return ""
+    if mol is None:
+        return ""
+    try:
+        return Chem.MolToSmiles(Chem.RemoveHs(mol))
+    except Exception as exc:  # noqa: BLE001
+        logger.info("共晶配体 SMILES 生成失败：%s", exc)
+        return ""
+
+
 def p2rank_home() -> Optional[Path]:
     """定位本地部署的 P2Rank（P2RANK_HOME → assets/tools/p2rank* → PATH）。"""
     env_home = env("P2RANK_HOME")

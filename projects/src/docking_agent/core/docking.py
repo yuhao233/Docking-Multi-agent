@@ -1217,6 +1217,8 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                           "dropped_waters": spec.get("dropped_waters") or 0,
                           "unsupported_hetatm": spec.get("unsupported_hetatm") or [],
                           "cocrystal_ligand": spec.get("cocrystal_ligand") or {},
+                          # 受体结构路径：供上层解析共晶配体 SMILES（是否用作阳性对照的询问）
+                          "receptor_pdb": str(spec.get("pdb") or ""),
                           "receptor_protonation": spec.get("receptor_protonation") or {},
                           "dropped_bad_residues": spec.get("dropped_bad_residues") or [],
                           "results": per})

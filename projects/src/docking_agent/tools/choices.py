@@ -185,3 +185,54 @@ def mixture_choices(comp: Dict[str, Any], query: str) -> List[Dict[str, Any]]:
                        "note": "只对有机配体片段建模，忽略 Zn/Mn 配位"},
         })
     return choices
+
+def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
+                                     specified_control: str = "",
+                                     runtime: Any = None) -> List[Dict[str, Any]]:
+    """受体自带共晶配体、且用户没给阳性对照时，询问是否把它当作对照（**不阻塞**筛选）。
+
+    阳性对照只是方法学基线，缺了不影响候选分子的对接结果，因此这里只"询问"，
+    让筛选照常出结果；用户的点选会以同一会话发起新一轮并带上对照。
+    解不出 SMILES 时不询问（并在返回值里说明原因），绝不拿不确定的结构当对照。
+    """
+    from docking_agent.core.pockets import cocrystal_ligand_smiles  # noqa: PLC0415
+
+    if str(specified_control or "").strip():
+        return []                                   # 用户/上游已指定对照：不打扰
+    for block in blocks or []:
+        ligand = (block or {}).get("cocrystal_ligand") or {}
+        pdb = str((block or {}).get("receptor_pdb") or "")
+        if not ligand or not ligand.get("resname"):
+            continue
+        smiles = cocrystal_ligand_smiles(pdb, ligand)
+        label = f"{ligand.get('resname')}（{ligand.get('key')}，{ligand.get('n_atoms')} 原子）"
+        if not smiles:
+            try:
+                run = active_run(runtime)
+                if run is not None:
+                    run.log(f"检测到共晶配体 {label}，但无法从结构解出 SMILES，"
+                            "因此未询问是否用作阳性对照")
+            except Exception:  # noqa: BLE001 - 记录失败不影响对接
+                logger.debug("写共晶配体说明失败", exc_info=True)
+            return []
+        receptor = str((block or {}).get("receptor") or "")
+        choices = [
+            {"id": f"positive_control:{ligand.get('key')}", "kind": "positive_control",
+             "label": f"把共晶配体 {label} 作为阳性对照，做结合模式对比",
+             "value": smiles,
+             "detail": {"resname": ligand.get("resname"), "key": ligand.get("key"),
+                        "n_atoms": ligand.get("n_atoms"), "smiles": smiles,
+                        "note": "共晶配体来自受体结构本身，是天然的方法学基线"},
+             "prompt": (f"把受体 {receptor or ''} 自带的共晶配体（{label}，SMILES {smiles}）"
+                        f"作为阳性对照，重新完成对接与结合模式对比分析")},
+            {"id": "positive_control:none", "kind": "positive_control",
+             "label": "不使用阳性对照，只做候选分子筛选",
+             "value": "",
+             "detail": {"note": "报告会说明本次未做对照分析"},
+             "prompt": "不使用阳性对照，直接完成候选分子筛选与报告（报告里注明未做对照分析）"},
+        ]
+        note = (f"受体结构自带共晶配体 {label}：是否把它作为阳性对照（结合模式基线）？"
+                "选择后系统会以同一会话继续；不选也不影响本次候选分子的对接结果。")
+        publish_choices("positive_control", choices, note=note, runtime=runtime)
+        return choices
+    return []

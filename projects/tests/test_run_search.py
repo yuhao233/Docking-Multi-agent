@@ -176,3 +176,94 @@ def test_app_startup_reconciles_interrupted_runs(populated: Path) -> None:
     with TestClient(app):
         pass
     assert json.loads(stale.read_text(encoding="utf-8"))["status"] == "interrupted"
+
+
+# --------------------------------------------------------------------------- #
+# 5) 受体自带共晶配体且未指定阳性对照 → 询问是否用作对照（不阻塞筛选）
+# --------------------------------------------------------------------------- #
+def _pdb_with_ligand(tmp_path: Path) -> Path:
+    """最小受体结构：一条蛋白残基 + 一个**由 RDKit 生成**的合法共晶配体块。
+
+    手写 HETATM 太简陋会被 RDKit 判为无效价态（实测），因此这里用 RDKit 把乙醇写成 PDB 块，
+    再补一条蛋白 ATOM 记录 —— 与真实受体文件的结构形式一致。
+    """
+    from rdkit import Chem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    ligand_block = Chem.MolToPDBBlock(mol)
+    protein_line = ("ATOM      1  N   ALA A   1      11.000  11.000  11.000  "
+                    "1.00  0.00           N\n")
+    pdb = tmp_path / "rec_with_lig.pdb"
+    pdb.write_text(protein_line + ligand_block, encoding="utf-8")
+    return pdb
+
+
+def test_cocrystal_ligand_smiles_from_structure(tmp_path: Path) -> None:
+    from docking_agent.core.pockets import cocrystal_ligand, cocrystal_ligand_smiles
+
+    pdb = _pdb_with_ligand(tmp_path)
+    ligand = cocrystal_ligand(str(pdb))
+    assert ligand and ligand.get("resname"), ligand
+    smiles = cocrystal_ligand_smiles(str(pdb), ligand)
+    assert smiles, "应当能从结构解出共晶配体的 SMILES"
+    from rdkit import Chem
+
+    assert Chem.MolFromSmiles(smiles) is not None, smiles
+
+
+def test_offer_when_no_positive_control_specified(tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    """未指定对照 + 受体带共晶配体 → 发布 kind=positive_control 的两个选项。"""
+    from docking_agent.core.pockets import cocrystal_ligand
+    from docking_agent.tools import choices as CH
+
+    pdb = _pdb_with_ligand(tmp_path)
+    blocks = [{"receptor": "thrombin", "receptor_pdb": str(pdb),
+               "cocrystal_ligand": cocrystal_ligand(str(pdb))}]
+    published: Dict[str, Any] = {}
+    monkeypatch.setattr(CH, "publish_choices",
+                        lambda kind, items, note="", runtime=None: published.update(
+                            {"kind": kind, "items": items, "note": note}))
+    offered = CH.offer_cocrystal_positive_control(blocks, specified_control="")
+    assert published.get("kind") == "positive_control"
+    assert len(offered) == 2
+    assert offered[0]["kind"] == "positive_control" and offered[0]["value"]
+    assert "共晶配体" in offered[0]["label"]
+    assert offered[1]["value"] == "" and "不使用" in offered[1]["label"]
+    assert "阳性对照" in published["note"]
+
+
+def test_no_offer_when_control_already_specified(tmp_path: Path,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """用户/上游已给出阳性对照时不得再问（避免无意义的打扰）。"""
+    from docking_agent.core.pockets import cocrystal_ligand
+    from docking_agent.tools import choices as CH
+
+    pdb = _pdb_with_ligand(tmp_path)
+    blocks = [{"receptor": "thrombin", "receptor_pdb": str(pdb),
+               "cocrystal_ligand": cocrystal_ligand(str(pdb))}]
+    called: list = []
+    monkeypatch.setattr(CH, "publish_choices",
+                        lambda *a, **k: called.append((a, k)))
+    assert CH.offer_cocrystal_positive_control(blocks, specified_control="NC(=N)c1ccccc1") == []
+    assert not called
+
+
+def test_no_offer_without_ligand_or_smiles(tmp_path: Path,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """没有共晶配体、或解不出 SMILES 时不询问（绝不拿不确定结构当对照）。"""
+    from docking_agent.core.pockets import cocrystal_ligand
+    from docking_agent.tools import choices as CH
+
+    monkeypatch.setattr(CH, "publish_choices", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("不应发布询问")))
+    assert CH.offer_cocrystal_positive_control([], specified_control="") == []
+    assert CH.offer_cocrystal_positive_control(
+        [{"cocrystal_ligand": {}, "receptor_pdb": ""}], specified_control="") == []
+
+    # 有配体但结构文件缺失 → 解不出 SMILES → 不询问
+    pdb = _pdb_with_ligand(tmp_path)
+    ligand = cocrystal_ligand(str(pdb))
+    assert CH.offer_cocrystal_positive_control(
+        [{"cocrystal_ligand": ligand, "receptor_pdb": str(tmp_path / "missing.pdb")}],
+        specified_control="") == []
