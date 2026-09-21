@@ -373,7 +373,7 @@ def run_no_op(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
     page.screenshot(path=str(SHOT_DIR / "no_op.png"), full_page=False)
 
 
-def run_pipeline(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
+def run_manual(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
     page.goto(BASE + "/#manual", wait_until="domcontentloaded")
     page.wait_for_selector("#btn-start")
     select = page.query_selector("#receptor-select")
@@ -387,20 +387,20 @@ def run_pipeline(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
     page.dispatch_event("#ligands-text", "input")
     page.click("#btn-start")
     page.wait_for_timeout(2500)
-    call = _standard_call(calls, "pipeline")
+    call = _standard_call(calls, "coordinator")
     hint = ""
     for sel in ("#exec-error", "#run-hint"):
         node = page.query_selector(sel)
         if node is not None and (node.inner_text() or "").strip():
             hint += f" {sel}={node.inner_text().strip()[:120]}"
-    rep.check(call is not None, "参数模式走标准运行端点（assistant_id=pipeline）",
+    rep.check(call is not None, "参数模式走标准运行端点（assistant_id=coordinator）",
               (_urls(calls) or "（无请求）") + hint)
     if call:
         rep.check("messages" in (call["body"].get("stream_mode") or []),
                   "参数模式同样声明 stream_mode", json.dumps(call["body"].get("stream_mode")))
-    rep.check(not any("/api/pipeline/stream" in c["url"] for c in calls),
-              "不再打老端点 /api/pipeline/stream")
-    page.screenshot(path=str(SHOT_DIR / "pipeline.png"), full_page=False)
+    rep.check(not any("/api/pipeline" in c["url"] for c in calls),
+              "不再打已删除的流水线端点")
+    page.screenshot(path=str(SHOT_DIR / "manual.png"), full_page=False)
 
 
 def run_live(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
@@ -488,7 +488,7 @@ def main(argv: List[str]) -> int:
             no_op[0] = False
             calls.clear()
             print("--- 真实浏览器 · 参数模式（标准帧桩） ---")
-            run_pipeline(page, rep, calls)
+            run_manual(page, rep, calls)
             report_run = os.environ.get("BROWSER_CHECK_REPORT_RUN") or ""
             if report_run:
                 print("--- 真实浏览器 · 报告版式（结构卡 / 备注 / 图片） ---")

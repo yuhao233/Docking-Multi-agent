@@ -297,7 +297,7 @@ def test_merge_and_rank_orders_by_affinity():
 
 
 def test_example_library_and_positive_control():
-    from docking_agent.pipeline import load_positive_control, resolve_molecules
+    from docking_agent.core.library import load_positive_control, resolve_molecules
 
     mols, source = resolve_molecules("", "", allow_example_fallback=True)
     assert source == "example-library"
@@ -306,7 +306,7 @@ def test_example_library_and_positive_control():
 
 
 def test_resolve_molecules_no_fallback():
-    from docking_agent.pipeline import resolve_molecules
+    from docking_agent.core.library import resolve_molecules
 
     mols, source = resolve_molecules("", "", allow_example_fallback=False)
     assert mols == [] and source == "none"
@@ -337,7 +337,7 @@ def test_run_store_roundtrip(tmp_path):
     from docking_agent.runs import RunStore
 
     store = RunStore(tmp_path / "runs")
-    run = store.new("pipeline", {"x": 1})
+    run = store.new("agent", {"x": 1})
     run.write_json("molecules", [{"name": "a", "smiles": "CCO"}], label="库")
     run.write_text("ranking.csv", "a,b\n1,2\n", name="ranking_csv", label="CSV")
     run.finish("ok", molecule_count=1)
@@ -354,14 +354,14 @@ def test_run_store_roundtrip(tmp_path):
     assert run.id in [r["run_id"] for r in store.list()]
 
 
-def test_json_dump_pipeline_result(tmp_path, monkeypatch):
-    from docking_agent.pipeline import run_pipeline
+def test_json_dump_no_molecules_result(tmp_path, monkeypatch) -> None:
+    from docking_agent.tools.dispatch import import_molecule_library
 
-    # 仅验证无分子时的明确提示（不触发对接）
-    result = run_pipeline(ligands_text="", allow_example_fallback=False)
+    # 仅验证没有分子时的明确提示（不触发对接），且结果可 JSON 序列化
+    result = json.loads(import_molecule_library.func(query_or_text=""))
     assert result["status"] == "no_molecules"
     assert "SMILES" in result["message"]
-    json.dumps(result, ensure_ascii=False)  # 可序列化
+    json.dumps(result, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -457,7 +457,7 @@ def test_pose_artifact_fallback_resolution(tmp_path):
     from docking_agent.runs import RunStore
 
     store = RunStore(tmp_path / "runs")
-    run = store.new("pipeline", {})
+    run = store.new("agent", {})
     poses = run.dir / "poses"
     poses.mkdir(parents=True, exist_ok=True)
     (poses / "pose_aspirin.pdbqt").write_text("POSE\n", encoding="utf-8")
@@ -476,7 +476,7 @@ def test_detail_caps_inline_payload(tmp_path, monkeypatch):
     from docking_agent.runs import RunStore
 
     store = RunStore(tmp_path / "runs")
-    run = store.new("pipeline", {})
+    run = store.new("agent", {})
     mols = [{"name": f"M{i}", "smiles": "CCO"} for i in range(5)]
     run.write_json("molecules", mols, label="库")
     run.write_json("properties", mols, label="性质")

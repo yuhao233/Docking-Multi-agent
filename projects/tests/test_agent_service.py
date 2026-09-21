@@ -125,13 +125,6 @@ def test_agent_request_maps_messages_and_form_fields() -> None:
     assert req.engine == "" and req.n_poses is None and req.save_poses is None
 
 
-def test_pipeline_request_only_takes_known_fields() -> None:
-    req = AS._pipeline_request({"ligands_text": "乙醇,CCO", "messages": [{"x": 1}],
-                                "receptor": "thrombin"}, "tid-1")
-    assert req.ligands_text == "乙醇,CCO" and req.receptor == "thrombin"
-    assert req.conversation_id == "tid-1"
-
-
 # --------------------------------------------------------------------------- #
 # 2) System / Assistants
 # --------------------------------------------------------------------------- #
@@ -146,16 +139,22 @@ def test_assistants_listing_and_schema(client: TestClient) -> None:
     rows = client.post("/assistants/search", json={}).json()
     assert {r["graph_id"] for r in rows} == set(AS.ASSISTANTS)
     assert all(r["assistant_id"] == AS.assistant_id_for(r["graph_id"]) for r in rows)
+    assert len(rows) == 6, f"流水线助手已移除，只剩 6 个：{sorted(r['graph_id'] for r in rows)}"
 
-    one = client.post("/assistants/search", json={"graph_id": "pipeline"}).json()
-    assert len(one) == 1 and one[0]["graph_id"] == "pipeline"
+    one = client.post("/assistants/search", json={"graph_id": "coordinator"}).json()
+    assert len(one) == 1 and one[0]["graph_id"] == "coordinator"
+    assert client.post("/assistants/search", json={"graph_id": "pipeline"}).json() == []
 
     by_id = client.get(f"/assistants/{AS.assistant_id_for('coordinator')}").json()
     assert by_id["graph_id"] == "coordinator"
 
-    schemas = client.get(f"/assistants/{AS.assistant_id_for('pipeline')}/schemas").json()
+    # 已移除的 pipeline 助手在标准面上一律 404
+    assert client.get("/assistants/pipeline").status_code == 404
+    assert client.get(f"/assistants/{AS.assistant_id_for('pipeline')}/schemas").status_code == 404
+    schemas = client.get(f"/assistants/{AS.assistant_id_for('coordinator')}/schemas").json()
     props = schemas["input_schema"]["properties"]
-    for field in ("ligands_text", "receptor", "exhaustiveness", "site_center", "save_poses"):
+    for field in ("ligands_text", "receptor", "exhaustiveness", "site_center", "save_poses",
+                  "messages"):
         assert field in props, field
     coord = client.get(f"/assistants/{AS.assistant_id_for('coordinator')}/schemas").json()
     assert "messages" in coord["input_schema"]["properties"]
@@ -209,36 +208,6 @@ def test_threads_lifecycle(client: TestClient, monkeypatch: pytest.MonkeyPatch) 
 # --------------------------------------------------------------------------- #
 # 4) Runs：标准 SSE 帧 + wait/list/cancel
 # --------------------------------------------------------------------------- #
-def test_pipeline_stream_frames_are_standard(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    from docking_agent.api.app import app
-
-    monkeypatch.setattr(app.state, "legacy_pipeline_stream", _fake_legacy([
-        {"type": "start", "run_id": "20260918-110000-0001"},
-        {"type": "stage", "stage": "docking", "message": "对接中"},
-        {"type": "molecules", "rows": [{"name": "乙醇"}]},
-        {"type": "done", "run_id": "20260918-110000-0001", "summary": {"status": "ok"}},
-    ]), raising=False)
-
-    tid = client.post("/threads", json={}).json()["thread_id"]
-    with client.stream("POST", f"/threads/{tid}/runs/stream",
-                       json={"assistant_id": "pipeline", "input": {"ligands_text": "乙醇,CCO"}}) as resp:
-        body = "".join(resp.iter_text())
-    frames = _frame_events(body)
-    names = [f["event"] for f in frames]
-    assert names[0] == "metadata" and names[-1] == "end", names
-    # start（携带 task_spec/request，前端据此写「受体文件 …」日志）+ stage + molecules
-    assert names.count("custom") == 3, names
-    start = next(f["data"] for f in frames
-                 if f["event"] == "custom" and f["data"].get("type") == "start")
-    assert start["run_id"] == "20260918-110000-0001"
-    assert "values" in names
-    meta = frames[0]["data"]
-    assert meta["run_id"].startswith("run_") and meta["thread_id"] == tid
-    assert meta["graph_id"] == "pipeline"
-    values = next(f["data"] for f in frames if f["event"] == "values")
-    assert values["run_id"] == "20260918-110000-0001"             # 业务 run id 保留
-
-
 def test_agent_stream_maps_tokens_updates_and_final(client: TestClient,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     from docking_agent.api.app import app
@@ -288,21 +257,22 @@ def test_agent_stream_error_frame(client: TestClient, monkeypatch: pytest.Monkey
 def test_wait_list_and_cancel(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from docking_agent.api.app import app
 
-    monkeypatch.setattr(app.state, "legacy_pipeline_stream", _fake_legacy([
+    monkeypatch.setattr(app.state, "legacy_agent_stream", _fake_legacy([
         {"type": "start", "run_id": "20260918-110000-0004"},
         {"type": "done", "run_id": "20260918-110000-0004", "summary": {"status": "ok"}},
     ]), raising=False)
 
     tid = client.post("/threads", json={}).json()["thread_id"]
     out = client.post(f"/threads/{tid}/runs/wait",
-                      json={"assistant_id": "pipeline", "input": {"ligands_text": "乙醇,CCO"}}).json()
+                      json={"assistant_id": "coordinator",
+                            "input": {"ligands_text": "乙醇,CCO"}}).json()
     assert out["business_run_id"] == "20260918-110000-0004"
     assert out["run_id"] == "20260918-110000-0004", "values 里的业务 run id 不能被平台 id 覆盖"
     assert out["platform_run_id"].startswith("run_")
 
     # 无状态端点同样返回标准字段
     stateless = client.post("/runs/wait",
-                            json={"assistant_id": "pipeline", "input": {}}).json()
+                            json={"assistant_id": "coordinator", "input": {}}).json()
     assert stateless["platform_run_id"].startswith("run_")
 
     # 取消：平台 id 与业务 id 都接受
@@ -319,9 +289,11 @@ def test_wait_list_and_cancel(client: TestClient, monkeypatch: pytest.MonkeyPatc
 def test_legacy_endpoints_still_registered(client: TestClient) -> None:
     """标准面是**纯增量**：既有端点一个都不能少（前端与外部调用者不受影响）。"""
     paths = {r.path for r in client.app.routes}  # type: ignore[attr-defined]
-    for legacy in ("/api/agent/stream", "/api/pipeline/stream", "/api/runs", "/api/settings",
+    for legacy in ("/api/agent/stream", "/api/runs", "/api/settings",
                    "/api/uploads", "/api/uploads/inspect", "/health"):
         assert legacy in paths, legacy
+    # 流水线端点已随「确定性流水线」一起移除
+    assert "/api/pipeline/stream" not in paths
 
 
 def test_legacy_endpoints_are_marked_deprecated(client: TestClient) -> None:
@@ -329,10 +301,8 @@ def test_legacy_endpoints_are_marked_deprecated(client: TestClient) -> None:
     schema = client.get("/openapi.json").json()
     legacy = {
         ("/api/agent/stream", "post"),
-        ("/api/pipeline/stream", "post"),
         ("/run", "post"),
         ("/stream_run", "post"),
-        ("/pipeline", "post"),
         ("/cancel/{run_id}", "post"),
         ("/health", "get"),
         ("/graph_parameter", "get"),

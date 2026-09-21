@@ -42,7 +42,7 @@ def _parse_site(center: str, size: str) -> Optional[Dict[str, Any]]:
     return {"center": c, "size": s}
 
 
-# 前端「实时逐分子结果」表所消费的字段（与流水线 pipeline._on_ligand 的 molecule 事件同构）
+# 前端「实时逐分子结果」表所消费的字段（与运行期间逐分子事件同构）
 _LIVE_ROW_FIELDS = ("name", "smiles", "affinity_kcal_mol", "intermolecular_kcal_mol",
                     "intramolecular_kcal_mol", "torsion_kcal_mol", "engine",
                     "exhaustiveness", "box_group", "box_size", "error")
@@ -99,7 +99,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                       exhaustiveness: int = 16, n_poses: int = 1,
                       engine: Literal["auto", "vina", "autodock"] = "auto", top_from_previous: int = 0,
                       keep_hetatm: str = "", protonation: str = "",
-                      protonation_ph: float = 0.0, runtime: ToolRuntime[AgentContext] = None) -> str:
+                      protonation_ph: float = 0.0, save_poses: bool = True,
+                      max_ligands: int = 0, runtime: ToolRuntime[AgentContext] = None) -> str:
     """对一组小分子配体（小分子库）向一个或多个蛋白质受体（蛋白质库）执行真实 Vina 分子对接。
 
     参数（配体与受体二选一来源均支持"直接数据"与"上传文件"两种方式）：
@@ -120,6 +121,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
       exhaustiveness: 对接蒙特卡洛搜索强度（默认 16，越大越精细越慢）
       n_poses: 返回的构象个数（默认 1）
       engine: 对接引擎，'auto'(默认：优先 Vina，失败自动回退 AutoDock4 CPU) / 'vina' / 'autodock'(经典 AutoDock4 CPU 模式)
+      save_poses: 是否把每个分子的最佳位姿写入运行目录（表单里的「保存对接位姿」；False 时不落位姿文件）
+      max_ligands: 本次最多对接多少个分子（表单里的「最大分子数」；0=不限制，仍受部署级上限约束）
       protonation: **一般留空**。运行级质子化态策略：'ph'(默认，按目标 pH 分配，见 protonation_ph) /
           'neutralize'(只对带净电荷的分子中和) / 'keep'(保持输入形式，仅告警)。
           留空 = 用**本次运行的设置**（设置页里的
@@ -344,7 +347,10 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                            engine=(engine or "auto"), protonation=(protonation or ""),
                            protonation_ph=(protonation_ph or None),
                            site=site,
-                           pose_dir=str(run.dir / "poses") if run is not None else None,
+                           # 表单里的这两项此前在 Agent 路径被忽略（恒存位姿、不套上限）→ 真实行为缺口
+                           pose_dir=(str(run.dir / "poses")
+                                     if (run is not None and save_poses) else None),
+                           max_ligands=(int(max_ligands) or None),
                            # 闭包绑定 runtime：回调由 dock_library 以 (done, total, result) 调用
                            progress_cb=(partial(_live_progress, runtime=runtime)
                                         if run is not None else None),
@@ -371,7 +377,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
 
         if run is not None:
             from docking_agent.config import env_int
-            from docking_agent.pipeline import POSITIVE_CONTROL_LABEL  # noqa: PLC0415
+            from docking_agent.core.library import POSITIVE_CONTROL_LABEL  # noqa: PLC0415
 
             max_artifacts = max(0, env_int("POSE_ARTIFACT_MAX", 200))
             for block in out.get("receptors", []) or []:

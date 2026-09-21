@@ -242,9 +242,7 @@ async function runParallelScenario(dom, check, sleep) {
   const doc = window.document;
   const $ = (sel) => doc.querySelector(sel);
   stubAgentStream(window, parallelEvents(), Date.now());
-  // 切到多 Agent 模式并给一个有效分子库，然后点「开始运行」
-  const agentBtn = doc.querySelector('#mode-switch .seg-btn[data-mode="agent"]');
-  if (agentBtn) agentBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  // 参数模式恒为多 Agent（运行方式选择器已随流水线移除）；给一个有效分子库后点「开始运行」
   const ligands = $('#ligands-text');
   ligands.value = '乙醇:CCO';
   ligands.dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -314,8 +312,6 @@ async function runLiveMoleculesScenario(dom, check, sleep) {
   const doc = window.document;
   const $ = (sel) => doc.querySelector(sel);
   stubAgentStream(window, liveMoleculeEvents(), Date.now());
-  const agentBtn = doc.querySelector('#mode-switch .seg-btn[data-mode="agent"]');
-  if (agentBtn) agentBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   const ligands = $('#ligands-text');
   ligands.value = '乙醇:CCO';
   ligands.dispatchEvent(new window.Event('input', { bubbles: true }));

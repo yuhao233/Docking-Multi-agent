@@ -1,5 +1,5 @@
 #!/bin/bash
-# 本地运行入口：CLI 模式（http / pipeline / flow / agent / runs / receptors）
+# 本地运行入口：CLI 模式（http / flow / agent / runs / receptors）
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -9,31 +9,10 @@ import pytest
 
 pytestmark = pytest.mark.offline
 
-# 文档承诺的 pipeline 输入字段（见 deploy/README.md §3 与 projects/docs）
-PIPELINE_INPUT_FIELDS = {
-    "ligands_text", "molecule_file", "receptor", "receptor_file", "positive_control",
-    "exhaustiveness", "n_poses", "engine", "pocket_engine", "site_center", "site_size",
-    "save_poses", "max_ligands", "protonation", "protonation_ph", "allow_example_fallback",
-}
-
-
 def _properties(graph) -> dict:
     schema = graph.get_input_jsonschema()
     assert isinstance(schema, dict)
     return schema.get("properties") or {}
-
-
-def test_pipeline_input_schema_exposes_documented_fields(graphs_module):
-    props = _properties(graphs_module.pipeline())
-    missing = PIPELINE_INPUT_FIELDS - set(props)
-    assert not missing, f"pipeline 输入 schema 缺字段：{sorted(missing)}"
-
-
-def test_pipeline_input_schema_output_fields_also_present(graphs_module):
-    """单节点图输入/输出同 schema，Studio 输出面板要能看到 run_id / run_dir / artifacts。"""
-    props = _properties(graphs_module.pipeline())
-    for field in ("run_id", "run_dir", "artifacts", "status", "top"):
-        assert field in props, f"pipeline schema 缺输出字段 {field}"
 
 
 def test_coordinator_input_schema_has_messages(graphs_module):

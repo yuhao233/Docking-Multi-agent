@@ -2,8 +2,8 @@
 """本地部署自检脚本。
 
 两类检查：
-  1) 确定性流水线（真实 RDKit + Vina 对接 + 报告产物），不依赖 LLM；
-  2) 多 Agent 编排（用 Fake LLM 驱动：协调 Agent → 分发工具 → 子 Agent → 真实计算工具 → SSE 事件流），
+  1) 多 Agent 编排（用 Fake LLM 驱动：协调 Agent → 分发工具 → 子 Agent → 真实计算工具 → SSE 事件流）；
+  2) 产物存储、真实子 Agent 对接、流式帧，
      不消耗任何真实模型额度。
 
 用法：
@@ -132,57 +132,8 @@ def fake_llm_factory(force_tool: Optional[str] = None):
     return _factory
 
 
-def test_pipeline(fast: bool) -> None:
-    print("\n[1/5] 确定性流水线（RDKit 属性 + 真实 Vina 对接 + 报告产物 + 运行目录）")
-    from docking_agent.pipeline import run_pipeline
-    from docking_agent.runs import get_run_store
-
-    # 显式提供阳性对照：本用例校验完整链路（含结合模式对照与产物）
-    result = run_pipeline(ligands_text="CCO", receptor="thrombin",
-                          positive_control="NC(=N)c1ccccc1",
-                          engine="vina",
-                          exhaustiveness=1 if fast else 6, save_poses=True)
-
-    check(result.get("status") == "ok", "流水线状态 ok")
-    if not fast:
-        receptors = (result.get("docking") or {}).get("receptors") or []
-        ok = bool(receptors and receptors[0]["results"]
-                  and "affinity_kcal_mol" in receptors[0]["results"][0])
-        check(ok, "真实 Vina 对接返回 affinity_kcal_mol")
-        if ok:
-            row = receptors[0]["results"][0]
-            check(-15.0 < row["affinity_kcal_mol"] < 0.0,
-                  f"亲和力数值范围合理（{row['affinity_kcal_mol']} kcal/mol）")
-            check(row.get("engine") == "vina", "实际使用引擎为 vina")
-
-    check(bool(result.get("properties")), "RDKit 物化性质已计算")
-    check(bool(result.get("binding", {}).get("rows")), "结合模式相似度已计算")
-
-    run_id = result.get("run_id")
-    check(bool(run_id), f"返回运行编号 run_id={run_id}")
-
-    artifacts = result.get("artifacts") or []
-    names = {a.get("name") for a in artifacts}
-    for expected in ("molecules", "properties", "docking", "binding", "ranking_csv",
-                     "docking_chart", "similarity_chart", "report_md"):
-        check(expected in names, f"运行目录含产物：{expected}")
-    check(all(a.get("download_url") for a in artifacts), "每个产物都带下载地址")
-
-    store = get_run_store()
-    detail = store.detail(run_id) or {}
-    check(detail.get("run", {}).get("status") == "ok", "run.json 记录状态 ok")
-    check((detail.get("report_markdown") or "").startswith("# "), "报告 Markdown 已生成")
-    csv_path = store.artifact_path(run_id, "ranking_csv")
-    check(csv_path is not None and csv_path.read_text(encoding="utf-8").startswith("rank,name"),
-          "排序 CSV 为真实 CSV（非 JSON 编码）")
-    poses = [a for a in artifacts if str(a.get("name", "")).startswith("pose_")]
-    check(bool(poses), f"位姿文件已留档（{len(poses)} 个）")
-    zipped = store.zip(run_id)
-    check(zipped is not None and zipped.stat().st_size > 0, "运行数据可整体打包(zip)")
-
-
 def test_payload_and_store() -> None:
-    print("\n[2/5] 入参与本地产物存储")
+    print("\n[1/4] 入参与本地产物存储")
     from docking_agent.reporting.store import resolve_output, save_artifact
     from docking_agent.runtime.payload import normalize_agent_input
 
@@ -232,7 +183,7 @@ def test_multi_agent(orchestration_tool: str) -> None:
 
 def test_worker_docking() -> None:
     """真实 Vina 对接：经「Docking 执行子 Agent」→ molecular_docking 工具。"""
-    print("\n[4/5] Docking 子 Agent 真实对接（Fake LLM + 真实 Vina）")
+    print("\n[3/4] Docking 子 Agent 真实对接（Fake LLM + 真实 Vina）")
     import docking_agent.agents.workers as workers_mod
 
     agent = workers_mod.get_docking_agent()
@@ -257,7 +208,7 @@ def test_worker_docking() -> None:
 
 
 def test_streaming() -> None:
-    print("\n[5/5] SSE 流式事件")
+    print("\n[4/4] SSE 流式事件")
     import docking_agent.agents.coordinator as agent_mod
     import docking_agent.agents.workers as workers_mod
     from docking_agent.runtime.streaming import parse_sse_data, stream_agent_sse
@@ -301,15 +252,12 @@ def test_streaming() -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="本地部署自检")
     ap.add_argument("--fast", action="store_true", help="跳过真实 Vina 对接")
-    ap.add_argument("--skip-pipeline", action="store_true", help="跳过流水线检查")
     args = ap.parse_args()
 
     print("=" * 72)
     print("分子筛选多 Agent 本地部署自检")
     print("=" * 72)
 
-    if not args.skip_pipeline:
-        test_pipeline(args.fast)
     test_payload_and_store()
     test_multi_agent("run_property_assessment")
     if not args.fast:

@@ -5,40 +5,6 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
-
-
-class PipelineRequest(BaseModel):
-    receptor: Optional[Any] = Field(default="thrombin", description="受体：预置 key / PDB 路径 / URL / 多受体数组")
-    receptor_file: str = Field(default="", description="上传/提供的蛋白质受体文件路径（.pdb/.pdbqt，优先于 receptor）")
-    site_center: Optional[List[float]] = None
-    site_size: Optional[List[float]] = None
-    ligands_text: str = ""
-    molecule_file: str = ""
-    # 默认**不**使用内置示例库：只有调用方明确要求（界面「示例库」来源 / 用户明确要求）才置 True。
-    allow_example_fallback: bool = False
-    positive_control: str = ""
-    exhaustiveness: Optional[int] = Field(
-        default=None, description="留空(null)=按任务/库/盒自动规划；给出数值=用户显式指定，不自动改")
-    n_poses: Optional[int] = Field(
-        default=None, description="留空(null)=自动（筛选 1 / 姿态分析 3）；给出数值=用户显式指定")
-    engine: str = "vina"
-    pocket_engine: str = Field(default="", description="结合位点来源引擎：''(默认 auto)/auto/p2rank/geometric/known_site")
-    save_poses: bool = True
-    max_ligands: int = 0
-    protonation: str = Field(
-        default="",
-        description="质子化态策略：''=用设置页的值（默认 ph，目标 pH 7.4）/ ph=按目标 pH 分配 / "
-                    "neutralize=仅中和带净电荷的分子 / "
-                    "ph=按目标 pH 分配质子化态 / keep=保持输入")
-    protonation_ph: float = Field(
-        default=0.0,
-        description="目标 pH（仅 protonation='ph' 时有意义；0=用设置页的值，默认 7.4；有效 0.5–14）")
-    dock_positive_control: bool = True
-    skip_positive_control: bool = Field(default=False, description="true 则跳过阳性对照（不做结合模式比较）")
-    conversation_id: str = Field(
-        default="", description="会话 id：同一 id = 同一段对话（流水线无多轮记忆，仅作记录）")
-
-
 class AgentRequest(BaseModel):
     """多 Agent 请求。
 

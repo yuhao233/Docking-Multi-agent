@@ -350,7 +350,7 @@ def build_chat_llm(ctx: Any = None, *, role: str = ""):
         raise LLMConfigError(
             "未配置 LLM API Key。请在 projects/.env 中设置 LLM_API_KEY（或 OPENAI_API_KEY）；"
             "同时可用 LLM_BASE_URL / LLM_MODEL，或按角色设置 LLM_MODEL_<ROLE> 指向任意 OpenAI 兼容端点。"
-            "若只想验证计算流水线，可运行：.venv/bin/python -m docking_agent -m pipeline"
+            "可运行 `bash start.sh --check` 做一次不消耗额度的环境自检"
         )
 
     headers: Dict[str, str] = {}

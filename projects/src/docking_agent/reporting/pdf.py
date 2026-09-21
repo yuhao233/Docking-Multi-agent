@@ -459,7 +459,7 @@ def _render_blocks(writer: _PageWriter, blocks: Sequence[Tuple[str, Any]],
             writer.blank(0.08)
 
 
-def build_report_pdf(result: Dict[str, Any], *, kind: str = "pipeline", run_id: str = "",
+def build_report_pdf(result: Dict[str, Any], *, kind: str = "agent", run_id: str = "",
                      receptor_label: str = "", created_at: str = "", markdown: str = "",
                      chart_paths: Optional[Dict[str, Path]] = None,
                      artifacts: Optional[List[Dict[str, Any]]] = None,

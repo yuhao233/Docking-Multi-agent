@@ -242,7 +242,7 @@ def test_report_contains_pocket_explanation_and_pose_binding_sections(tmp_path: 
                   "path": "charts/interaction_2d_01.png", "size": 9000, "label": "2D"},
                  {"name": "pose_3d_01", "content_type": "image/png",
                   "path": "charts/pose_3d_01.png", "size": 9000, "label": "3D"}]
-    md = build_markdown_report(result, kind="pipeline", run_id="T", artifacts=artifacts)
+    md = build_markdown_report(result, kind="agent", run_id="T", artifacts=artifacts)
 
     assert "### 5.1 结合口袋分析" in md
     assert "### 5.2 推荐分子的姿态–口袋相互作用（2D / 3D）" in md
@@ -268,7 +268,7 @@ def test_report_says_so_when_no_pose(tmp_path: Path) -> None:
         "positive_control": {}, "notes": [], "param_plan": {}, "task_spec": {},
         "pose_analysis_note": "有 2 个推荐分子没有可用位姿文件（本次运行关闭了「保存位姿」？）",
     }
-    md = build_markdown_report(result, kind="pipeline", run_id="T")
+    md = build_markdown_report(result, kind="agent", run_id="T")
     assert "### 5.2 推荐分子的姿态–口袋相互作用（2D / 3D）" in md
     assert "关闭了「保存位姿」" in md
 
@@ -395,7 +395,7 @@ def test_pdf_embeds_dynamic_figures(tmp_path: Path) -> None:
                 "**图 1 2D 相互作用图**\n\n"
                 "![图 2 3D 姿态](charts/pose_3d_01.png)\n\n"
                 "**图 2 3D 姿态**\n")
-    pdf = build_report_pdf({"ranking": []}, kind="pipeline", run_id="T", markdown=markdown,
+    pdf = build_report_pdf({"ranking": []}, kind="agent", run_id="T", markdown=markdown,
                            chart_paths={"interaction_2d_01": png, "pose_3d_01": png})
     assert len(pdf) > 2000
     assert pdf.count(b"/Subtype /Image") >= 2, "两张动态图都应内嵌"

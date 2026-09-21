@@ -216,18 +216,26 @@ def test_real_dock_rows_share_parameters_within_pass() -> None:
 
 
 def test_merge_funnel_tags_pass_and_keeps_precision() -> None:
-    """漏斗合并：精算行替换粗筛行、标 pass=fine 并保留 affinity_coarse；同 pass 参数一致。"""
-    from docking_agent.pipeline import _merge_funnel
+    """漏斗合并（Agent 侧 `_merge_docking_payloads`）：精算行替换粗筛行并保留 affinity_coarse；
+    同 pass 参数一致。`pass`/`affinity_coarse` 由 `molecular_docking` 工具在精算轮次写入。"""
+    from docking_agent.agents.persistence import _merge_docking_payloads
 
-    def row(name: str, smiles: str, aff: float, exh: int) -> Dict[str, Any]:
-        return {"name": name, "smiles": smiles, "affinity_kcal_mol": aff, "exhaustiveness": exh,
-                "box_size": [22.0, 22.0, 22.0], "box_center": [1.0, 2.0, 3.0], "engine": "vina"}
+    def row(name: str, smiles: str, aff: float, exh: int, pass_name: str,
+            coarse: float | None = None) -> Dict[str, Any]:
+        data: Dict[str, Any] = {"name": name, "smiles": smiles, "affinity_kcal_mol": aff,
+                                "exhaustiveness": exh, "pass": pass_name,
+                                "box_size": [22.0, 22.0, 22.0], "box_center": [1.0, 2.0, 3.0],
+                                "engine": "vina"}
+        if coarse is not None:
+            data["affinity_coarse"] = coarse
+        return data
 
     coarse = {"receptors": [{"receptor_key": "R", "results": [
-        row("PC", "PC", -6.0, 3), row("A", "A", -5.0, 3), row("B", "B", -4.0, 3)]}]}
-    fine = [("R", {"receptors": [{"receptor_key": "R", "results": [
-        row("PC", "PC", -6.5, 12), row("B", "B", -4.4, 12)]}]})]
-    merged = _merge_funnel(coarse, fine, 3, 12, 2)["receptors"][0]["results"]
+        row("PC", "PC", -6.0, 3, "coarse"), row("A", "A", -5.0, 3, "coarse"),
+        row("B", "B", -4.0, 3, "coarse")]}]}
+    fine = {"receptors": [{"receptor_key": "R", "results": [
+        row("PC", "PC", -6.5, 12, "fine", -6.0), row("B", "B", -4.4, 12, "fine", -4.0)]}]}
+    merged = _merge_docking_payloads([coarse, fine])["receptors"][0]["results"]
     by = {r["smiles"]: r for r in merged}
     assert by["B"]["pass"] == "fine" and by["B"]["affinity_kcal_mol"] == -4.4
     assert by["B"]["affinity_coarse"] == -4.0, "粗筛分数必须保留在 affinity_coarse"

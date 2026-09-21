@@ -3,7 +3,6 @@
   "dependencies": ["."],
   "graphs": {
     "coordinator": "./docking_graphs/graphs.py:coordinator",
-    "pipeline": "./docking_graphs/graphs.py:pipeline",
     "intake": "./docking_graphs/graphs.py:intake",
     "property": "./docking_graphs/graphs.py:property_agent",
     "pocket": "./docking_graphs/graphs.py:pocket_agent",

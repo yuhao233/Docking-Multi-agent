@@ -182,11 +182,11 @@ bash start.sh --setup           # 强制重装依赖
 | pdb2pqr | 可选 | 受体**不按目标 pH 重算**质子化态（报告明确告警）；补齐：设 `PDB2PQR_BIN` |
 | `autodock4`/`autogrid4` | 可选 | 只有 Vina 可用（`engine=autodock` 会失败）；`apt-get install autodock autogrid` |
 | 中文字体（Noto CJK 等） | 可选 | 图表/PDF 中文可能显示为方块；`apt-get install fonts-noto-cjk` |
-| LLM（`LLM_API_KEY` + `LLM_BASE_URL`） | 可选 | 多 Agent 模式不可用，**确定性流水线照常可用**（参数模式·流水线） |
+| LLM（`LLM_API_KEY` + `LLM_BASE_URL`） | **必需** | 对接编排由协调 Agent 驱动；缺失时只能做环境自检与已有记录查看 |
 | GPU 对接引擎（用户自行安装） | 可选 | 设置页「外部工具」填写可执行文件路径；填了但检测不通过则**拒绝启动**并提示补齐方法，不会静默改用 CPU |
 | 默认端口 5000 空闲 | 可选 | `start.sh` 自动顺延到下一个可用端口（`doctor` 会告知将用哪个） |
 
-离线环境同样可用：确定性流水线 + 注册表受体（thrombin / trypsin）+ 上传文件；
+内网/本机 LLM 端点下可完全离线运行：注册表受体（thrombin / trypsin）+ 上传文件即可；
 只有"点名在线解析受体 / 按名称查分子 / 云端 LLM"需要网络。
 
 ### 配置 LLM（多 Agent 模式必需）
@@ -201,7 +201,8 @@ LLM_BASE_URL=https://api.deepseek.com     # 任意 OpenAI 兼容端点
 LLM_MODEL=deepseek-flash
 ```
 
-> 不配置 LLM 也能用：网页的「确定性流水线」模式与命令行 `-m pipeline` 不依赖任何模型。
+> 对接流程需要 LLM：表单参数为权威参数，但执行由协调 Agent 分发工具完成，
+> 因此没有可用的 OpenAI 兼容端点时无法发起对接。
 
 #### 每个 Agent 用各自的模型（可选，已支持）
 
@@ -291,7 +292,6 @@ LLM_API_KEY_INTAKE=...                 # 受理层可用另一把 key / 另一�
 | --- | --- | --- | --- |
 | 参数模式（manual） | **否**（intake 实例根本不构建） | 0.02 ms（纯规则） | 4（与拆分前一致） |
 | 对话模式（chat+advanced） | 是，1 次（角色 `intake`） | ≈2.5 s | 4（与拆分前一致） |
-| 确定性流水线 | 否（零模型） | — | 不适用 |
 
 **评估**：
 
@@ -394,7 +394,7 @@ LLM_API_KEY_INTAKE=...                 # 受理层可用另一把 key / 另一�
 
 | 区域 | 内容 |
 | --- | --- |
-| **任务配置** | 受体下拉（显示**已知结合位点**中心/尺寸，可手工微调）或**上传受体文件**；配体来源**四选一**（SMILES 文本 / **上传文件** / 服务端路径或 URL / 示例库）；阳性对照；引擎与搜索强度；运行方式（确定性流水线 / 多 Agent 协作） |
+| **任务配置** | 受体下拉（显示**已知结合位点**中心/尺寸，可手工微调）或**上传受体文件**；配体来源**四选一**（SMILES 文本 / **上传文件** / 服务端路径或 URL / 示例库）；阳性对照；引擎与搜索强度；表单参数为权威参数，由协调 Agent 执行 |
 | **协作记录** | 展示共享黑板统计与各 Agent 的协作备注（多 Agent 模式） |
 | **编排示意图** | 实时显示「整体协调 Agent → 口袋分析 / 分子属性评估 / Docking 执行 / 结合模式检测 → 报告生成」各节点状态与**当前任务**；并带一条**实测时间轴**：按服务端事件时间戳（`ts`）绘制每个节点的真实起止条 —— **条带重叠即并行、依次排列即串行**，顶栏徽标给出实测并行度（如 `[ 并行 ×2 ]`）。实测样例：`属性评估 12.9→17.4s` 与 `对接 13.1→23.1s` 重叠 4.3 s（并行），而口袋分析→属性评估、对接→结合模式→报告之间不重叠（串行） |
 | **执行** | `■ 停止` 按钮（**真正中断后端对接**，见 §8）；阶段进度条（`已完成 x/y（z%）`、已用时间、**剩余时间 ETA**）、**逐分子实时结果**（批量推送，边算边出；实时表最多保留最近 300 行）、多 Agent 模式下的模型增量文本与工具调用轨迹、可中止运行 |
@@ -451,7 +451,7 @@ LLM_API_KEY_INTAKE=...                 # 受理层可用另一把 key / 另一�
 ```
 
 - 节点状态用**方括号标签**：`[ WAIT ] [ RUN ] [ OK ] [ SKIP ] [ FAIL ] [ CANCEL ]`，运行中节点有脉冲动效；
-- **状态映射**：流水线模式由 `stage` / `progress` 事件驱动；多 Agent 模式由 `tool_call` / `tool_result` 驱动
+- **状态映射**：由 `tool_call` / `tool_result` 与阶段事件驱动时间轴与进度
   （`run_property_assessment`→属性评估、`run_docking`→Docking 执行、`run_binding_mode_analysis`→结合模式、
   `generate_screening_report`→报告生成、`import_molecule_library`/`fetch_*`→协调 Agent）；
 - 后端在跳过结合模式分析时会下发 `"skipped": true`，示意图据此显示 `[ SKIP ]`（历史回看同样正确）；
@@ -534,29 +534,12 @@ node scripts/ui_e2e.js http://127.0.0.1:5102  # 143 项：jsdom + 真实后端�
 
 ```bash
 bash scripts/local_run.sh -m http  -p 5000        # 启动服务（等价 start.sh）
-bash scripts/local_run.sh -m pipeline -i "阿司匹林:CC(=O)Oc1ccccc1C(=O)O" --receptor trypsin
+bash scripts/local_run.sh -m runs      # 查看运行记录（对接请从网页发起）
 bash scripts/local_run.sh -m flow   --message "用示例库做一次完整筛选"   # 同步多 Agent
 bash scripts/local_run.sh -m agent  --message "用示例库做一次完整筛选"   # 流式多 Agent（终端实时输出）
 bash scripts/local_run.sh -m runs   --list 10     # 查看历史运行
 bash scripts/local_run.sh -m receptors            # 查看受体与已知位点
 ```
-
-`pipeline` 常用参数：
-
-| 参数 | 说明 |
-| --- | --- |
-| `-i "<SMILES 或 名称:SMILES>"` | 候选分子（逗号/分号/换行分隔） |
-| `--molecule-file <路径或URL>` | 小分子文件：`sdf / smi / csv / mol2 / mol` |
-| `--receptor <受体>` | `thrombin`、`trypsin`、PDB 编号、`.pdb/.ent/.cif/.pdbqt` 路径或 URL（多受体用 `;` 或 JSON 数组） |
-| `--site-center 31.5,13.74,24.36` `--site-size 22,22,22` | 覆盖已知结合位点 |
-| `--positive-control <SMILES>` | 阳性对照，默认读 `assets/libraries/positive_control.csv` |
-| `--exhaustiveness N` / `--n-poses N` | Vina 搜索强度 / 输出构象数 |
-| `--engine auto\|vina\|autodock` | 对接引擎（`auto`：Vina 失败自动回退 AutoDock4 CPU） |
-| `--max-ligands N` | 限制对接分子数（0=不限） |
-| `--no-poses` | 不保存位姿文件 |
-
----
-
 
 ## 6. 项目结构
 
@@ -584,7 +567,6 @@ projects/
 │   ├── cli.py  paths.py  config.py  logging_setup.py
 │   ├── settings.py             # ★ 设置页面：字段表 + 读写 + 优先级/来源解析
 │   ├── runs.py                 # ★ 运行记录与中间数据仓库
-│   ├── pipeline.py             # 确定性流水线（无需 LLM）
 │   ├── core/                   # 真实计算核心（无 LLM 依赖）
 │   │   ├── chemistry.py        #   理化性质、Morgan 指纹、结合模式相似度
 │   │   ├── pockets.py          # ★ 结合口袋预测（P2Rank 适配 + 内置几何法）与对接盒决策
@@ -651,7 +633,6 @@ var/runs/20260912-170508-9720/
 | GET | `/api/health` | 服务状态（LLM 是否配置、可用引擎） |
 | GET | `/api/receptors` | 受体与**已知结合位点** |
 | GET | `/api/libraries` | 示例分子库与默认阳性对照 |
-| POST | `/api/pipeline/stream` | 确定性流水线（SSE：`stage` / `molecule` / `done`） |
 | POST | `/api/agent/stream` | 多 Agent 协作（SSE：`token` / `tool_call` / `final` / `done`）；`mode=chat\|manual` 决定指令与参数谁是权威 |
 | POST | `/api/runs/{id}/cancel` | **取消运行**：协作式取消，会终止对接进程池并停止后续步骤 |
 | GET | `/api/runs` `/api/runs/{id}` | 运行列表 / 运行详情（结果、报告、产物清单；大库自动截断内联数据） |
@@ -661,12 +642,12 @@ var/runs/20260912-170508-9720/
 | GET | `/api/runs/{id}/download.zip` `/poses.zip` | 整包 / 位姿打包下载 |
 | GET | `/api/molecule/depict` `/properties` | 二维结构图（PNG）/ 单分子理化性质 |
 | POST | `/api/uploads` | **上传小分子/蛋白质文件**：校验解析后返回 `path` / `receptor_file`（含位点盒） |
-| POST | `/run` `/stream_run` `/pipeline` `/cancel/{id}` | 兼容脚本调用的旧接口 |
+| POST | `/run` `/stream_run` `/cancel/{id}` | 兼容脚本调用的旧接口 |
 | POST | `/v1/chat/completions` | OpenAI 兼容接口 |
 
 ```bash
-# 确定性流水线（无需 LLM）
-curl -N -X POST localhost:5000/api/pipeline/stream -H 'Content-Type: application/json' -d '{
+# 标准 Agent Protocol：线程 + 运行流（需要 LLM）
+curl -N -X POST localhost:5000/threads/$TID/runs/stream -H 'Content-Type: application/json' -d '{
   "receptor":"thrombin","ligands_text":"阿司匹林:CC(=O)Oc1ccccc1C(=O)O",
   "positive_control":"NC(=N)c1ccccc1","exhaustiveness":6,"engine":"vina"}'
 
@@ -2043,6 +2024,47 @@ node scripts/ui_e2e.js http://127.0.0.1:5000    # 143 项：导航切换 / hash 
     - **待办（P1，需你确认后开工）**：外部引擎的真实执行与输出解析（三类引擎各自的结果文件）、
       GPU 批量调度（`plan_gpu_batch`：单设备单进程 + 分批）、对照基准
       （CPU vs GPU 分数差 / 排序相关性 / top-1 位姿 RMSD）与报告引擎标注回归。
+
+60. **移除"不经过 Agent 的确定性流水线"（对接统一由 Agent 驱动）**：
+    - **决定**：对接只保留一条执行路径 —— 协调 Agent 分发工具执行。删除理由是该模式是**第二条对接
+      代码路径**（与 `tools/` 重复实现定盒/对接/排序/落盘），与 ADR-0001「能力只加一处」冲突，
+      且两条路径都要验、都要修。代价是**对接必须有 LLM**（本记录生效起，README 不再声明"不配 LLM
+      也能跑通对接"）。历史记录 50–59 里提到的 pipeline 均为当时事实，保留不改。
+    - **删除范围**：`src/docking_agent/pipeline.py`（812 行，含 `run_pipeline`）；
+      `POST /api/pipeline/stream` 与 `POST /pipeline`；`api/schemas.py::PipelineRequest`；
+      CLI `-m pipeline`；标准 Agent Protocol 面的 `pipeline` 助手与 `/assistants/{id}/schemas` 分支；
+      前端参数模式的「运行方式」选择器（参数模式恒为多 Agent，表单仍是权威参数）；
+      部署层 `langgraph-deploy` 的 `pipeline` 图（**7 张图 → 6 张**）。
+    - **保留与迁出**：`default_library_path`、`positive_control_info`、`POSITIVE_CONTROL_LABEL`、
+      `DEFAULT_POSITIVE_CONTROL`、`load_positive_control`、`resolve_molecules` 迁到新模块
+      `src/docking_agent/core/library.py`（`tools/dispatch.py` 与 `api/app.py` 仍在使用）。
+    - **自检替代**：`bash start.sh --check` 改为跑 `scripts/smoke_test.py --fast`
+      （内置假 LLM 驱动真实多 Agent 编排：协调 Agent → 工具 → 子 Agent → 真实计算），
+      仍然是**不消耗真实额度**的离线冒烟；`smoke_test.py` 里的流水线用例已删除。
+    - **文档同步**：根 README（能力矩阵 LLM 行改为必需、删除"不配 LLM 也能用"与流水线小节、
+      Studio 图数 7→6）、`projects/README.md`（能力矩阵、CLI 参数表、结构树、状态映射）、
+      `docs/architecture.md`（模块表、依赖方向、模式对照表）、`docs/api.md`（端点表、
+      废弃端点说明、前端切换表）。
+    - **测试改造**：新增 `tests/support/fake_llm.py`（从 `scripts/smoke_test.py` 抽出的假 LLM 脚手架：
+      脚本化协调 Agent → 工具 → 子 Agent，真实计算、不联网、不消耗额度，含
+      `run_agent()` / `agent_input_from_form()` / `business_run_id_from_sse()`）；
+      **17 个测试模块**改为走标准 Agent Protocol 路径或 Agent 侧等价实现，端到端断言强度不变
+      （上传受体是实际使用的那一个、报告固定章节与内嵌图、PDF 与规范下载名、受体入包、
+      漏斗合并取精度更高的一条、产物闭环与分页导出等）。
+    - **删除流水线后暴露并已修复的两个真实缺口**：
+      ① `normalize_ligand_text` 把「名称:SMILES,名称:SMILES」因逗号判成 CSV → 返回 0 条
+      （删掉流水线后 Agent 路径成了唯一入口，用户这样写就什么都跑不了）→ 现在**单行**文本
+      解析不到时回退行内 SMILES 解析；多行仍按 CSV/SDF 处理（多行回退会改写跳过原因、
+      掩盖 InChIKey 在线反查失败这类真实原因，这一点有回归守着）；
+      ② 表单里的「保存对接位姿」「最大分子数」在 Agent 路径被忽略（恒存位姿、不套上限）→
+      `molecular_docking` 新增 `save_poses` / `max_ligands` 入参并透传 `dock_library`，
+      协调 Agent 提示词同步要求把任务规约里的这两项原样传下去。
+      两者都有回归（`tests/test_report_skip.py` 新增 2 项）。
+    - **行为变化（如实记录）**：`result.notes` 不再包含「未提供阳性对照」—— Agent 路径把它写在
+      `task_spec.assumptions` 与报告正文里（不静默原则不变，但依赖该 note 的下游需改读这两处）。
+    - **待办**：部署层 `test_live_server.py` 中三个依赖流水线图的用例（真实对接产物 / 并发隔离 /
+      无分子诚实返回）已删除 —— 这三个行为现在需要真实 LLM 才能覆盖，若要在 CI 里保住，
+      应补一个"用假 LLM 驱动 coordinator 的生产并发与产物"的部署层用例（P1 待办）。
 
 ## 15. 注意事项
 

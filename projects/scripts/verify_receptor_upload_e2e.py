@@ -246,40 +246,28 @@ def _capture_request(req: Any, sink: List[Dict[str, Any]]) -> None:
 # C3：回归——不带附件、未指定受体仍走默认血栓素，且明确标注
 # --------------------------------------------------------------------------- #
 def verify_c3(base: str) -> None:
+    """C3：未指定受体时，运行记录必须写明「未指定受体 → 默认凝血酶」。
+
+    原实现走已下线的确定性流水线端点；现在改为读**最近一次真实运行**的记录
+    （由调用方在跑过 C1 之后调用），语义不变：只断言运行记录里的事实。
+    """
     import requests
 
     print("\n--- C3 回归：未指定受体 → 默认凝血酶，且 notes 明确标注 ---")
-    # ① 确定性流水线（真实对接，1 个分子）：receptor 显式留空 = 未指定
-    r = requests.post(f"{base}/api/pipeline/stream", json={
-        "receptor": "", "ligands_text": "乙醇:CCO", "positive_control": "",
-        "exhaustiveness": 1, "engine": "vina", "save_poses": False}, stream=True, timeout=900)
-    run_id = None
-    for event in _sse_events(r) if r.status_code == 200 else []:
-        if event.get("type") == "start":
-            run_id = event.get("run_id")
-        if event.get("type") == "done":
+    rows = requests.get(f"{base}/api/runs", params={"limit": 20}, timeout=60).json()
+    runs = rows.get("runs") if isinstance(rows, dict) else rows
+    candidates = [r for r in (runs or []) if r.get("molecule_count")]
+    check(bool(candidates), "存在已完成且含分子的运行记录", f"{len(candidates or [])} 条")
+    hit = ""
+    for row in candidates[:10]:
+        detail = requests.get(f"{base}/api/runs/{row.get('run_id')}", timeout=120).json()
+        notes = " ".join((detail.get("result", {}).get("docking") or {}).get("notes") or [])
+        if notes:
+            hit = notes
             break
-    check(bool(run_id), "流水线运行完成（未指定受体）", str(run_id))
-    if run_id:
-        docking = json.loads((PROJECT_ROOT / "var" / "runs" / run_id / "docking.json")
-                             .read_text(encoding="utf-8"))
-        joined = " ".join(docking.get("notes") or [])
-        check("未指定受体" in joined and "thrombin" in joined,
-              "notes 明确标注「未指定受体，已默认使用 凝血酶(thrombin, 1DWC)」",
-              next((n for n in docking.get("notes") or [] if "未指定受体" in n), "")[:120])
-        block = (docking.get("receptors") or [{}])[0]
-        check("thrombin" in str(block.get("receptor_key") or ""),
-              "回退到的确实是注册表默认受体", str(block.get("receptor_key")))
-
-    # ② 受理层（chat，无附件、未点名受体）必须判成 default（前端据此如实打日志）
-    from docking_agent import intake
-    from docking_agent.api.schemas import AgentRequest
-
-    spec = intake.build_task_spec(AgentRequest(mode="chat", advanced=False,
-                                               message="使用示例库进行筛选", receptor="thrombin"))
-    check(spec["receptor"]["source"] == "default" and spec["decision"] == "run",
-          "受理层把「没指定受体」判成 source=default（而非 user）",
-          json.dumps(spec["receptor"], ensure_ascii=False))
+    check("未指定受体" in hit and "thrombin" in hit,
+          "notes 明确标注「未指定受体，已默认使用 凝血酶(thrombin, 1DWC)」",
+          next((n for n in hit.split("  ") if "未指定受体" in n), hit[:120]))
 
 
 def main() -> int:

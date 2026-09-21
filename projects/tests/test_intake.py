@@ -461,14 +461,7 @@ def test_start_event_payload_shape_has_task_spec():
     assert set(spec) >= {"task_type", "authority", "decision", "source"}
 
 
-def test_pipeline_result_has_task_spec():
-    """确定性流水线也要有（统一的）任务规约字段，便于展示与追溯。"""
-    from docking_agent.pipeline import run_pipeline
-
-    result = run_pipeline(ligands_text="乙醇:CCO", receptor="thrombin",
-                          skip_positive_control=True, exhaustiveness=1, save_poses=False)
-    spec = result.get("task_spec") or {}
-    assert spec.get("authority") == "pipeline" and spec.get("decision") == "run"
+# 原「确定性流水线结果带 task_spec」用例已随流水线移除；Agent 路径的等价事实由上两个用例覆盖。
 
 
 # --------------------------------------------------------------------------- #

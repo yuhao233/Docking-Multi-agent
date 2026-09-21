@@ -2,7 +2,6 @@
 
 模式：
     http      启动本地 HTTP 服务（交互式网页 + API）
-    pipeline  确定性流水线（无需 LLM）
     flow      同步跑一次多 Agent（返回 JSON）
     agent     流式跑一次多 Agent（终端实时输出）
     runs      查看历史运行记录
@@ -42,7 +41,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         description=f"分子对接多 Agent 协作系统 v{__version__}（本地部署版）",
     )
     p.add_argument("-m", "--mode", default="http",
-                   choices=["http", "pipeline", "flow", "agent", "runs", "receptors"],
+                   choices=["http", "flow", "agent", "runs", "receptors"],
                    help="运行模式（默认 http）")
     p.add_argument("-p", "--port", type=int, default=int(env("PORT") or 5000), help="HTTP 端口")
     p.add_argument("--host", default=env("HOST") or "127.0.0.1",
@@ -112,54 +111,6 @@ def mode_http(args: argparse.Namespace) -> int:
     uvicorn.run(app, host=host, port=args.port, workers=1,
                 log_level=env("UVICORN_LOG_LEVEL", "info"))
     return 0
-
-
-def mode_pipeline(args: argparse.Namespace) -> int:
-    from docking_agent.pipeline import run_pipeline
-
-    ligands = args.input
-    if ligands:
-        parsed = _parse_input(ligands)
-        ligands = str(parsed.get("text") or parsed.get("smiles") or parsed.get("ligands_text") or "")
-
-    result = run_pipeline(
-        ligands_text=ligands,
-        molecule_file=args.molecule_file,
-        receptor=args.receptor or None,
-        positive_control=args.positive_control,
-        exhaustiveness=args.exhaustiveness,
-        n_poses=args.n_poses,
-        engine=args.engine,
-        allow_example_fallback=not args.no_example_fallback,
-        site=_parse_site(args.site_center, args.site_size),
-        max_ligands=(args.max_ligands or None),
-        save_poses=not args.no_poses,
-    )
-    if args.output:
-        Path(args.output).write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str),
-                                     encoding="utf-8")
-    ranking = result.get("ranking") or []
-    _print({
-        "status": result.get("status"),
-        "run_id": result.get("run_id"),
-        "source": result.get("source"),
-        "molecule_count": len(result.get("molecules") or []),
-        "notes": result.get("notes"),
-        "ranking": [{"name": r.get("name"), "smiles": r.get("smiles"),
-                     "affinity_kcal_mol": r.get("affinity_kcal_mol"), "engine": r.get("engine")}
-                    for r in ranking],
-        "artifacts": [{"name": a["name"], "label": a["label"], "path": a["path"]} for a in result.get("artifacts", [])],
-        "result_file": args.output or f"var/runs/{result.get('run_id')}/",
-    })
-    return 0 if result.get("status") == "ok" else 1
-
-
-def _agent_message(args: argparse.Namespace) -> str:
-    if args.message:
-        return args.message
-    if args.input:
-        return str(_parse_input(args.input).get("text") or args.input)
-    return "请用示例分子库完成一次完整的分子筛选，并给出排序结论。"
 
 
 def mode_flow(args: argparse.Namespace) -> int:
@@ -269,7 +220,6 @@ def _serialize(obj: Any) -> Any:
 
 MODES = {
     "http": mode_http,
-    "pipeline": mode_pipeline,
     "flow": mode_flow,
     "agent": mode_agent,
     "runs": mode_runs,

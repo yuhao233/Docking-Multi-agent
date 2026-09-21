@@ -85,8 +85,8 @@ const state = {
   page: 'chat',
   /* view：顶层页面（workbench = 工作台 / settings = 设置），由导航栏与 #/settings 切换 */
   view: 'workbench',
-  /* mode：参数模式下的运行方式（pipeline = 确定性流水线 / agent = 多 Agent 协作） */
-  mode: 'pipeline',
+  /* mode：参数模式的执行方式恒为多 Agent 协作（表单仍是权威参数） */
+  mode: 'agent',
   /* advancedTouched：对话模式的高级设置是否被用户展开过 */
   advancedTouched: false,
   /* touchedFields：用户**真正改动过**的字段 id 集合。只有这些字段才作为"默认值"下发；
@@ -745,7 +745,7 @@ function getJson(path) {
  *   这里把标准帧**翻译回既有内部事件**再交给 handleEvent，
  *   因此渲染、编排、报告、历史等逻辑一行都不用改（旧端点仍保留为 deprecated 兼容层）。
  * ------------------------------------------------------------------------ */
-const STANDARD_ASSISTANTS = { chat: 'coordinator', agent: 'coordinator', pipeline: 'pipeline' };
+const STANDARD_ASSISTANTS = { chat: 'coordinator', agent: 'coordinator' };
 
 function runsStreamPath(threadId) {
   return '/threads/' + encodeURIComponent(threadId) + '/runs/stream';
@@ -3239,12 +3239,8 @@ function buildPayload() {
   // 阳性对照留空 → 显式跳过对照分析（后端 v0.5：不填即跳过）
   if (!form.positive_control) params.skip_positive_control = true;
   const payload = { params: params, paramChips: paramChips(form, params) };
-  if (state.mode === 'agent') {
-    payload.mode = 'manual';
-    if (message) payload.message = message;
-  } else {
-    payload.mode = 'pipeline';
-  }
+  payload.mode = 'manual';                 // 表单参数为权威参数，由协调 Agent 执行
+  if (message) payload.message = message;
   payload.form = form;
   return payload;
 }
@@ -3538,9 +3534,8 @@ function setRunning(running) {
   /* 开跑 → 自动展开「运行详情」（时间轴 / 日志 / 工具轨迹就在那里）；
      停下不再自动收起，用户可以自己折叠。 */
   if (running) setRunDetailsOpen(true);
-  // 运行期间禁止切换子页、切换运行方式，避免串台
+  // 运行期间禁止切换子页，避免串台
   document.querySelectorAll('#mode-tabs .page-tab').forEach((button) => { button.disabled = running; });
-  document.querySelectorAll('#mode-switch .seg-btn').forEach((button) => { button.disabled = running; });
 }
 
 async function startRun() {
@@ -3605,8 +3600,7 @@ async function startRun() {
   }
 
   /* 标准 Agent Protocol：线程 = 会话 id（首次使用时注册到服务端），运行走线程级 stream 端点 */
-  const assistantId = STANDARD_ASSISTANTS[
-    state.page === 'chat' ? 'chat' : (state.mode === 'agent' ? 'agent' : 'pipeline')];
+  const assistantId = STANDARD_ASSISTANTS[state.page === 'chat' ? 'chat' : 'agent'];
   const threadId = state.conversationId || loadConversationId();
   await ensureThreadRegistered(threadId);
   const url = runsStreamPath(threadId);
@@ -4358,7 +4352,7 @@ function renderSummary(run, moleculeCount) {
   if (!run) return;
   const items = [
     ['run_id', run.run_id || state.runId || '—'],
-    ['模式', run.kind === 'agent' ? '多 Agent 协作' : (run.kind === 'pipeline' ? '确定性流水线' : fmtText(run.kind))],
+    ['模式', run.kind === 'agent' ? '多 Agent 协作' : (run.kind === 'pipeline' ? '历史记录（旧流水线）' : fmtText(run.kind))],
     ['受体', run.receptor_label || run.receptor || '—'],
     ['引擎', run.engine || ($('engine-select').value)],
     ['分子数', fmtInt(run.molecule_count !== undefined ? run.molecule_count : moleculeCount)],
@@ -5372,7 +5366,7 @@ function resetLiveTableForLoadedRun(total) {
 function historyRowNode(run) {
   const tr = el('tr', 'clickable');
   tr.appendChild(el('td', 'mono', fmtTime(run.created_at)));
-  tr.appendChild(el('td', null, run.kind === 'agent' ? '多 Agent' : (run.kind === 'pipeline' ? '流水线' : fmtText(run.kind))));
+  tr.appendChild(el('td', null, run.kind === 'agent' ? '多 Agent' : (run.kind === 'pipeline' ? '旧流水线' : fmtText(run.kind))));
   tr.appendChild(el('td', null, fmtText(run.receptor_label || run.receptor)));
   tr.appendChild(el('td', 'num', fmtInt(run.molecule_count)));
   const top = Array.isArray(run.top) && run.top.length ? run.top[0] : null;
@@ -6056,23 +6050,8 @@ function bindStaticEvents() {
   $('chat-send').addEventListener('click', () => { startRun(); });
   $('btn-chat-new').addEventListener('click', () => { startNewConversation(); });
 
-  // 运行方式（仅参数模式使用）
-  document.querySelectorAll('#mode-switch .seg-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.mode = button.dataset.mode;
-      document.querySelectorAll('#mode-switch .seg-btn').forEach((other) => {
-        other.classList.toggle('active', other === button);
-      });
-      const agentMode = state.mode === 'agent';
-      $('agent-only').classList.toggle('hidden', !agentMode);
-      // 对话模式始终显示工具轨迹；参数模式仅在多 Agent 下显示
-      const showAgentBox = state.page === 'chat' ? true : agentMode;
-      $('agent-box').classList.toggle('hidden', !showAgentBox);
-      $('mode-hint').textContent = agentMode
-        ? '多 Agent 协作：协调 Agent 调度 3 个子 Agent，输出 Markdown 报告（需要 LLM）。表单参数为权威参数。'
-        : '确定性流水线：不需要 LLM，速度快、结果可复现。表单参数为权威参数。';
-    });
-  });
+  // 参数模式恒为多 Agent 协作（表单参数为权威参数）：工具轨迹始终显示
+  $('agent-box').classList.remove('hidden');
 
   // 运行控制
   $('btn-start').addEventListener('click', () => { startRun(); });

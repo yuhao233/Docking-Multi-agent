@@ -1,7 +1,7 @@
 """FastAPI 应用：交互式网页 + REST/SSE 接口（实现 docs/api.md 契约）。
 
 分层：本模块只做「HTTP 适配」——参数校验、SSE 转发、文件下载；
-计算在 `docking_agent.core`，编排在 `docking_agent.pipeline` / `docking_agent.agents`，
+计算在 `docking_agent.core`，编排在 `docking_agent.agents`，
 产物与运行记录在 `docking_agent.runs` / `docking_agent.reporting`。
 """
 from __future__ import annotations
@@ -26,18 +26,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 
 from docking_agent import __version__
-from docking_agent.api.schemas import AgentRequest, PipelineRequest
+from docking_agent.api.schemas import AgentRequest
 from docking_agent.agents.blackboard import (Blackboard, current_blackboard, shared_store,
                                               store_blackboard)
 from docking_agent.cancellation import cancel_flag, clear_cancel, request_cancel
 from docking_agent.config import env, env_int, load_env
 from docking_agent.core import DEFAULT_RECEPTOR, RECEPTOR_ALIASES, list_receptors
 from docking_agent.paths import project_root, runs_dir, web_dir
-from docking_agent.pipeline import (
-    default_library_path,
-    positive_control_info,
-    run_pipeline,
-)
+from docking_agent.core.library import default_library_path, positive_control_info
 from docking_agent.reporting import content_type_for
 from docking_agent.reporting.store import resolve_output
 from docking_agent.runs import (
@@ -447,7 +443,7 @@ def _build_run_pdf(run_id: str) -> Optional[bytes]:
     ranking = store.ranking_rows(run_id)
     receptor = str(meta.get("receptor_label") or meta.get("receptor") or "")
     return build_report_pdf(
-        {"ranking": ranking}, kind=str(meta.get("kind") or "pipeline"), run_id=run_id,
+        {"ranking": ranking}, kind=str(meta.get("kind") or "agent"), run_id=run_id,
         receptor_label=receptor, created_at=str(meta.get("created_at") or ""),
         markdown=report_md.read_text(encoding="utf-8"), chart_paths=chart_paths,
         molecule_count=int(meta.get("molecule_count") or 0))
@@ -655,78 +651,6 @@ def create_app() -> FastAPI:
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(e))
 
-    # ---------------- 执行：确定性流水线 ----------------
-    # 兼容层：新客户端请用标准 Agent Protocol（POST /threads/{tid}/runs/stream，
-    # assistant_id=pipeline）。保留此端点只为老客户端不被打断，不再新增能力。
-    @app.post("/api/pipeline/stream", deprecated=True,
-              summary="[已废弃] 确定性流水线流式执行（请改用标准 Agent Protocol）")
-    async def api_pipeline_stream(req: PipelineRequest, request: Request):
-        site = _site_from(req.site_center, req.site_size)
-        run = get_run_store().new("pipeline", req.model_dump())
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def cb(event: Dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, event)
-
-        def worker() -> None:
-            try:
-                run_pipeline(
-                    ligands_text=req.ligands_text, molecule_file=req.molecule_file,
-                    receptor=req.receptor, receptor_file=req.receptor_file,
-                    positive_control=req.positive_control,
-                    exhaustiveness=req.exhaustiveness, n_poses=req.n_poses,
-                    engine=(req.engine or "auto"),
-                    pocket_engine=getattr(req, "pocket_engine", ""),
-                    allow_example_fallback=req.allow_example_fallback,
-                    dock_positive_control=req.dock_positive_control,
-                    skip_positive_control=req.skip_positive_control,
-                    site=site, max_ligands=(req.max_ligands or None),
-                    # 留空(None) = 保存位姿（系统默认）；显式 false 才关闭
-                    save_poses=(True if req.save_poses is None else bool(req.save_poses)),
-                    protonation=getattr(req, "protonation", ""),
-                    protonation_ph=getattr(req, "protonation_ph", 0.0),
-                    run=run, progress_cb=cb,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.exception("流水线执行失败")
-                payload = error_payload(e, {"node_name": "pipeline", "run_id": run.id})
-                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", **payload})
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-
-        task = asyncio.create_task(asyncio.to_thread(worker))
-        state.tasks[run.id] = task
-
-        async def gen() -> AsyncGenerator[str, None]:
-            yield sse_event({"type": "start", "run_id": run.id, "request": run.data.get("request")})
-            try:
-                while True:
-                    event = await queue.get()
-                    if event is None:
-                        break
-                    # 逐分子结果：批量事件与单条事件都要补上位姿下载地址
-                    if event.get("type") == "molecules":
-                        for item in (event.get("items") or []):
-                            _attach_pose_url(item, run.id)
-                    elif event.get("type") == "molecule":
-                        _attach_pose_url(event, run.id)
-                    yield sse_event(event)
-            finally:
-                state.tasks.pop(run.id, None)
-                clear_cancel(run.id)
-            run.save()
-            yield sse_event({"type": "done", "run_id": run.id, "summary": run.to_dict()})
-
-        return StreamingResponse(gen(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-    # 标准面的 pipeline/runs 复用同一条流水线链路
-    app.state.legacy_pipeline_stream = api_pipeline_stream
-
-    # ---------------- 执行：多 Agent ----------------
-    # 兼容层：新客户端请用标准 Agent Protocol（POST /threads/{tid}/runs/stream，
-    # assistant_id=coordinator）。保留此端点只为老客户端不被打断，不再新增能力。
     @app.post("/api/agent/stream", deprecated=True,
               summary="[已废弃] 多 Agent 协作流式执行（请改用标准 Agent Protocol）")
     async def api_agent_stream(req: AgentRequest, request: Request):
@@ -1153,26 +1077,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
         req = AgentRequest(message=_extract_text(body), **_agent_fields(body))
         return await api_agent_stream(req, request)
-
-    @app.post("/pipeline", deprecated=True,
-              summary="[已废弃] 一次性返回的流水线入口（请改用 /threads/{tid}/runs/wait）")
-    async def legacy_pipeline(req: PipelineRequest) -> JSONResponse:
-        site = _site_from(req.site_center, req.site_size)
-        result = await asyncio.to_thread(
-            run_pipeline,
-            ligands_text=req.ligands_text, molecule_file=req.molecule_file,
-            receptor=req.receptor, receptor_file=req.receptor_file,
-            positive_control=req.positive_control,
-            exhaustiveness=req.exhaustiveness, n_poses=req.n_poses,
-            engine=(req.engine or "auto"),
-            pocket_engine=getattr(req, "pocket_engine", ""),
-            allow_example_fallback=req.allow_example_fallback,
-            dock_positive_control=req.dock_positive_control,
-            skip_positive_control=req.skip_positive_control,
-            site=site, max_ligands=(req.max_ligands or None),
-            save_poses=(True if req.save_poses is None else bool(req.save_poses)),
-        )
-        return JSONResponse(content=json.loads(json.dumps(result, ensure_ascii=False, default=str)))
 
     @app.get("/files/{key}")
     async def legacy_files(key: str):

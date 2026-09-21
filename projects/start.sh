@@ -131,9 +131,12 @@ if [ "$DO_CHECK" = "1" ]; then
     fi
     echo "（上方 ○ 项为可选组件，相关能力会降级；继续做功能自检）"
   }
-  echo "[3/3] 功能自检 ..."
+  echo "[3/3] 功能自检（多 Agent 编排，使用内置假 LLM，不消耗真实额度）..."
   "$VENV_PY" -m docking_agent -m receptors
-  "$VENV_PY" -m docking_agent -m pipeline -i "CCO" --max-ligands 1
+  if ! "$VENV_PY" scripts/smoke_test.py --fast; then
+    echo "✗ 功能自检未通过；常见原因见上方输出（对接引擎、依赖或端口占用）。" >&2
+    exit 1
+  fi
   echo "自检完成。"
   exit 0
 fi

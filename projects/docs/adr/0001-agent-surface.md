@@ -71,6 +71,15 @@
 | 协议形状抽成共享模块 | `src/docking_agent/agents/protocol.py`（P1） | 帧类型快照（P1） |
 | 平台图与项目工具/提示词不漂移 | `langgraph-deploy/tests/` | `tests/test_core.py::test_coordinator_tool_list_matches_config`（已有） |
 
+## 修订记录
+
+- **2026-09-21（决策修订）**：产品面原有两条执行路径（不经过 Agent 的确定性流水线、多 Agent 协作）。
+  前者是**第二条对接代码路径**，与「能力只加一处」冲突，且两条都要验、都要修，已整体删除
+  （`pipeline.py`、`/api/pipeline/stream`、`/pipeline`、`-m pipeline`、前端「运行方式」选择器、
+  平台面 `pipeline` 图 7→6；共享的库/阳性对照辅助迁到 `core/library.py`）。
+  修订后的口径：**对接一律由协调 Agent 分发工具执行，因此运行需要可用的 LLM 端点**。
+  详见 `projects/README.md` 改造记录 60。
+
 ## 备选方案（未采纳）
 
 - **B：平台面为唯一对外 Agent API**。需要网页改调 `:2024` 或本地做代理，引入第二进程与

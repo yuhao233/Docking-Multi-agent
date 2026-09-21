@@ -177,19 +177,11 @@
 
         <details class="field-group" open>
           <summary>运行方式</summary>
-          <div class="segmented mode" id="mode-switch" role="tablist" aria-label="运行方式">
-            <button type="button" class="seg-btn active" data-mode="pipeline" role="tab">确定性流水线（不需要 LLM）</button>
-            <button type="button" class="seg-btn" data-mode="agent" role="tab">多 Agent 协作（需要 LLM）</button>
-          </div>
-          <p class="hint" id="mode-hint">流水线：不需要 LLM，速度快、可复现。</p>
-
-          <div id="agent-only" class="hidden">
-            <p class="hint">
-              多 Agent 协作模式（需要 LLM）。
-              <span class="tip-icon" tabindex="0" role="button" aria-label="多 Agent 手动模式说明"
-                data-tip-html="请求体带 <code>mode=manual</code>：表单参数为权威参数，目标描述仅作补充。<br>协调 Agent 会调度子 Agent 并出具 Markdown 报告（需要 LLM）。">?</span>
-            </p>
-          </div>
+          <p class="hint" id="mode-hint">
+            表单参数为权威参数，由协调 Agent 调度子 Agent 执行（需要 LLM）。
+            <span class="tip-icon" tabindex="0" role="button" aria-label="多 Agent 手动模式说明"
+              data-tip-html="请求体带 <code>mode=manual</code>：表单参数为权威参数，目标描述仅作补充。<br>协调 Agent 会调度子 Agent 并出具 Markdown 报告。">?</span>
+          </p>
         </details>
       </section>
 
@@ -391,7 +383,7 @@
               <tbody id="pocket-tbody"></tbody>
             </table>
           </div>
-          <p class="empty" id="pocket-empty">尚无口袋预测数据。多 Agent 模式下由「口袋分析 Agent」用 P2Rank / 内置几何法预测；确定性流水线在未指定位点时会自动分析。</p>
+          <p class="empty" id="pocket-empty">尚无口袋预测数据。多 Agent 模式下由「口袋分析 Agent」用 P2Rank / 内置几何法预测；未指定位点时由「口袋分析 Agent」自动分析。</p>
 
           <!-- 多 Agent 协作痕迹（共享黑板统计 + 各 Agent 备注） -->
           <h3 class="sub-head">
@@ -402,7 +394,7 @@
           </h3>
           <div class="collab-stats" id="collab-stats"></div>
           <div class="collab-notes" id="collab-notes"></div>
-          <p class="empty" id="collab-empty">确定性流水线不产生多 Agent 协作记录。</p>
+          <p class="empty" id="collab-empty">尚无多 Agent 协作记录。</p>
         </div>
 
         <!-- 历史运行 -->

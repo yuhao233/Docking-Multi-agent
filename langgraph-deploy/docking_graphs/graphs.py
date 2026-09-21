@@ -33,7 +33,6 @@ from docking_agent.config import env_int
 from docking_agent import intake as intake_layer
 from docking_agent.api.schemas import AgentRequest
 from docking_agent.agents.persistence import persist_agent_run
-from docking_agent.pipeline import run_pipeline
 
 # 绝对导入（不能用相对导入）：LangGraph CLI 是按**文件路径**加载 graphs.py 的，
 # 此时模块没有 __package__，`from .runtime import ...` 会报
@@ -222,114 +221,6 @@ def docking_agent() -> CompiledStateGraph:
 def binding_agent() -> CompiledStateGraph:
     """结合模式检测 Agent（相互作用指纹 / 阳性对照相似度）。"""
     return _worker("binding")
-
-
-# --------------------------------------------------------------------------- #
-# 3) 确定性流水线（无 LLM，Studio 里可直接复算真实对接结果）
-# --------------------------------------------------------------------------- #
-class PipelineState(TypedDict, total=False):
-    """流水线输入（与 `POST /api/pipeline/stream` 的字段一致）。"""
-
-    ligands_text: str
-    molecule_file: str
-    receptor: str
-    receptor_file: str
-    positive_control: str
-    exhaustiveness: Optional[int]
-    n_poses: Optional[int]
-    engine: str
-    pocket_engine: str
-    site_center: Optional[List[float]]
-    site_size: Optional[List[float]]
-    save_poses: bool
-    max_ligands: int
-    protonation: str
-    protonation_ph: float
-    allow_example_fallback: bool
-    # ---- 输出 ----
-    status: str
-    message: str
-    run_id: str
-    run_dir: str
-    molecule_count: int
-    top: List[Dict[str, Any]]
-    param_plan: Dict[str, Any]
-    artifacts: List[Dict[str, Any]]
-    notes: List[str]
-
-
-def _compact_artifacts(run: Any) -> List[Dict[str, Any]]:
-    return [{"name": a.get("name"), "label": a.get("label"), "path": a.get("path"),
-             "size": a.get("size")} for a in run.artifacts()]
-
-
-async def _run_pipeline(state: PipelineState) -> Dict[str, Any]:
-    site: Optional[Dict[str, Any]] = None
-    if state.get("site_center"):
-        site = {"center": list(state["site_center"]),
-                "size": list(state.get("site_size") or [22.0, 22.0, 22.0])}
-    request = {k: state.get(k) for k in
-               ("molecule_file", "receptor", "receptor_file", "positive_control",
-                "exhaustiveness", "n_poses", "engine", "pocket_engine", "max_ligands",
-                "save_poses", "protonation", "protonation_ph")}
-    request["ligands_text_chars"] = len(state.get("ligands_text") or "")
-
-    run = await open_run("pipeline", request)
-    with bind_run(run):
-        # 纯计算 + 真实对接，必须离开事件循环（分钟级），to_thread 会复制 context
-        try:
-            result = await asyncio.to_thread(
-                run_pipeline,
-                ligands_text=state.get("ligands_text") or "",
-                molecule_file=state.get("molecule_file") or "",
-                receptor=state.get("receptor") or None,
-                receptor_file=state.get("receptor_file") or "",
-                positive_control=state.get("positive_control") or "",
-                exhaustiveness=state.get("exhaustiveness"),
-                n_poses=state.get("n_poses"),
-                engine=state.get("engine") or "auto",
-                pocket_engine=state.get("pocket_engine") or "",
-                allow_example_fallback=bool(state.get("allow_example_fallback")),
-                site=site,
-                max_ligands=state.get("max_ligands") or None,
-                save_poses=bool(state.get("save_poses", True)),
-                protonation=state.get("protonation") or "",
-                protonation_ph=state.get("protonation_ph") or None,
-                run=run,
-            )
-        except Exception as e:  # noqa: BLE001 - 失败也要留痕，绝不让 run 停在 running
-            await asyncio.to_thread(run.finish, "error", str(e))
-            await save_run(run)
-            raise
-        compact = {
-            "status": result.get("status"),
-            "message": result.get("message"),
-            **call_meta(run),
-            "molecule_count": len(result.get("molecules") or []),
-            "top": (result.get("ranking") or [])[:5],
-            "param_plan": result.get("param_plan") or {},
-            "notes": result.get("notes") or [],
-            "artifacts": _compact_artifacts(run),
-        }
-        # write_json / save 都是同步 I/O → 同样放进线程
-        await asyncio.to_thread(run.write_json, "studio_result", compact,
-                                label="Studio 流水线结果（摘要）")
-        # studio_result 本身也是产物：写完之后刷新清单，返回值里才看得到
-        compact["artifacts"] = _compact_artifacts(run)
-        # 内层可能没 finish（异常被吞 / 只返回字典）→ 这里兜底，绝不让 run.json 停在 running
-        if str(run.data.get("status") or "") in ("", "running"):
-            await asyncio.to_thread(run.finish, str(result.get("status") or "ok"))
-        await save_run(run)
-        return compact
-
-
-def pipeline() -> CompiledStateGraph:
-    """确定性筛选流水线（真实对接，无 LLM）。"""
-    builder = StateGraph(PipelineState)
-    builder.add_node("pipeline", _run_pipeline)
-    builder.add_edge(START, "pipeline")
-    builder.add_edge("pipeline", END)
-    return builder.compile(name="pipeline")
 
 
 # --------------------------------------------------------------------------- #

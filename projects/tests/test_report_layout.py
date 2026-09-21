@@ -40,7 +40,7 @@ def _ranking(n: int = 3) -> List[Dict[str, Any]]:
 
 def test_report_puts_structure_card_next_to_each_compound(tmp_path: Path) -> None:
     """3.1 节：每个推荐分子都要有 `recommend_card_NN` 结构卡，且不再内嵌冗余网格图。"""
-    run = Run(tmp_path, "R-CARD", "pipeline", {"receptor": "thrombin"})
+    run = Run(tmp_path, "R-CARD", "agent", {"receptor": "thrombin"})
     result: Dict[str, Any] = {"ranking": _ranking(3), "receptors": [], "positive_control": {},
                               "notes": [], "param_plan": {}, "task_spec": {}}
     written = write_report_charts(run, result["ranking"], {}, result=result)
@@ -50,7 +50,7 @@ def test_report_puts_structure_card_next_to_each_compound(tmp_path: Path) -> Non
     for name in cards:
         assert (run.dir / "charts" / f"{name}.png").is_file(), name
 
-    md = build_markdown_report(result, kind="pipeline", run_id="R-CARD",
+    md = build_markdown_report(result, kind="agent", run_id="R-CARD",
                                artifacts=run.artifacts())
     assert "#### 逐个分子：2D 结构 + 关键指标" in md
     # 每个分子一节，卡片图就挂在该节里（结构挨着数据），顺序与排行一致
@@ -116,7 +116,7 @@ def test_cards_registered_as_artifacts_and_in_zip(tmp_path: Path) -> None:
     from docking_agent.runs import RunStore
     import zipfile
 
-    run = Run(tmp_path / "runs", "R-CARDZIP", "pipeline", {"receptor": "thrombin"})
+    run = Run(tmp_path / "runs", "R-CARDZIP", "agent", {"receptor": "thrombin"})
     result: Dict[str, Any] = {"ranking": _ranking(2), "receptors": [], "positive_control": {},
                               "notes": [], "param_plan": {}, "task_spec": {}}
     write_report_charts(run, result["ranking"], {}, result=result)

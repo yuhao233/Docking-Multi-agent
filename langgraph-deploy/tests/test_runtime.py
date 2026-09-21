@@ -26,7 +26,7 @@ pytestmark = pytest.mark.offline
 # create_run：目录 + run.json(kind=studio, request.graph)
 # --------------------------------------------------------------------------- #
 def test_create_run_builds_dir_and_studio_meta(workspace: Path):
-    run = create_run("pipeline", {"ligands_text": "CCO", "engine": "vina"})
+    run = create_run("coordinator", {"message": "用示例库对接 thrombin", "mode": "chat"})
 
     assert run.dir.is_dir()
     assert run.dir.parent == workspace / "var" / "runs"
@@ -35,10 +35,9 @@ def test_create_run_builds_dir_and_studio_meta(workspace: Path):
     meta = json.loads((run.dir / "run.json").read_text(encoding="utf-8"))
     assert meta["kind"] == "studio"
     assert meta["run_id"] == run.id
-    assert meta["request"]["graph"] == "pipeline"
-    assert meta["request"]["mode"] == "studio"
-    assert meta["request"]["ligands_text"] == "CCO"
-    assert meta["request"]["engine"] == "vina"
+    assert meta["request"]["graph"] == "coordinator"
+    assert meta["request"]["mode"] == "chat"
+    assert meta["request"]["message"] == "用示例库对接 thrombin"
     assert meta["status"] == "running"
     assert meta["log"], "create_run 应至少写入一条运行日志"
 

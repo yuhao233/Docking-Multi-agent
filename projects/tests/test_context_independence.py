@@ -42,7 +42,7 @@ ALLOWED: Dict[str, Set[str]] = {
     # 运行请求回溯（质子化策略/库级下限）：显式参数优先 + ContextVar 兜底
     "core/protonation.py": {"_run_request"},
     "core/normalize.py": {"record_input_normalization"},
-    # 非工具侧的两个辅助函数：调用方可能是 CLI/pipeline（无 runtime），保留显式兜底
+    # 非工具侧的两个辅助函数：调用方可能是 CLI（无 runtime），保留显式兜底
     "tools/recommend.py": {"_rows_from_file", "build_for_run"},
     # 落盘层统一入口：黑板由 API/部署层注入（同样属待决策项）
     "agents/persistence.py": {"persist_agent_run"},

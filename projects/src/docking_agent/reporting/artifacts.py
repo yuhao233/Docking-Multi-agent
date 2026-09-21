@@ -399,7 +399,7 @@ def write_report_pdf(run: Any, result: Dict[str, Any], *, markdown: str = "") ->
             if report_md.is_file():
                 # 直接渲染落盘的 report.md：保证 PDF 与页面上看到的报告内容完全一致
                 text = report_md.read_text(encoding="utf-8")
-        run_kind = str(getattr(run, "kind", "pipeline") or "pipeline")
+        run_kind = str(getattr(run, "kind", "agent") or "agent")
         run_id = str(getattr(run, "id", "") or "")
         data = getattr(run, "data", {}) or {}
         # 流水线在写产物之后才 run.set(molecule_count=...)，这里直接从 result 兜底，

@@ -110,3 +110,49 @@ def test_no_report_reason_mentions_decision(tmp_path: Any, decision: str) -> Non
         assert decision in reason, reason
     else:
         assert reason == "未执行任何计算", reason
+
+
+# --------------------------------------------------------------------------- #
+# 回归（Phase 2 收尾）：流水线删除后暴露的两处 Agent 路径缺口
+# --------------------------------------------------------------------------- #
+def test_inline_text_with_commas_is_parsed_as_smiles_not_csv() -> None:
+    """「名称:SMILES,名称:SMILES」必须解析出分子。
+
+    真实回归：逗号让格式嗅探判成 CSV，`normalize_ligand_text` 返回 0 条；删掉流水线后
+    Agent 路径成了唯一入口，用户这样写就什么都跑不了。现在解析不到时回退行内 SMILES 解析。
+    """
+    from docking_agent.core.normalize import normalize_ligand_text
+
+    mols, meta = normalize_ligand_text("乙醇:CCO,甲醇:CO")
+    assert [(m["name"], m["smiles"]) for m in mols] == [("乙醇", "CCO"), ("甲醇", "CO")]
+    assert meta["format"] == "smi"
+
+    # 真正的 CSV（有表头）仍按 CSV 解析，不能被回退逻辑改口径
+    csv_mols, csv_meta = normalize_ligand_text("name,smiles\n乙醇,CCO")
+    assert csv_meta["format"] == "csv"
+    assert [(m["name"], m["smiles"]) for m in csv_mols] == [("乙醇", "CCO")]
+
+
+def test_docking_tool_passes_save_poses_and_max_ligands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """表单里的「保存对接位姿」「最大分子数」必须传到对接层（此前 Agent 路径忽略它们）。"""
+    from typing import Any, Dict
+
+    from docking_agent.tools import docking as TD
+
+    captured: Dict[str, Any] = {}
+
+    def fake_dock_library(molecules: Any, **kwargs: Any) -> Dict[str, Any]:
+        captured.update(kwargs)
+        return {"status": "ok", "receptors": [], "notes": []}
+
+    monkeypatch.setattr(TD, "dock_library", fake_dock_library)
+
+    TD.molecular_docking.func(molecules_json='[{"name":"A","smiles":"CCO"}]',
+                              receptor_sources="thrombin", save_poses=False, max_ligands=3)
+    assert captured.get("pose_dir") is None, "save_poses=False 时不应写位姿目录"
+    assert captured.get("max_ligands") == 3
+
+    captured.clear()
+    TD.molecular_docking.func(molecules_json='[{"name":"A","smiles":"CCO"}]',
+                              receptor_sources="thrombin")
+    assert captured.get("max_ligands") is None, "max_ligands=0 表示不限制"

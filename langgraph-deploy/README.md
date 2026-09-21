@@ -16,7 +16,7 @@ langgraph-deploy/
 │   ├── check.sh            # 自检：依赖一致性 + 每个图真加载
 │   ├── verify_graphs.py    # 自检实现（图 / 工具集 / 工作区 / LLM / 计算引擎）
 │   ├── dev.sh              # 启动 langgraph dev（连 Studio 的入口）
-│   ├── smoke.py            # 冒烟：对已启动的服务做真实调用（pipeline / coordinator）
+│   ├── smoke.py            # 冒烟：对已启动的服务做真实调用（coordinator / 子 Agent）
 │   ├── prepare_build.sh    # 第二阶段：把源码同步进 Docker 构建上下文
 │   ├── build.sh            # 第二阶段：langgraph build 镜像
 │   └── up.sh               # 第二阶段：langgraph up 全栈（api+postgres+redis）
@@ -74,7 +74,6 @@ Studio 是浏览器里的托管前端，通过 `baseUrl` 直连你本机 2024 �
 | 图名 | LangGraph Studio 里做什么 | 需要 LLM |
 | --- | --- | --- |
 | `coordinator` | **主入口**：整体协调 Agent，把任务拆给 4 个子 Agent（属性→口袋→对接→结合模式→推荐→报告） | 是 |
-| `pipeline` | 确定性流水线（属性 → 定盒 → 对接 → 排序 → 报告），**无 LLM**，同一输入可复算 | 否 |
 | `intake` | 任务受理层：自然语言 + 表单 → 结构化任务规约（task_type / authority / 缺失项 / 假设） | 可选（`use_llm=false` 走纯规则） |
 | `property` / `pocket` / `docking` / `binding` | 4 个子 Agent 本身，便于逐步调试单个环节 | 是 |
 
@@ -84,7 +83,7 @@ Studio 是浏览器里的托管前端，通过 `baseUrl` 直连你本机 2024 �
 {"messages": [{"role": "user", "content": "用凝血酶对 CCO、c1ccccc1 做筛选，出报告"}]}
 ```
 
-`pipeline` 的输入是显式字段（Studio 的 Input 面板可直接编辑）：
+`coordinator` 的输入是标准对话输入（Studio 的 Input 面板可直接编辑 messages）：
 
 ```json
 {"ligands_text": "乙醇,CCO\n苯酚,Oc1ccccc1", "receptor": "thrombin",
@@ -125,7 +124,7 @@ Studio 是浏览器里的托管前端，通过 `baseUrl` 直连你本机 2024 �
 # 自检（依赖一致性 + 图加载 + 工具集 + 工作区 + LLM + 计算引擎）
 bash scripts/check.sh
 
-# 冒烟：对**已启动**的服务真实调一次 pipeline（2 分子 / vina / 约 4 秒）
+# 冒烟：对**已启动**的服务真实调一次 coordinator（需要可用的 LLM）
 .venv/bin/python scripts/smoke.py
 # 再带上 coordinator（真实 LLM 多 Agent + 真实对接，约 30–60 秒）
 .venv/bin/python scripts/smoke.py --with-coordinator
@@ -137,7 +136,7 @@ curl -s -X POST http://127.0.0.1:2024/assistants/search \
 # 跑一次流水线图（真实对接）
 curl -s -X POST http://127.0.0.1:2024/runs/wait \
   -H 'Content-Type: application/json' \
-  -d '{"assistant_id":"pipeline","input":{"ligands_text":"乙醇,CCO\n苯酚,Oc1ccccc1",
+  -d '{"assistant_id":"coordinator","input":{"message":"用示例库对接 thrombin 前 2 个分子","
        "receptor":"thrombin","exhaustiveness":1,"save_poses":true}}' | python3 -m json.tool | head -60
 
 # 看这次运行写了什么
@@ -157,11 +156,10 @@ bash scripts/test.sh --live   # 离线 + 真实服务集成：8 项（自起隔�
 | --- | --- | --- |
 | `tests/test_config.py` | `langgraph.json` 解析、7 个入口、依赖与项目一致、`env`/`pip.conf` 存在、无 checkpointer | ✅ |
 | `tests/test_runtime.py` | `create_run` / `bind_run`（三个 ContextVar 的置位与复位，含异常路径）/ `detached_messages` / `last_user_text` / `call_meta` | ✅ |
-| `tests/test_pipeline_graph.py` | 打桩跑通 + 失败路径，断言 run 目录、`run.json` 状态、`studio_result.json`、参数与位点组装 | ✅ |
 | `tests/test_agent_graph.py` | 假 `create_agent` 图：`persist_agent_run` 被调用、消息只增不重、多轮 id 序列正确 | ✅ |
-| `tests/test_schemas.py` | pipeline 16 个输入字段、coordinator 的 `messages`、intake 字段 | ✅ |
+| `tests/test_schemas.py` | coordinator 的 `messages`、intake 字段、子 Agent schema | ✅ |
 | `tests/test_blockbuster.py` | 在 blockbuster 下跑两种节点，断言无 `BlockingError`（另含自证用例：同 harness 下 `os.mkdir` 必抛） | ✅ |
-| `tests/test_live_server.py` | 真实服务：图清单、schema、pipeline 真对接+产物、3 路并发隔离、无分子错误路径、未知 assistant 4xx、多轮记忆、服务日志无 BlockingError | ✅ 8/8 |
+| `tests/test_live_server.py` | 真实服务：图清单、schema、未知 assistant 4xx、多轮记忆、服务日志无 BlockingError | ✅ |
 
 ### 6.2 真实跑过的证据
 
@@ -170,12 +168,12 @@ bash scripts/test.sh --live   # 离线 + 真实服务集成：8 项（自起隔�
 | `scripts/check.sh` | 依赖清单 19 条与 `../projects` 完全一致；7 个图全部加载成功且**无 checkpointer** |
 | 工具集一致性 | 协调 Agent 12 个工具、property 2 / pocket 5 / docking 3 / binding 3 个工具，全部来自项目源码 |
 | 运行环境 | 工作区解析到 `projects/`，可对接受体 2 个（thrombin_1DWC / trypsin_1PTU），LLM 6 个角色实例可构建 |
-| `pipeline` 图（Agent Server 真实调用） | 2 分子 + Vina，**4 秒**完成，22 项产物（含 `docking.json` / `ranking.csv` / `report.md` / `report.pdf` / 2D+3D 图） |
+| ~~`pipeline` 图~~（该图已移除，见 ADR-0001 与 projects/README 记录 60） | 历史实测：2 分子 + Vina，4 秒完成，22 项产物 |
 | `coordinator` 图（真实 LLM 多 Agent） | **34 秒**完成，14 条消息，产出 `docking.json` / `report.md` / `report.pdf` / `agent_report.md`，并记录各角色模型与调用次数 |
 | 并发 3 个 run | 3 个 `run_id` / 3 个运行目录互不串台，各自都有 `docking.json` |
 | `property` 子 Agent 图 | 5 秒，产出 `properties.json` 与报告 |
 | `intake` 图 | 0.5 秒（`use_llm=false` 纯规则），任务规约 `task_type=screening / authority=chat / decision=run`，指令里渲染「搜索强度=自动（基准 16）」 |
-| Studio 前端连本机服务 | 已 `Connected` 并渲染出 `pipeline` 的图与输入表单（截图 `docs/studio-connected.png`） |
+| Studio 前端连本机服务 | 已 `Connected` 并渲染出图的输入表单（截图 `docs/studio-connected.png`，为 `pipeline` 图存在时的记录） |
 
 ### 6.3 本轮修掉的两个真实缺陷（都由上面的测试守住）
 
@@ -187,7 +185,7 @@ bash scripts/test.sh --live   # 离线 + 真实服务集成：8 项（自起隔�
    `BlockingError: Blocking call to os.stat`（`tests/test_blockbuster.py` 就是按更严格的配置守的），
    而且每请求重建 5 个 LLM 实例纯属浪费。
    → 现在内层图在**图构建阶段**建好并缓存（事件循环之外），节点里直接用缓存对象。
-2. **pipeline 节点不自行收尾运行状态**：内层异常被吞或只返回字典时，`run.json` 会永远停在
+2. **（历史）流水线节点不自行收尾运行状态**：内层异常被吞或只返回字典时，`run.json` 会永远停在
    `status="running"`。→ 现在节点自己 `try/except`：失败落 `error` 再抛，成功但内层没 finish 时兜底 finish。
 
 ### 6.4 一个使用陷阱（写进测试）

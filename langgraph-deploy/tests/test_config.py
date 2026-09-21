@@ -14,10 +14,9 @@ LANGGRAPH_JSON = DEPLOY_DIR / "langgraph.json"
 DEPLOY_PYPROJECT = DEPLOY_DIR / "pyproject.toml"
 PROJECT_PYPROJECT = DEPLOY_DIR.parent / "projects" / "pyproject.toml"
 
-# langgraph.json 的 7 个入口：图名 -> graphs.py 里的工厂函数名
+# langgraph.json 的 6 个入口：图名 -> graphs.py 里的工厂函数名
 EXPECTED_GRAPH_FACTORIES = {
     "coordinator": "coordinator",
-    "pipeline": "pipeline",
     "intake": "intake",
     "property": "property_agent",
     "pocket": "pocket_agent",
@@ -30,11 +29,11 @@ def _load_langgraph_json() -> dict:
     return json.loads(LANGGRAPH_JSON.read_text(encoding="utf-8"))
 
 
-def test_langgraph_json_parses_and_declares_seven_graphs():
+def test_langgraph_json_parses_and_declares_six_graphs():
     cfg = _load_langgraph_json()
     assert isinstance(cfg.get("graphs"), dict)
     assert set(cfg["graphs"]) == set(EXPECTED_GRAPH_FACTORIES)
-    assert len(cfg["graphs"]) == 7
+    assert len(cfg["graphs"]) == 6
 
 
 @pytest.mark.parametrize("name,factory", sorted(EXPECTED_GRAPH_FACTORIES.items()))
@@ -83,11 +82,10 @@ def test_factory_returns_compiled_graph_without_checkpointer(graphs_module, name
     assert graph.checkpointer is None, f"{name} 自带了 checkpointer"
 
 
-def test_non_pipeline_graphs_are_single_node_wrappers(graphs_module):
+def test_agent_graphs_are_single_node_wrappers(graphs_module):
     """4 个子 Agent + coordinator 都应是「一层运行作用域」的单节点包装图。"""
     for factory in ("coordinator", "property_agent", "pocket_agent",
                     "docking_agent", "binding_agent"):
         graph = getattr(graphs_module, factory)()
         assert "agent" in graph.nodes
-    assert "pipeline" in graphs_module.pipeline().nodes
     assert "intake" in graphs_module.intake().nodes

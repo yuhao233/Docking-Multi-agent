@@ -599,6 +599,18 @@ def normalize_ligand_text(text: str, *, name_prefix: str = "MOL") -> Tuple[List[
     encoding, decoded = _decode_bytes(data) if fmt in _TEXT_FORMATS else ("", raw_text)
     records, skipped, meta = _parse_by_format(data, decoded or raw_text, fmt, None, "",
                                               name_prefix, notes)
+    # 逗号会让 `sniff_format` 把「名称:SMILES,名称:SMILES」判成 CSV（真实回归：删掉流水线后
+    # Agent 路径成了唯一入口，用户这样写就解析出 0 条）。一条都解析不出来时，用行内 SMILES
+    # 解析器再试一次；成功则按 smi 归并，失败保持原结论（不掩盖真正的 CSV 解析问题）。
+    # 只在**单行**文本上回退：多行说明它很可能真是 CSV/SDF（例如 name,inchikey 表里
+    # InChIKey 需要在线反查，CSV 解析可能暂时 0 条），此时回退会改写跳过原因、掩盖真实原因。
+    if not records and raw_text.strip() and "\n" not in raw_text.strip():
+        parsed = parse_smiles_text(raw_text)
+        if parsed:
+            notes.append("按 CSV 解析无结果，已按行内 SMILES/名称:SMILES 文本解析")
+            fmt = "smi"
+            records, skipped, meta = _parse_by_format(data, raw_text, fmt, None, "",
+                                                      name_prefix, notes)
     return _finalize("", fmt, records, skipped, meta, encoding, notes)
 
 

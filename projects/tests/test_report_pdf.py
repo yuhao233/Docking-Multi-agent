@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
@@ -25,6 +24,8 @@ ensure_runtime_env()
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from support.fake_llm import coordinator_script_for_form, run_agent  # noqa: E402
+
 
 @pytest.fixture(scope="module")
 def client() -> Iterator[TestClient]:
@@ -34,20 +35,9 @@ def client() -> Iterator[TestClient]:
         yield c
 
 
-def _run_pipeline(client, body: dict) -> str:
-    r = client.post("/api/pipeline/stream", json=body)
-    assert r.status_code == 200, r.text[:300]
-    run_id = None
-    for line in r.text.splitlines():
-        if line.startswith("data: "):
-            try:
-                event = json.loads(line[6:])
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "start":
-                run_id = event["run_id"]
-    assert run_id, "未收到 start 事件"
-    return run_id
+def _run_agent(client, body: dict, monkeypatch) -> str:
+    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 run_id。"""
+    return run_agent(client, coordinator_script_for_form(body), body, monkeypatch)
 
 
 def _pdf_pages(data: bytes) -> int:
@@ -210,7 +200,7 @@ def test_write_report_pdf_does_not_break_main_flow(tmp_path) -> None:
     from docking_agent.reporting.artifacts import write_report_pdf
 
     class BrokenRun:
-        kind = "pipeline"
+        kind = "agent"
         id = "R1"
         dir = tmp_path
         data = {"created_at": "2026-09-14T15:11:16", "molecule_count": 1}
@@ -225,15 +215,15 @@ def test_write_report_pdf_does_not_break_main_flow(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 真实流水线：PDF 产物 + 下载端点 + 规范文件名
+# 真实 Agent 运行：PDF 产物 + 下载端点 + 规范文件名
 # --------------------------------------------------------------------------- #
-def test_pipeline_pdf_artifact_and_normalized_downloads(client) -> None:
-    run_id = _run_pipeline(client, {
+def test_agent_pdf_artifact_and_normalized_downloads(client, monkeypatch) -> None:
+    run_id = _run_agent(client, {
         "receptor": "thrombin",
         "ligands_text": "乙醇:CCO,甲醇:CO",
         "positive_control": "NC(=N)c1ccccc1",
         "exhaustiveness": 1, "engine": "vina", "save_poses": True,
-    })
+    }, monkeypatch)
     detail = client.get(f"/api/runs/{run_id}").json()
     assert detail["run"]["status"] == "ok"
     assert detail["run"]["molecule_count"] == 2
@@ -321,7 +311,7 @@ def test_report_pdf_endpoint_generates_for_run_without_pdf_artifact(client) -> N
     from docking_agent.runs import download_names, get_run_store
 
     store = get_run_store()
-    run = store.new("pipeline", {"receptor": "thrombin"})
+    run = store.new("agent", {"receptor": "thrombin"})
     run.write_text("report.md",
                    "# 分子对接筛选报告\n\n## 1. 任务与参数\n\n- 现场生成 PDF 的最小运行\n",
                    name="report_md", label="分析报告（Markdown）",

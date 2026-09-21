@@ -45,7 +45,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from docking_agent import __version__
-from docking_agent.api.schemas import AgentRequest, PipelineRequest
+from docking_agent.api.schemas import AgentRequest
 from docking_agent.paths import var_dir
 from docking_agent.runtime.streaming import parse_sse_data, sse_event
 
@@ -58,7 +58,6 @@ THREADS_DIR_NAME = "threads"
 #: 图名 → 助手元信息（`kind` 决定走哪条内部执行链路）
 ASSISTANTS: Dict[str, Dict[str, str]] = {
     "coordinator": {"kind": "agent", "description": "整体协调 Agent：把自然语言任务拆给 4 个子 Agent"},
-    "pipeline": {"kind": "pipeline", "description": "确定性流水线：属性 → 定盒 → 对接 → 排序 → 报告（无 LLM）"},
     "intake": {"kind": "intake", "description": "任务受理层：自然语言 + 表单 → 结构化任务规约"},
     "property": {"kind": "subagent", "description": "分子属性评估 Agent"},
     "pocket": {"kind": "subagent", "description": "口袋分析 Agent"},
@@ -277,24 +276,6 @@ async def _stream_assistant(app: FastAPI, assistant: str, body: Dict[str, Any],
                                "business_run_id": state.get("run_id"),
                                "final": state.get("final") or "",
                                "summary": state.get("summary") or {}})
-    elif spec["kind"] == "pipeline":
-        legacy_pipeline = getattr(app.state, "legacy_pipeline_stream", None)
-        if legacy_pipeline is None:  # pragma: no cover
-            yield frame("error", {"error": "not_configured", "message": "标准面未装配 legacy_pipeline_stream"})
-            yield frame("end", None)
-            return
-        req_pipe = _pipeline_request(inp, thread_id)
-        resp = await legacy_pipeline(req_pipe, request)
-        async for chunk in resp.body_iterator:  # type: ignore[attr-defined]
-            data = parse_sse_data(chunk if isinstance(chunk, str) else chunk.decode("utf-8", "replace"))
-            if not data:
-                continue
-            if data.get("type") == "start":
-                platform_run["business_run_id"] = data.get("run_id")
-                platform_run["status"] = "running"
-            for f in _map_legacy_event(data, state=state):
-                yield f
-        yield frame("values", {"run_id": state.get("run_id"), "summary": state.get("summary") or {}})
     else:  # subagent / intake：直接跑，一次性给出结果
         result = await _run_simple_assistant(assistant, inp, thread_id)
         platform_run["business_run_id"] = result.get("run_id")
@@ -322,12 +303,6 @@ def _agent_request(inp: Dict[str, Any], thread_id: str) -> AgentRequest:
     payload["conversation_id"] = thread_id
     payload.setdefault("mode", "chat")
     return AgentRequest(**payload)
-
-
-def _pipeline_request(inp: Dict[str, Any], thread_id: str) -> PipelineRequest:
-    payload = {k: v for k, v in inp.items() if k in PipelineRequest.model_fields}
-    payload["conversation_id"] = thread_id
-    return PipelineRequest(**payload)
 
 
 async def _run_simple_assistant(assistant: str, inp: Dict[str, Any], thread_id: str) -> Dict[str, Any]:
@@ -661,10 +636,6 @@ def _input_schemas(name: str) -> Dict[str, Any]:
         schema["properties"] = props
         return {"input_schema": schema, "output_schema": {"type": "object"},
                 "state_schema": {"type": "object"}, "config_schema": {"type": "object"}}
-    if name == "pipeline":
-        return {"input_schema": PipelineRequest.model_json_schema(),
-                "output_schema": {"type": "object"}, "state_schema": {"type": "object"},
-                "config_schema": {"type": "object"}}
     if name == "intake":
         return {"input_schema": {"type": "object", "properties": {
             "message": {"type": "string"}, "mode": {"type": "string", "default": "chat"},

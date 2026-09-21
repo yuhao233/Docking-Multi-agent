@@ -3,7 +3,7 @@
 以 `BlockingError` 失败。
 
 本文件在 **asyncio 事件循环里** 打开 `blockbuster.blockbuster_ctx()`，对
-`pipeline` 节点与 agent 包装节点各跑一次（真实计算/LLM 全部打桩），断言不出现
+agent 包装节点跑一次（真实计算/LLM 全部打桩），断言事件循环里不出现
 `BlockingError`。
 
 发现（见文件末尾 xfail）：agent 包装节点的 `build_inner()` 在事件循环内被调用，
@@ -27,21 +27,6 @@ from langgraph.graph.message import add_messages
 pytestmark = [pytest.mark.offline, pytest.mark.blockbuster]
 
 
-def _stub_pipeline_result():
-    return {
-        "status": "ok",
-        "message": "stub",
-        "molecules": [{"name": "ethanol", "smiles": "CCO"}],
-        "ranking": [],
-        "param_plan": {},
-        "notes": [],
-    }
-
-
-class _InnerState(TypedDict, total=False):
-    messages: Annotated[list, add_messages]
-
-
 def _fake_agent():
     async def model_node(payload):
         return {"messages": [AIMessage(content="reply", id="ai-1")]}
@@ -63,31 +48,14 @@ async def test_blockbuster_harness_detects_blocking_call(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# pipeline 节点：事件循环里不出现阻塞调用
+# agent 包装节点：事件循环里不出现阻塞调用
 # --------------------------------------------------------------------------- #
-async def test_pipeline_node_has_no_blocking_calls(workspace, graphs_module, monkeypatch):
-    def stub(**kwargs):
-        run = kwargs["run"]
-        run.write_text("report.md", "# report", name="report_md",
-                       label="报告", content_type="text/markdown")
-        run.finish("ok")
-        return _stub_pipeline_result()
+class _InnerState(TypedDict, total=False):
+    """内层假图的状态（只用到 messages）。"""
 
-    monkeypatch.setattr(graphs_module, "run_pipeline", stub)
-    graph = graphs_module.pipeline()
-
-    # 与 langgraph_runtime_inmem.queue._enable_blockbuster 相同的严格档：scanned_modules=None
-    with blockbuster_ctx():
-        out = await graph.ainvoke({"ligands_text": "CCO", "engine": "vina"})
-
-    assert out["status"] == "ok"
-    meta = json.loads((Path(out["run_dir"]) / "run.json").read_text(encoding="utf-8"))
-    assert meta["status"] == "ok"
+    messages: Annotated[list, add_messages]
 
 
-# --------------------------------------------------------------------------- #
-# agent 包装节点：节点主体（persist / finish / save）本身要 loop-safe
-# --------------------------------------------------------------------------- #
 async def test_agent_node_body_has_no_blocking_calls(workspace, graphs_module, monkeypatch):
     """隔离出「内层图构建」之后，验证包装节点主体在事件循环里没有阻塞 I/O。
 

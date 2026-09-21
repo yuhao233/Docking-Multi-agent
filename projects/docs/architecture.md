@@ -66,7 +66,7 @@
 
 ```
 ┌── 入口层 ───────────────────────────────────────────────────────────────┐
-│ cli.py / __main__.py           命令行：--check、pipeline、agent、runs、serve│
+│ cli.py / __main__.py           命令行：--check、agent、runs、serve、receptors │
 │ api/app.py (FastAPI)           HTTP + SSE；唯一对外接口面                  │
 │ api/schemas.py                 请求体校验（pydantic）                      │
 ├── 受理层 ───────────────────────────────────────────────────────────────┤
@@ -74,7 +74,6 @@
 ├── 编排层 ───────────────────────────────────────────────────────────────┤
 │ agents/coordinator.py          主管 Agent（LangGraph create_agent）        │
 │ tools/dispatch.py              发给子 Agent 的「分发工具」（子 Agent 调度面）│
-│ pipeline.py                    确定性流水线（零 LLM，用于回归/基准/无密钥环境）│
 ├── 角色层（4 个子 Agent，各自独立模型实例与 checkpointer）─────────────────┤
 │ agents/workers.py              property / pocket / docking / binding       │
 │ agents/prompts.py              子 Agent 系统提示词                        │
@@ -98,7 +97,7 @@
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**依赖方向单向向下**：`api/cli → intake/coordinator/pipeline → tools → core`。
+**依赖方向单向向下**：`api/cli → intake/coordinator → tools → core`。
 `core/*` **绝不** import `tools/*`、`agents/*`、`api/*`（唯一的例外是 `core/receptors.py` 在函数内
 延迟导入 `core/pockets.py` 以避免循环依赖）。新增代码若违反这条，先重构分层。
 
@@ -106,7 +105,7 @@
 
 ```
 用户/前端
-  │  POST /api/agent/stream （或 /api/pipeline/stream）
+  │  POST /threads/{tid}/runs/stream（标准 Agent Protocol）
   ▼
 api/app.py  建 Run（runs.py：运行目录 + run.json）
   │
@@ -143,7 +142,6 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 | 路径 | 入口 | 是否用 LLM | 用途 | 注意 |
 |---|---|---|---|---|
 | **Agent 模式** | `/api/agent/stream`、`-m agent` | 是（主管 + 子 Agent） | 真实产品路径：能理解自然语言、自主决策、可报告过程 | 提示词是**产品行为的一部分**，改提示词等于改行为，必须测试 |
-| **流水线模式** | `/api/pipeline/stream`、`-m pipeline` | 否 | 回归/基准/取证：确定性、可比、无密钥也能跑 | 两种模式共用 core/reporting，**改了 core 两条路径都会变**，两条都要验 |
 
 两者产出同一套产物与同一个报告模板（`reporting/report.py`），仅「结论与建议」一节来源不同
 （Agent 文字 vs 规则生成）。
@@ -156,9 +154,8 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 
 | 文件 | 职责 | 关键接口 |
 |---|---|---|
-| `cli.py` | 命令行入口：`--check` / `pipeline` / `agent` / `runs` / `serve` | `main()` |
+| `cli.py` | 命令行入口：`--check` / `agent` / `runs` / `serve` / `receptors` | `main()` |
 | `intake.py` | **任务受理层**：指令+表单 → `task_spec`；确定性抽取分子；LLM 只补白名单字段 | `build_task_spec`、`refine_task_spec`、`render_agent_message`、`_finalize`、`_resolvable_ligands` |
-| `pipeline.py` | 确定性流水线（零 LLM）：import→properties→pocket→docking→binding→report | `run_pipeline` |
 | `runs.py` | 运行目录/产物清单/`run.json`/分页排序/聚合/zip | `RunStore`、`Run`、`run_artifact_path` |
 | `settings.py` | 界面设置层（`config/local_settings.json`）：字段规格、优先级、掩码、运行时注入 | `SPECS`、`normalize_updates`、`apply_runtime_env`、`runtime_source` |
 | `config.py` | 环境变量与默认值（`env_int/env_bool/env_str`） | `env_int`、`ensure_runtime_env` |
@@ -406,7 +403,7 @@ UPLOAD_MAX_MB COZE_WORKSPACE_PATH DOCKING_WORKSPACE
 - 合并时**精度优先**：`_dock_precision` = (是否 fine, exhaustiveness)；粗筛分数保留在 `affinity_coarse`。
 - 陷阱：`coarse_map` 必须在对接**之前**捕获（对接后黑板会被精算结果覆盖）。
 
-**确定性流水线也自动走同一漏斗（v0.12）**：`pipeline.run_pipeline` 在 `N ≥ AGENT_FUNNEL_MIN`
+**Agent 路径的两阶段漏斗（v0.12）**：候选数 `N ≥ AGENT_FUNNEL_MIN` 时
 时用 `dock_library` 跑「全库粗筛 → 头部精算」，精算**沿用粗筛盒子**（保证阶段间盒子一致），
 合并规则与 Agent 路径相同（`_merge_funnel`：精算行替换粗筛行 + `affinity_coarse`）。
 
@@ -816,7 +813,7 @@ README 必须指向本手册、承诺的门禁脚本必须存在、不得再承�
 
 | # | 缺口 | 代码证据 | 影响 | 优先级 | 工作量 |
 |---|---|---|---|---|---|
-| 4.1 | **Agent 模式无法取消对接**：只有 pipeline 注册任务，`cancel_event` 未传入对接工具 | `api/app.py:521,575,928` | 点「停止」后 Vina 进程池继续吃满 CPU | **P0** | S |
+| 4.1 | **取消不彻底**：`cancel_event` 未传入对接工具 | `api/app.py:521,575,928` | 点「停止」后 Vina 进程池继续吃满 CPU | **P0** | S |
 | 4.2 | **崩溃/断线无兜底**：无 reaper/resume/retention，`run.json` 永久 `running` | `runs.py:85,167`、`cancellation.py:19` | 前端断流后线程与进程池继续跑，且再也取消不了 | **P0** | M |
 | 4.3 | **无端到端墙钟超时**：`RUN_TIMEOUT_SECONDS` 只用于 legacy `/run` | `api/app.py:53,855` | 卡死运行永久占资源 | P1 | S |
 | 4.4 | **失败清单不归因、不进报告**：逐分子 `error` 只在 JSON，CSV 只含成功行 | `reporting/report.py` 无 error/failed | 用户读到「全成功」的假象 | **P0** | S |
@@ -831,7 +828,7 @@ README 必须指向本手册、承诺的门禁脚本必须存在、不得再承�
 |---|---|---|---|---|---|
 | 5.1 | ~~方法学可复现信息不全~~ **已完成**：PDF 封面列 vina/rdkit/meeko/p2rank/python/matplotlib 版本，报告与 CSV 增 `seed`/`seed_policy` | `reporting/pdf.py`、`reporting/tables.py` | — | ✅ | S |
 | 5.2 | ~~失败分子与原因不进报告~~ **已完成**：报告固定第 6 节「方法与局限」+ 第 7 节「失败与跳过」（按 `results[*].error` 归并原因分组） | `reporting/report.py:19-20` | — | ✅ | S |
-| 5.3 | 多受体结果被坍缩成第一个受体（`merge_and_rank` 以 smiles 为键） | `core/ranking.py:23`、`pipeline.py:404` | 声明的「蛋白质库」能力拿不到并列对比 | P1 | M |
+| 5.3 | 多受体结果被坍缩成第一个受体（`merge_and_rank` 以 smiles 为键） | `core/ranking.py:23` | 声明的「蛋白质库」能力拿不到并列对比 | P1 | M |
 | 5.4 | 两轮漏斗的 `pass`/`affinity_coarse` 不进 CSV/报告 | `tables.py:9`、`persistence.py:103` | 报告无法说明粗筛/精算范围（提示词要求说明） | P1 | S |
 | 5.5 | `similarity_chart.png` 生成但从未内嵌 | `reporting/artifacts.py:29` vs `report.py:242` | 产物与报告不一致 | P2 | S |
 | 5.6 | 报告不含配体准备告警/盐拆分/`box_fit_warning` | `reporting/report.py` 零命中 | 用户不知道实际对接的化学形式 | P1 | S |
@@ -949,6 +946,6 @@ Vina 网格间距 0.375 Å，`box_fit_warning` 只在「配体跨度 + 10 Å 超
 | `print`（非 CLI） | 0 | 已清零 |
 | 裸 `os.getenv` | 4 | 全部在白名单（settings/paths/logging_setup/load_env），已注释理由 |
 | 缺 `from __future__ import annotations` | 0 | 已清零 |
-| >700 行文件 | 7 | `api/app.py`(1237)、`core/docking.py`、`core/pockets.py`、`settings.py`、`intake.py`、`core/receptors.py`、`pipeline.py` 已登记豁免；**新文件不得超限**，`api/app.py` 建议按 router 拆分 |
+| >700 行文件 | 7 | `api/app.py`(1237)、`core/docking.py`、`core/pockets.py`、`settings.py`、`intake.py`、`core/receptors.py` 已登记豁免；**新文件不得超限**，`api/app.py` 建议按 router 拆分 |
 | 依赖单一来源 | — | `requirements-local.txt` 与 `pyproject` 双份维护（内容一致但会漂移）；计划收敛为 `-e .`，测试依赖放 `[dependency-groups]` |
 

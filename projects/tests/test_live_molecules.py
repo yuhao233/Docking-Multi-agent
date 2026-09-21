@@ -2,8 +2,8 @@
 
 真实缺陷：多 Agent（对话）模式下 `run_docking` 只把 `live_progress` 计数写进运行记录，
 API 心跳也只会转成 `progress` 事件，于是前端「实时逐分子结果」表在整段运行里一直是空的
-（只有确定性流水线 `/api/pipeline/stream` 会发 `molecules`）。修复后工具逐条上报
-`live_molecules`，心跳把它们转成与流水线同构的 `molecules` 事件。
+（历史上只有已移除的确定性流水线会发 `molecules`）。修复后工具逐条上报
+`live_molecules`，心跳把它们转成与旧流水线同构的 `molecules` 事件。
 
 这里用一个假协调图替代真实 LLM：图里直接调用工具侧的行构造器并写运行缓冲，
 其余（心跳、SSE 编码、运行记录）全走真实代码路径。

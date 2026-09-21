@@ -178,7 +178,7 @@ def test_report_mentions_receptor_protonation_and_mismatch() -> None:
     matched = {"receptor": "thrombin", "receptor_protonation": {
         "applied": True, "policy": "ph", "ph": 7.4, "tool": "pdb2pqr + PROPKA + meeko",
         "his_states": {"HID": 3, "HIE": 2, "HIP": 0}}}
-    md = build_markdown_report({"ranking": [], "receptors": [matched]}, kind="pipeline", run_id="T")
+    md = build_markdown_report({"ranking": [], "receptors": [matched]}, kind="agent", run_id="T")
     assert "受体质子化（thrombin）：受体按目标 pH 7.4 准备" in md
     assert "质子化态按**目标 pH 重算**" in md
 
@@ -189,7 +189,7 @@ def test_report_mentions_receptor_protonation_and_mismatch() -> None:
         {"ranking": [{"name": "A", "smiles": "CCO", "affinity_kcal_mol": -5.0,
                       "ligand_facts": {"protonation": {"policy": "ph", "ph": 7.4, "applied": True,
                                                        "charge_before": 0, "charge_after": 0}}}],
-         "receptors": [mismatched]}, kind="pipeline", run_id="T")
+         "receptors": [mismatched]}, kind="agent", run_id="T")
     assert "**未按目标 pH 重新准备**" in md2
     assert "两侧质子化条件**不完全一致**" in md2
     assert "PDB2PQR_BIN" in md2

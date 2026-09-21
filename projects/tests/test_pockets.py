@@ -562,7 +562,7 @@ def test_run_detail_exposes_pocket_analysis(tmp_path):
     from docking_agent.runs import RunStore
 
     store = RunStore(tmp_path)
-    run = store.new("pipeline", {"mode": "pipeline"})
+    run = store.new("agent", {"mode": "chat"})
     run.write_json("result", {
         "status": "ok", "ranking": [], "positive_control": {}, "receptors": [],
         "pockets": [{"rank": 1, "name": "pocket1", "score": 10.58}],

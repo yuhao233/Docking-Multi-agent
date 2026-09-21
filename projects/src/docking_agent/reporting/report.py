@@ -272,7 +272,7 @@ def _ph_policy_text(prot: Dict[str, Any], suffix: str = "重新分配质子化�
     return f"按目标 pH {suffix}"
 
 
-def build_markdown_report(result: Dict[str, Any], *, kind: str = "pipeline",
+def build_markdown_report(result: Dict[str, Any], *, kind: str = "agent",
                           run_id: str = "", receptor_label: str = "",
                           site: Optional[Dict[str, Any]] = None,
                           artifacts: Optional[List[Dict[str, Any]]] = None,
@@ -298,7 +298,10 @@ def build_markdown_report(result: Dict[str, Any], *, kind: str = "pipeline",
     hits = [m for m in full_ranking
             if isinstance(m.get("affinity_kcal_mol"), (int, float))
             and isinstance(pc_aff, (int, float)) and m["affinity_kcal_mol"] < pc_aff]
-    mode_zh = "多 Agent 协作" if kind == "agent" else "确定性流水线（无 LLM）"
+    # 运行模式文案：对接统一由 Agent 驱动（记录 60 移除流水线模式），
+    # 历史运行目录里可能仍是旧 kind，保留映射以便旧报告照原样复看。
+    mode_zh = {"agent": "多 Agent 协作", "studio": "多 Agent 协作（Studio）",
+               "pipeline": "确定性流水线（历史记录）"}.get(str(kind or "agent"), "多 Agent 协作")
     available = {str(a.get("name")) for a in (artifacts or []) if isinstance(a, dict)}
     # 协调 Agent 通过 customize_report 记录的「按用户要求定制」（标题 / 附加列 / 要点 / 要求与响应）。
     # 骨架（§1–§9）保持不变，变的只是标题、排行表附加列与最前面的「要求与响应」一节。

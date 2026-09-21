@@ -43,7 +43,6 @@ BIG_FILE_EXEMPT = {
     "src/docking_agent/settings.py",
     "src/docking_agent/intake.py",
     "src/docking_agent/core/receptors.py",
-    "src/docking_agent/pipeline.py",
     # 报告模板与输入归一化：固定格式报告/多格式解析本就是长函数集合，
     # 本轮新增「推荐排行/质子化溯源」两节后超过 700 行；拆分需单独一轮（见 README 待办）。
     "src/docking_agent/reporting/report.py",

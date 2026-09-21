@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
@@ -22,6 +21,8 @@ ensure_runtime_env()
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
+
+from support.fake_llm import coordinator_script_for_form, run_agent  # noqa: E402
 
 LIGAND_FILE = PROJECT_ROOT / "assets" / "libraries" / "ligands_user.sdf"
 RECEPTOR_FILE = PROJECT_ROOT / "assets" / "receptors" / "structures" / "thrombin.pdb"
@@ -52,20 +53,9 @@ def _upload_ready(client, path: Path, kind: str = "auto"):
                        json={"path": payload["path"], "kind": payload.get("kind") or kind})
 
 
-def _run_pipeline(client, body: dict):
-    r = client.post("/api/pipeline/stream", json=body)
-    assert r.status_code == 200, r.text[:300]
-    run_id = None
-    for line in r.text.splitlines():
-        if line.startswith("data: "):
-            try:
-                event = json.loads(line[6:])
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "start":
-                run_id = event["run_id"]
-    assert run_id, "未收到 start 事件"
-    return run_id
+def _run_agent(client, body: dict, monkeypatch) -> str:
+    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 run_id。"""
+    return run_agent(client, coordinator_script_for_form(body), body, monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,18 +110,18 @@ def test_upload_rejects_unparsable_file(client):
 # --------------------------------------------------------------------------- #
 # 用上传的文件真实对接
 # --------------------------------------------------------------------------- #
-def test_docking_with_uploaded_files(client):
+def test_docking_with_uploaded_files(client, monkeypatch):
     lig = _upload(client, LIGAND_FILE).json()
     rec = _upload(client, RECEPTOR_FILE).json()
     # 运行时才准备：这里提交的是**原始上传路径**
     assert "receptor_file" not in rec and rec["pending"] is True
 
-    run_id = _run_pipeline(client, {
+    run_id = _run_agent(client, {
         "receptor_file": rec["path"],
         "molecule_file": lig["path"],
         "positive_control": "NC(=N)c1ccccc1",
         "exhaustiveness": 1, "engine": "vina", "save_poses": False,
-    })
+    }, monkeypatch)
     detail = client.get(f"/api/runs/{run_id}").json()
     assert detail["run"]["status"] == "ok"
 
@@ -153,13 +143,13 @@ def test_docking_with_uploaded_files(client):
 # --------------------------------------------------------------------------- #
 # 固定报告格式与内嵌图片
 # --------------------------------------------------------------------------- #
-def test_report_has_fixed_sections_and_embedded_images(client):
-    run_id = _run_pipeline(client, {
+def test_report_has_fixed_sections_and_embedded_images(client, monkeypatch):
+    run_id = _run_agent(client, {
         "receptor": "thrombin",
         "ligands_text": "乙醇:CCO,甲醇:CO",
         "positive_control": "NC(=N)c1ccccc1",
         "exhaustiveness": 1, "engine": "vina", "save_poses": False,
-    })
+    }, monkeypatch)
     detail = client.get(f"/api/runs/{run_id}").json()
     md = detail["report_markdown"]
 
@@ -188,11 +178,11 @@ def test_report_has_fixed_sections_and_embedded_images(client):
         assert alt.startswith("图 "), f"图题应带编号：{alt}"
 
 
-def test_report_without_positive_control_skips_control_sections(client):
-    run_id = _run_pipeline(client, {
+def test_report_without_positive_control_skips_control_sections(client, monkeypatch):
+    run_id = _run_agent(client, {
         "receptor": "thrombin", "ligands_text": "乙醇:CCO",
         "positive_control": "", "exhaustiveness": 1, "engine": "vina", "save_poses": False,
-    })
+    }, monkeypatch)
     md = client.get(f"/api/runs/{run_id}").json()["report_markdown"]
     assert "## 5. 结合模式与阳性对照比较" in md
     assert "未提供阳性对照" in md

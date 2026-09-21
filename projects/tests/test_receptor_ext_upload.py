@@ -32,6 +32,8 @@ ensure_runtime_env()
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from support.fake_llm import coordinator_script_for_form, run_agent  # noqa: E402
+
 RECEPTOR_PDB = PROJECT_ROOT / "assets" / "receptors" / "structures" / "thrombin.pdb"
 THROMBIN_SITE_X = 31.5      # 凝血酶共晶配体(MIT)质心的 x 分量（见 test_upload_report.py）
 
@@ -66,20 +68,9 @@ def _inspect(client, payload: dict):
                        json={"path": payload["path"], "kind": payload.get("kind") or "auto"})
 
 
-def _run_pipeline(client, body: dict) -> str:
-    r = client.post("/api/pipeline/stream", json=body)
-    assert r.status_code == 200, r.text[:300]
-    run_id = None
-    for line in r.text.splitlines():
-        if line.startswith("data: "):
-            try:
-                event = json.loads(line[6:])
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "start":
-                run_id = event["run_id"]
-    assert run_id, "未收到 start 事件"
-    return run_id
+def _run_agent(client, body: dict, monkeypatch) -> str:
+    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 run_id。"""
+    return run_agent(client, coordinator_script_for_form(body), body, monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +157,7 @@ def test_unusable_structure_file_falls_back_with_reason(tmp_path) -> None:
 # --------------------------------------------------------------------------- #
 # ③ 上传 .ent → /api/uploads 返回 receptor_file，且该路径能被对接工具直接用
 # --------------------------------------------------------------------------- #
-def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path) -> None:
+def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path, monkeypatch) -> None:
     ent = _copy_as(tmp_path, "thrombin.ent")
 
     up = _upload(client, ent, kind="receptor")
@@ -182,11 +173,11 @@ def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path) -> None:
 
     # 运行时提交的是**原始上传文件路径**（与界面一致；准备发生在运行阶段），
     # 必须用的就是它、绝不回退默认受体。
-    run_id = _run_pipeline(client, {
+    run_id = _run_agent(client, {
         "receptor_file": up.json()["path"],
         "ligands_text": "乙醇:CCO",
         "exhaustiveness": 1, "engine": "vina", "save_poses": False,
-    })
+    }, monkeypatch)
     detail = client.get(f"/api/runs/{run_id}").json()
     assert detail["run"]["status"] == "ok", detail["run"]
     blocks = (detail["result"].get("docking") or {}).get("receptors") or []

@@ -128,25 +128,27 @@ def test_zip_contains_receptor_after_agent_run(tmp_path: Any, monkeypatch: Any) 
     assert any(n.startswith("poses/") for n in names), "配体位姿也必须在包里"
 
 
-def test_pipeline_path_also_packs_receptor(tmp_path: Any, monkeypatch: Any) -> None:
-    """确定性流水线同样要把受体结构写进运行目录（两条路径共用同一实现）。"""
-    from docking_agent import pipeline as P
-
+def test_agent_persistence_packs_receptor(tmp_path: Any) -> None:
+    """多 Agent 落盘（`persist_agent_run`）等价于原 `_write_report_artifacts`：既写报告产物，
+    也把本次对接实际使用的受体结构复制进运行目录并登记为可下载产物。"""
     cache = tmp_path / "cache"
     made = _fake_receptor(cache)
-    run = Run(tmp_path / "runs", "R-PIPE", "pipeline", {"receptor_file": made["pdbqt"]})
-    result: Dict[str, Any] = {"ranking": [], "positive_control": {}, "receptors": [
-        {"receptor_key": "thrombin", "pdbqt": made["pdbqt"], "ranking": []}]}
-    monkeypatch.setattr(P, "write_report_charts", lambda *a, **k: None)
-    monkeypatch.setattr(P, "write_report_pdf", lambda *a, **k: None)
-    monkeypatch.setattr(P, "_write_report_artifacts", P._write_report_artifacts, raising=True)
-    # 直接调用被测函数：只关心受体是否入包（图表/PDF 已打桩）
-    import docking_agent.reporting.artifacts as A
-    monkeypatch.setattr(A, "write_report_charts", lambda *a, **k: None)
-    monkeypatch.setattr(A, "write_report_pdf", lambda *a, **k: None)
-    P._write_report_artifacts(run, result)
-    assert (run.dir / "receptor" / "thrombin.pdbqt").is_file()
-    assert any(a["name"] == "receptor_pdbqt_thrombin" for a in run.artifacts())
+    block = {"receptor_key": "thrombin", "receptor": "thrombin(1DWC)",
+             "pdbqt": made["pdbqt"],
+             "box_center": [1.0, 2.0, 3.0], "box_size": [22.0, 22.0, 22.0],
+             "box_source": "用户指定",
+             "results": [{"name": "乙醇", "smiles": "CCO", "affinity_kcal_mol": -2.8,
+                          "engine": "vina", "exhaustiveness": 1}]}
+    run = Run(tmp_path / "runs", "R-PACK", "agent", {"mode": "chat"})
+    run.set(task_spec={"task_type": "screening", "decision": "accept"})
+    from docking_agent.agents.persistence import persist_agent_run
+
+    persist_agent_run(run, [_tool_msg("run_docking", {"status": "ok", "receptors": [block]})], "结论")
+    assert (run.dir / "receptor" / "thrombin.pdbqt").is_file(), "落盘阶段就要把受体放进运行目录"
+    assert (run.dir / "receptor" / "thrombin_prepared.pdb").is_file()
+    assert (run.dir / "report.md").is_file()
+    names = {a["name"] for a in run.artifacts()}
+    assert {"receptor_pdbqt_thrombin", "receptor_prepared_thrombin", "report_md"} <= names
 
 
 def test_report_lists_receptor_artifacts(tmp_path: Any) -> None:

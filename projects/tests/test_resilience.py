@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, Iterator
 
 import pytest
 
@@ -18,6 +19,24 @@ if str(SRC) not in sys.path:
 from docking_agent.config import ensure_runtime_env  # noqa: E402
 
 ensure_runtime_env()
+
+from support.fake_llm import coordinator_script_for_form, run_agent  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def client() -> Iterator[Any]:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from docking_agent.api.app import app
+
+    with TestClient(app) as c:
+        yield c
+
+
+def _run_agent(client, body: dict, monkeypatch) -> str:
+    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 run_id。"""
+    return run_agent(client, coordinator_script_for_form(body), body, monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
@@ -119,25 +138,26 @@ def test_dock_batch_raises_immediately_when_cancelled():
 # --------------------------------------------------------------------------- #
 # 阳性对照可选
 # --------------------------------------------------------------------------- #
-def test_pipeline_skips_positive_control_when_not_provided():
-    from docking_agent.pipeline import run_pipeline
-
-    result = run_pipeline(ligands_text="乙醇:CCO", receptor="thrombin",
-                          positive_control="", engine="vina", exhaustiveness=1,
-                          save_poses=False)
-    assert result["status"] == "ok"
+def test_agent_skips_positive_control_when_not_provided(client, monkeypatch) -> None:
+    run_id = _run_agent(client, {"ligands_text": "乙醇:CCO", "receptor": "thrombin",
+                                 "positive_control": "", "engine": "vina",
+                                 "exhaustiveness": 1, "save_poses": False}, monkeypatch)
+    detail = client.get(f"/api/runs/{run_id}").json()
+    result = detail["result"]
+    assert detail["run"]["status"] == "ok"
     assert not result.get("positive_control"), "未提供阳性对照时不应产生对照结果"
-    assert any("未提供阳性对照" in n for n in (result.get("notes") or [])), result.get("notes")
+    # 等价于原流水线 note：受理层把「未提供阳性对照」记为假设，报告也如实写明
+    spec = result.get("task_spec") or {}
+    assert any("未提供阳性对照" in a for a in (spec.get("assumptions") or [])), spec.get("assumptions")
+    assert "本次未提供阳性对照" in detail["report_markdown"]
     assert result["ranking"], "候选分子仍应正常排序"
 
 
-def test_pipeline_runs_positive_control_when_provided():
-    from docking_agent.pipeline import run_pipeline
-
-    result = run_pipeline(ligands_text="乙醇:CCO", receptor="thrombin",
-                          positive_control="NC(=N)c1ccccc1", engine="vina",
-                          exhaustiveness=1, save_poses=False)
-    assert result["status"] == "ok"
+def test_agent_runs_positive_control_when_provided(client, monkeypatch) -> None:
+    run_id = _run_agent(client, {"ligands_text": "乙醇:CCO", "receptor": "thrombin",
+                                 "positive_control": "NC(=N)c1ccccc1", "engine": "vina",
+                                 "exhaustiveness": 1, "save_poses": False}, monkeypatch)
+    result = client.get(f"/api/runs/{run_id}").json()["result"]
     pc = result.get("positive_control") or {}
     assert pc.get("affinity_kcal_mol") is not None, "提供了阳性对照就应完成对照对接"
     assert result["ranking"][0].get("similarity_to_positive_control") is not None

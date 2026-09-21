@@ -40,7 +40,7 @@
 
 整体协调 Agent 负责决策与调度：判断任务可否执行、需要哪些环节、何时停止、结果如何组织，
 不参与数值计算。四个子 Agent 是无状态执行器，每次调用使用独立线程，可并行下发。
-真实计算集中在 `core/`，不依赖 LLM，因此确定性流水线与命令行可独立运行。
+真实计算集中在 `core/`，不依赖 LLM；对接编排由协调 Agent 驱动，因此运行需要可用的 LLM 端点。
 
 跨步骤交接分两路：受体、位点盒、分子库、阳性对照等小状态写入共享黑板；
 分子库、性质、对接明细等大表落盘为运行产物文件，按路径交接，不进入模型上下文。
@@ -88,8 +88,8 @@ bash start.sh
 `start.sh` 首次运行时创建虚拟环境并安装依赖，随后启动服务并打开 `http://127.0.0.1:5000`。
 端口被占用时自动顺延，也可用 `--port` 指定。
 
-多 Agent 模式需要 LLM：复制 `.env.example` 为 `.env`，填写 `LLM_API_KEY` 与 `LLM_BASE_URL`
-即可接入任意 OpenAI 兼容端点。未配置 LLM 时，参数模式的确定性流水线仍可完整运行。
+运行需要 LLM：复制 `.env.example` 为 `.env`，填写 `LLM_API_KEY` 与 `LLM_BASE_URL` 即可接入任意
+OpenAI 兼容端点。未配置 LLM 时环境自检与核心计算库仍可用，但对接流程无法编排执行。
 
 其他入口：`bash start.sh --check` 执行能力自检与一次真实小分子对接，`--no-browser` 不打开浏览器，
 `--setup` 强制重装依赖。
@@ -117,7 +117,7 @@ bash start.sh
 ### 2. 参数模式
 
 参数模式以表单为权威输入，可指定受体、位点盒、分子库、引擎、搜索强度、位姿数、质子化态与阳性对照，
-运行方式可选确定性流水线或多 Agent 协作。流水线不需要 LLM，结果可复算，适合批处理与参数扫描。
+表单参数为权威参数，由协调 Agent 调度子 Agent 执行；同一份表单参数与同一随机种子可复算。
 
 搜索强度提供三档预设：快速初筛 `exhaustiveness=4`、平衡 `16`、高精度 `32` 且 `n_poses=3`。
 大库自动采用两阶段漏斗，先全库粗筛再对头部精算，同一分子保留精度更高的结果。
@@ -165,19 +165,15 @@ cd langgraph-deploy
 bash scripts/dev.sh
 ```
 
-该目录提供 LangGraph Agent Server，`langgraph.json` 暴露 `coordinator`、`pipeline`、`intake`、
-`property`、`pocket`、`docking`、`binding` 七张图，复用同一份源码，可在 Studio 中对话、查看状态与中断。
+该目录提供 LangGraph Agent Server，`langgraph.json` 暴露 `coordinator`、`intake`、`property`、
+`pocket`、`docking`、`binding` 六张图，复用同一份源码，可在 Studio 中对话、查看状态与中断。
 产品面服务本机网页与脚本，平台面服务 Studio、SDK 与后续的计划化运行，边界见 ADR-0001。
 
 ### 7. HTTP API 与命令行
 
 ```bash
-# 确定性流水线
-cd projects
-.venv/bin/python -m docking_agent -m pipeline -i "乙醇:CCO,苯酚:Oc1ccccc1" \
-    --receptor thrombin --max-ligands 10
-
 # 产品面接口
+cd projects
 curl -s localhost:5000/api/health
 curl -s localhost:5000/api/runs
 
@@ -225,12 +221,11 @@ var/runs/<run_id>/
 | pdb2pqr | 否 | 受体不按目标 pH 重算质子化态，报告注明，可设置 `PDB2PQR_BIN` 补齐 |
 | `autodock4`、`autogrid4` | 否 | 仅保留 Vina 引擎 |
 | 中文字体 | 否 | 图表与 PDF 中的中文可能显示为方块 |
-| LLM 配置 | 否 | 仅确定性流水线可用 |
+| LLM 配置 | **是** | 对接编排由 Agent 驱动；缺失时仅环境自检与核心计算库可用 |
 | GPU 对接引擎（用户自行安装） | 否 | 在设置页「外部工具」填入可执行文件路径；检测不通过时对接任务拒绝启动并提示，不静默改用 CPU |
 | 默认端口 5000 | 否 | `start.sh` 自动顺延到下一个可用端口 |
 
-离线环境下，确定性流水线、注册表受体与本地文件即可完成筛选；在线能力仅涉及受体在线解析、
-按名称查询分子与云端 LLM。
+内网或本机 LLM 端点下可完全离线运行；只有受体在线解析、按名称查询分子与云端 LLM 需要外网。
 
 ## 配置
 
@@ -250,7 +245,8 @@ var/runs/<run_id>/
 ## 常见问题
 
 **未配置 LLM 是否可用？**
-可用。参数模式选择确定性流水线即可完成全流程，对话模式才需要 LLM 参与决策。
+不能完成对接编排：对接由协调 Agent 分发工具执行，需要可用的 LLM 端点。未配置时可用于环境自检、
+核心计算库与已有运行记录的查看。
 
 **报告数值如何核对？**
 数值全部来自工具返回。报告第 1 节记录参数与溯源，第 9 节列出产物清单，

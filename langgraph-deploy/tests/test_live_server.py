@@ -9,7 +9,6 @@
 
 覆盖：
   1) 服务存活 / 图清单 / 图的 schema 契约（Studio 的 Input 表单来自它）
-  2) pipeline 图真实对接（Vina）→ 产物落盘、运行目录隔离
   3) 并发 3 个 run → run_id 与运行目录互不串台
   4) 无分子输入的错误路径 → 如实返回 no_molecules，run 有收尾
   5) 未知 assistant → 客户端错误（实测 422）
@@ -39,7 +38,7 @@ DEPLOY = Path(__file__).resolve().parents[1]
 PROJECT = DEPLOY.parent / "projects"
 PORT = int(os.getenv("LG_TEST_PORT", "2033"))
 EXTERNAL = os.getenv("LG_BASE_URL", "").rstrip("/")
-EXPECTED_GRAPHS = {"coordinator", "pipeline", "intake", "property", "pocket", "docking", "binding"}
+EXPECTED_GRAPHS = {"coordinator", "intake", "property", "pocket", "docking", "binding"}
 
 pytestmark = [
     pytest.mark.live,
@@ -172,79 +171,6 @@ def test_ok_and_graph_list(server: Server) -> None:
 def _assistant_id(server: Server, graph_id: str) -> str:
     rows = http(server.base, "/assistants/search", {"limit": 50})
     return next(r["assistant_id"] for r in rows if r["graph_id"] == graph_id)
-
-
-def test_pipeline_schema_exposed(server: Server) -> None:
-    """Studio 的 Input 表单来自图的输入 schema，字段必须齐（含输出字段回显）。"""
-    pid = _assistant_id(server, "pipeline")
-    blob = json.dumps(http(server.base, f"/assistants/{pid}/schemas", None, method="GET"),
-                      ensure_ascii=False)
-    for key in ("ligands_text", "molecule_file", "receptor", "receptor_file", "positive_control",
-                "exhaustiveness", "n_poses", "engine", "pocket_engine", "site_center", "site_size",
-                "save_poses", "max_ligands", "protonation", "protonation_ph",
-                "allow_example_fallback", "run_id", "artifacts"):
-        assert key in blob, f"pipeline schema 缺字段 {key}"
-    cid = _assistant_id(server, "coordinator")
-    assert "messages" in json.dumps(
-        http(server.base, f"/assistants/{cid}/schemas", None, method="GET"), ensure_ascii=False)
-
-
-# --------------------------------------------------------------------------- #
-# 2/3/4/5) 真实对接 / 并发 / 错误路径
-# --------------------------------------------------------------------------- #
-def run_pipeline(server: Server, *, smiles: str, name: str = "mol",
-                 timeout: float = 900.0) -> dict:
-    return http(server.base, "/runs/wait", {
-        "assistant_id": "pipeline",
-        "input": {
-            "ligands_text": f"{name},{smiles}",
-            "receptor": "thrombin",
-            "pocket_engine": "known_site",
-            "exhaustiveness": 1, "n_poses": 1, "save_poses": True,
-            "site_center": [31.50, 13.74, 24.36], "site_size": [22.0, 22.0, 22.0],
-        },
-    }, timeout=timeout)
-
-
-def test_pipeline_real_docking_artifacts(server: Server) -> None:
-    out = run_pipeline(server, smiles="CCO", name="乙醇")
-    assert out.get("status") == "ok", out
-    run_dir = Path(out["run_dir"])
-    for name in ("run.json", "docking.json", "ranking.csv", "report.md", "studio_result.json"):
-        assert (run_dir / name).is_file(), f"{name} 未生成"
-    arts = {a["name"] for a in out["artifacts"]}
-    assert {"report_md", "report_pdf", "ranking_csv", "studio_result"} <= arts, sorted(arts)
-    meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    assert meta["kind"] == "studio" and meta["status"] == "ok"
-    assert out["molecule_count"] == 1
-    if server.workspace:      # 运行目录必须落在测试自己的临时工作区
-        assert str(server.workspace) in str(run_dir), run_dir
-
-
-def test_concurrent_runs_are_isolated(server: Server) -> None:
-    import concurrent.futures as cf
-
-    with cf.ThreadPoolExecutor(max_workers=3) as pool:
-        outs = list(pool.map(lambda s: run_pipeline(server, smiles=s, name=f"M{s}"),
-                             ["CCO", "Oc1ccccc1", "CCN"]))
-    assert all(o.get("status") == "ok" for o in outs), outs
-    assert len({o["run_id"] for o in outs}) == 3
-    dirs = [Path(o["run_dir"]) for o in outs]
-    assert len({str(d) for d in dirs}) == 3
-    for d in dirs:
-        assert (d / "docking.json").is_file()
-        assert json.loads((d / "run.json").read_text(encoding="utf-8"))["kind"] == "studio"
-
-
-def test_no_molecules_is_honest_not_crash(server: Server) -> None:
-    out = http(server.base, "/runs/wait", {"assistant_id": "pipeline", "input": {
-        "ligands_text": "", "allow_example_fallback": False, "receptor": "thrombin"}}, timeout=300)
-    assert out.get("status") == "no_molecules", out
-    run_dir = Path(out["run_dir"])
-    assert run_dir.is_dir()
-    # 裸返回路径也必须收尾（部署层缺陷 B 的回归）
-    meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    assert meta["status"] not in ("", "running"), meta["status"]
 
 
 def test_unknown_assistant_is_client_error(server: Server) -> None:

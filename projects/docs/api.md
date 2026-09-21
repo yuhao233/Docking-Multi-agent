@@ -84,7 +84,10 @@
 
 SSE 统一报文：`event: message\ndata: {JSON}\n\n`；最后一条一定是 `type=done` 或 `type=error`。
 
-### `POST /api/pipeline/stream` —— 确定性流水线（不需要 LLM）
+### 历史端点（已删除）
+
+> `POST /api/pipeline/stream` 与 `POST /pipeline` 承载的"不经过 Agent 的确定性流水线"已下线。
+> 对接一律走标准 Agent Protocol（`POST /threads/{tid}/runs/stream`，`assistant_id=coordinator`）。
 请求体：
 ```json
 {
@@ -214,7 +217,7 @@ curl -s "$BASE/api/runs/<run_id>" | python -m json.tool | grep -E 'conversation_
 ```
 
 > 兼容接口 `/run`、`/v1/chat/completions` 也识别请求体里的 `conversation_id`（缺省同样回落 `run_id`）；
-> `/api/pipeline/stream` 接受该字段但只做记录（流水线无多轮记忆）。
+> 该字段在标准 Agent Protocol 请求里表示会话线程；线程级端点本身就是多轮记忆的载体。
 
 ---
 
@@ -328,7 +331,6 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 | --- | --- | --- |
 | POST | `/run` | 同步多 Agent，返回 `{messages:[...]}` |
 | POST | `/stream_run` | 多 Agent SSE（旧事件格式） |
-| POST | `/pipeline` | 确定性流水线（同步 JSON） |
 | GET | `/files/{key}` | 下载 `var/outputs/` 下的产物 |
 | POST | `/cancel/{run_id}` | 取消运行 |
 | GET | `/health` | 旧版健康检查 |
@@ -364,7 +366,7 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
    受理层**未识别到**的受体只以弱表述出现（`source="default"`，见 §7.1.1），不会被当成用户指定。
 3. **`done` 事件只会出现一次**：Agent 流内部的 `start`/`done` 被外层统一接管。
 4. **产物清单**除契约列出的项外，还包含 `property_chart`（理化性质空间图）与 `result`（完整结果 JSON）。
-5. **报告在两种模式下都有**：多 Agent 模式为协调 Agent 报告；确定性流水线模式由系统依据真实计算结果生成。
+5. **报告由协调 Agent 出具**：骨架固定、数值来自工具真实计算，Agent 只写文字判断与结论。
 
 6. **`mode` / `advanced` 字段**（见第 2 节）：彻底避免「聊天指令」与「运行参数」互相冲突。
    `manual` = 参数权威；`chat`+`advanced=false` = 纯指令，参数块用系统默认值；
@@ -411,7 +413,7 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 `run.status` 仍为 `ok`，`run.completeness` 只如实说明本次实际完成了什么（信息展示，不驱动行为）：
 `{"docking":"agent|partial|missing|auto","docked":N,"total":M,"ranking":"ok|missing","report":"ok|missing","positive_control":"ok|skipped"}`（无分子时为 `not_applicable`）。
 
-### 7.3 SSE 新增事件（`/api/pipeline/stream` 与 `/api/agent/stream` 通用）
+### 7.3 SSE 新增事件（运行流帧，标准 Agent Protocol 与兼容端点通用）
 
 ```json
 {"type":"progress","stage":"docking","done":1200,"total":10000,"percent":12.0,
@@ -445,7 +447,7 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
   没有 `token`/`tool_call` 事件，`run_docking` 工具会逐条把对接结果写进运行级缓冲
   （`live_molecules`），API 层每秒心跳（`_interleave` 的 `_tick`）把它转成 `molecules`
   事件下发，并在图结束前补齐最后一个窗口的结果。实时缓冲**不写入**运行元数据。
-  阳性对照只作基线，不进逐分子实时流（与流水线一致）。
+  阳性对照只作基线，不进逐分子实时流。
 
 ### 7.4 结果分页与聚合
 
@@ -509,7 +511,7 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 - pilot **只测量**：不写位姿、不进 ranking/黑板，失败即退回静态规划（只 `logger.warning`）。
 - 每条决策（含每次降级）都写入 `result.param_plan.decisions`，报告新增「参数自动规划」一节展示。
 
-流水线（`/api/pipeline/stream`、`/pipeline`）在 `N ≥ AGENT_FUNNEL_MIN` 时自动执行两阶段：
+运行在 `N ≥ AGENT_FUNNEL_MIN` 时自动执行两阶段漏斗：
 粗筛复用现有 `dock_library`，精算只跑头部并**沿用粗筛盒子**；同一分子的精算值参与排序，
 粗筛值保留在 `affinity_coarse`。多 Agent 路径由受理层把同一规划作为「建议参数」写进指令
 （`intake._planned_params_advice`），主管据此用 `run_docking(top_from_previous=...)` 走同一口径。
@@ -647,7 +649,7 @@ POST /api/uploads/inspect      Content-Type: application/json
 
 ### 9.2 运行参数新增 `receptor_file`
 
-`/api/pipeline/stream`、`/api/agent/stream`、`/pipeline` 均支持 `receptor_file`：
+`/threads/{tid}/runs/stream` 与 `/api/agent/stream` 均支持 `receptor_file`：
 **优先于 `receptor`**（上传的受体文件 > 注册表受体）。若上传时给定了 `box_center`，
 建议同时按 `site_center`/`site_size` 传回，或在界面中自动填入。
 
@@ -988,7 +990,7 @@ LLM_API_KEY_POCKET=
 
 ### 13.1 请求参数新增 `pocket_engine`
 
-`/api/pipeline/stream`、`/api/agent/stream`、`/pipeline`、`/run` 均新增：
+`/threads/{tid}/runs/stream`、`/api/agent/stream`、`/run` 均新增：
 
 | 字段 | 取值 | 说明 |
 | --- | --- | --- |
@@ -1279,7 +1281,7 @@ SSE `choices` 事件与 `GET /api/runs/{id}` 的 `run.choices` 给出结构化�
 | 用户**明确**说「用示例库」 | 受理层确定性识别（`intake.user_requested_example_library`）→ 指令里给出 `allow_example_fallback=true`，才加载示例库 |
 | 参数模式表单里选中「示例库」来源 | 界面显式传 `allow_example_fallback=true`（用户自己的选择） |
 
-服务端默认值同步收紧：`AgentRequest.allow_example_fallback` 与 `pipeline.run_pipeline` 的默认值都是
+服务端默认值同步收紧：`AgentRequest.allow_example_fallback` 的默认值是
 **False**（此前是 True，导致 API/CLI 调用方在没给分子时被静默换成别人的分子）。
 协调 Agent 提示词里也删掉了「缺省用 thrombin/1DWC」这类默认受体点名，改为
 **受体缺省时以工具返回的 notes/结果块为准，不得自行假定受体名**。
@@ -1465,7 +1467,7 @@ SSE `choices` 事件与 `GET /api/runs/{id}` 的 `run.choices` 给出结构化�
 | Stateless Runs | `POST /runs/stream`、`POST /runs/wait` |
 
 **7 个助手**（`assistant_id` 为名字派生的确定性 uuid5，`graph_id` 与图名一致）：
-`coordinator`、`pipeline`、`intake`、`property`、`pocket`、`docking`、`binding`。
+`coordinator`、`intake`、`property`、`pocket`、`docking`、`binding`。
 入参 schema 见 `/assistants/{id}/schemas`（由 `AgentRequest` / `PipelineRequest` 直接生成，
 与真实校验同一处定义）；`coordinator` 额外接受标准 `input.messages`。
 
@@ -1494,21 +1496,21 @@ event: error             data: {"error": "<code>", "message": "...", "where": {.
 ### 已知边界
 
 - `GET /threads/{id}/state|history` 只对**被 checkpointer 记录的图**（`coordinator`）有内容；
-  `pipeline` / `intake` / 4 个子 Agent 不写图状态，返回空 state（实测 coordinator 线程：
+  `intake` / 4 个子 Agent 不写图状态，返回空 state（实测 coordinator 线程：
   state 4 条消息、history 5 个检查点）。
 - 线程登记落盘在 `var/threads/<thread_id>.json`（临时文件 + `os.replace` 原子写）。
 - 平台 run id 是**进程内**句柄（重启后消失）；跨重启请用业务 run id。
-- 旧端点（`POST /api/agent/stream`、`POST /api/pipeline/stream`）**继续可用**，但已在 OpenAPI 里
-  标注 `deprecated=True`（`summary` 以 `[已废弃]` 开头），不再新增能力。
+- 旧端点 `POST /api/agent/stream` **继续可用**，但已在 OpenAPI 里标注 `deprecated=True`
+  （`summary` 以 `[已废弃]` 开头），不再新增能力；流水线端点已随功能一并删除。
 
 ### 前端已切换（阶段 2）
 
-网页端 `web/app.js` **不再直接调用** `/api/agent/stream`、`/api/pipeline/stream`：
+网页端 `web/app.js` **不再直接调用** `/api/agent/stream`：
 
 | 模式 | assistant_id | 请求 |
 | --- | --- | --- |
 | 对话模式 | `coordinator` | `POST /threads` → `POST /threads/{thread_id}/runs/stream` |
-| 参数模式（流水线） | `pipeline` | 同上（同一个线程登记） |
+| 参数模式（表单权威） | `coordinator` | 同上（同一个线程登记；`input.mode=manual`） |
 
 请求体为标准信封，业务参数全部在 `input` 内：
 
@@ -1530,9 +1532,9 @@ event: error             data: {"error": "<code>", "message": "...", "where": {.
 
 ### 哪些旧端点被标成废弃
 
-`POST /api/agent/stream`、`POST /api/pipeline/stream`、`POST /run`、`POST /stream_run`、
-`POST /pipeline`、`POST /cancel/{run_id}`、`GET /health`、`GET /graph_parameter`
-（替代关系见各自 `summary`）。`PUT /api/settings` 的错误体现在同时带标准 `detail`
+`POST /api/agent/stream`、`POST /run`、`POST /stream_run`、`POST /cancel/{run_id}`、
+`GET /health`、`GET /graph_parameter`（替代关系见各自 `summary`）。已被删除的流水线端点
+（`POST /api/pipeline/stream`、`POST /pipeline`）不再出现在 OpenAPI 里。`PUT /api/settings` 的错误体现在同时带标准 `detail`
 与向后兼容的 `error_message`。
 
 ### 门禁

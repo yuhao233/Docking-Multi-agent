@@ -88,7 +88,7 @@ def test_ranking_csv_has_id_columns() -> None:
 def test_report_ranking_table_honours_requested_columns() -> None:
     result = {"ranking": _ranking(2), "receptors": [], "positive_control": {}, "notes": [],
               "task_spec": {}, "report_customization": {"extra_columns": ["id", "formula"]}}
-    md = build_markdown_report(result, kind="pipeline", run_id="T", artifacts=[])
+    md = build_markdown_report(result, kind="agent", run_id="T", artifacts=[])
     assert "| 分子 ID |" in md and "| 分子式 |" in md
     assert "PGR001" in md and "C1H2O" in md
 
@@ -173,11 +173,11 @@ def test_report_section0_shows_requirements_and_dispatch(tmp_path: Path) -> None
     assert "协调 Agent 的调度记录" in md and "对接执行" in md and "m-b" in md
 
 
-def test_pipeline_report_without_customization_is_unchanged() -> None:
+def test_report_without_customization_is_unchanged() -> None:
     """没有定制时不能凭空冒出第 0 节（骨架保持原样）。"""
     result = {"ranking": _ranking(2), "receptors": [], "positive_control": {}, "notes": [],
               "task_spec": {}}
-    md = build_markdown_report(result, kind="pipeline", run_id="T", artifacts=[])
+    md = build_markdown_report(result, kind="agent", run_id="T", artifacts=[])
     assert md.splitlines()[0] == "# 分子对接筛选报告"
     assert "## 0. 本次要求与响应" not in md
 
@@ -207,7 +207,7 @@ def test_report_adds_id_column_only_when_id_is_informative() -> None:
     """ID 与名称不同（文件里真有编号）→ 报告自动带 ID 列；相同则不重复占列。"""
     informative = {"ranking": _ranking(2), "receptors": [], "positive_control": {},
                    "notes": [], "task_spec": {}}
-    md = build_markdown_report(informative, kind="pipeline", run_id="T", artifacts=[])
+    md = build_markdown_report(informative, kind="agent", run_id="T", artifacts=[])
     assert "| 分子 ID |" in md and "PGR001" in md
 
     same = _ranking(2)
@@ -215,5 +215,5 @@ def test_report_adds_id_column_only_when_id_is_informative() -> None:
         r["id"] = r["name"]
     md2 = build_markdown_report({"ranking": same, "receptors": [], "positive_control": {},
                                  "notes": [], "task_spec": {}},
-                                kind="pipeline", run_id="T", artifacts=[])
+                                kind="agent", run_id="T", artifacts=[])
     assert "| 分子 ID |" not in md2

@@ -22,6 +22,9 @@ ensure_runtime_env()
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from support.fake_llm import (agent_input_from_form, business_run_id_from_sse,  # noqa: E402
+                              coordinator_script_for_form, install_fake_llm)
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -29,6 +32,25 @@ def client():
 
     with TestClient(app) as c:
         yield c
+
+
+def _run_agent_stream(client, body: dict, monkeypatch) -> tuple:
+    """走标准 Agent Protocol 路径，返回 `(业务 run_id, SSE 文本)`。"""
+    install_fake_llm(monkeypatch, script=coordinator_script_for_form(body))
+    tid = client.post("/threads", json={}).json()["thread_id"]
+    resp = client.post(f"/threads/{tid}/runs/stream",
+                       json={"assistant_id": "coordinator",
+                             "stream_mode": ["messages", "updates", "custom"],
+                             "input": agent_input_from_form(body)})
+    assert resp.status_code == 200, resp.text[:300]
+    run_id = business_run_id_from_sse(resp.text)
+    assert run_id, f"未从标准 SSE 帧取到业务 run_id：{resp.text[:300]}"
+    return run_id, resp.text
+
+
+def _run_agent(client, body: dict, monkeypatch) -> str:
+    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 run_id。"""
+    return _run_agent_stream(client, body, monkeypatch)[0]
 
 
 def _sse_events(text: str):
@@ -94,7 +116,7 @@ def test_unknown_run_404(client):
 # --------------------------------------------------------------------------- #
 # 执行 + 中间数据闭环
 # --------------------------------------------------------------------------- #
-def test_pipeline_stream_and_artifacts(client):
+def test_agent_run_and_artifacts(client, monkeypatch) -> None:
     payload = {
         "receptor": "thrombin",
         "ligands_text": "乙醇:CCO",
@@ -105,23 +127,16 @@ def test_pipeline_stream_and_artifacts(client):
         "save_poses": True,
         "max_ligands": 1,
     }
-    r = client.post("/api/pipeline/stream", json=payload)
-    assert r.status_code == 200
-    events = list(_sse_events(r.text))
-    kinds = [e.get("type") for e in events]
-
-    assert kinds[0] == "start"
-    assert "stage" in kinds and "progress" in kinds
-    # 逐分子结果：小库用单条 molecule，大库用批量 molecules，两者都要支持
-    assert ("molecule" in kinds) or ("molecules" in kinds)
-    assert kinds[-1] == "done"
-
-    run_id = events[0]["run_id"]
-    mol_events = [e for e in events if e.get("type") == "molecule"]
-    mol_events += [item for e in events if e.get("type") == "molecules" for item in e.get("items", [])]
-    assert mol_events, "应至少推送一条逐分子结果"
-    assert "affinity_kcal_mol" in mol_events[0]
-    assert mol_events[0]["pose_url"], "开启保存位姿时应给出位姿下载地址"
+    run_id, text = _run_agent_stream(client, payload, monkeypatch)
+    events = [e for e in _sse_events(text) if isinstance(e, dict)]
+    # 标准 Agent Protocol 帧：metadata（平台 run id）→ custom/updates/... → values → end
+    assert any(e.get("graph_id") == "coordinator" for e in events), "缺少 metadata 帧"
+    custom = [e for e in events if e.get("type")]
+    assert custom and custom[0].get("type") == "start"
+    assert custom[0].get("run_id") == run_id
+    # 实时进度：心跳/收尾至少要推送逐分子结果或进度
+    kinds = {e.get("type") for e in custom}
+    assert kinds & {"molecule", "molecules", "progress", "stage"}, kinds
 
     # ---- 运行记录 ----
     detail = client.get(f"/api/runs/{run_id}").json()
@@ -131,6 +146,10 @@ def test_pipeline_stream_and_artifacts(client):
     assert ranking and ranking[0]["name"]
     assert isinstance(ranking[0]["affinity_kcal_mol"], (int, float))
     assert detail["report_markdown"].startswith("# ")
+    # 逐分子位姿可下载（pose_url 落在对接结果行上）
+    blocks = (detail["result"].get("docking") or {}).get("receptors") or []
+    rows = blocks[0]["results"] if blocks else []
+    assert rows and rows[0].get("pose_url"), "开启保存位姿时应给出位姿下载地址"
 
     # ---- 产物清单 ----
     names = {a["name"] for a in detail["artifacts"]}
@@ -208,7 +227,7 @@ def test_agent_request_defaults_to_manual():
     assert req.mode == "manual" and req.advanced is False
 
 
-def test_ranking_api_pagination_and_export(client):
+def test_ranking_api_pagination_and_export(client, monkeypatch):
     """结果分页接口与 CSV 导出（真实对接 3 个分子，费用低）。"""
     payload = {
         "receptor": "thrombin",
@@ -216,9 +235,7 @@ def test_ranking_api_pagination_and_export(client):
         "positive_control": "NC(=N)c1ccccc1",
         "exhaustiveness": 1, "engine": "vina", "save_poses": False,
     }
-    r = client.post("/api/pipeline/stream", json=payload)
-    assert r.status_code == 200
-    run_id = next(e["run_id"] for e in _sse_events(r.text) if e.get("type") == "start")
+    run_id = _run_agent(client, payload, monkeypatch)
 
     detail = client.get(f"/api/runs/{run_id}").json()["result"]
     assert detail["ranking_total"] == 3
