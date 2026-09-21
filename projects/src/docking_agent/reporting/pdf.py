@@ -146,9 +146,18 @@ def _clean_inline(text: str) -> str:
     return text.replace("\u00a0", " ").strip()
 
 
+#: 列宽下限：低于这个宽度就不再压缩，改为**换行**显示（宁可表格变高，也不丢数据）
+_TABLE_MIN_COL = 8
+
+
 def _format_table(rows: Sequence[Sequence[Any]], max_cols: int, *,
-                  header: bool = True) -> List[str]:
-    """把二维表格格式化成等宽文本行；列宽不足时压缩最宽的列。
+                  header: bool = True, min_col: int = _TABLE_MIN_COL) -> List[str]:
+    """把二维表格格式化成等宽文本行；列宽不足时**换行**而不是截断。
+
+    真实缺陷（用户报障）：表格过宽时旧实现把最宽的列一路压到 4 个字符再截断单元格，
+    于是用户通过 `customize_report(extra_columns=[...])` 要求追加的列（例如小分子 ID）
+    在 PDF 里只剩几个字符或被截掉 —— 报告看起来"没按用户要求调整"。
+    现在：列宽压缩到 `min_col` 为止，超出部分在单元格内**折行**，所有列与取值都保留。
 
     header=True 时首行后加一条分隔线（Markdown 表格的首行就是表头）；
     标题页的元信息表没有表头，用 header=False 避免出现悬空的分隔线。
@@ -160,13 +169,17 @@ def _format_table(rows: Sequence[Sequence[Any]], max_cols: int, *,
     for row in clean:
         row.extend([""] * (ncol - len(row)))
     widths = [max(_display_width(row[i]) for row in clean) for i in range(ncol)]
-    # " | " 分隔符占 3 列；逐步压缩最宽列，直到整行能放进页面
-    while sum(widths) + 3 * (ncol - 1) > max_cols and max(widths) > 4:
+    # " | " 分隔符占 3 列；逐步压缩最宽列，直到整行能放进页面（下限 min_col）
+    while sum(widths) + 3 * (ncol - 1) > max_cols and max(widths) > min_col:
         widths[widths.index(max(widths))] -= 1
     lines: List[str] = []
     for idx, row in enumerate(clean):
-        cells = [_pad(_truncate(cell, widths[i]), widths[i]) for i, cell in enumerate(row)]
-        lines.append(" | ".join(cells).rstrip())
+        wrapped = [(_wrap(cell, widths[i]) or [""]) for i, cell in enumerate(row)]
+        height = max((len(part) for part in wrapped), default=1)
+        for line_no in range(height):
+            cells = [part[line_no] if line_no < len(part) else "" for part in wrapped]
+            lines.append(" | ".join(
+                _pad(cells[i], widths[i]) for i in range(ncol)).rstrip())
         if header and idx == 0:
             lines.append("-+-".join("-" * w for w in widths))
     return lines

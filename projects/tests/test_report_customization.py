@@ -217,3 +217,32 @@ def test_report_adds_id_column_only_when_id_is_informative() -> None:
                                  "notes": [], "task_spec": {}},
                                 kind="agent", run_id="T", artifacts=[])
     assert "| 分子 ID |" not in md2
+
+
+# --------------------------------------------------------------------------- #
+# PDF 表格：用户追加的列（例如小分子 ID）必须完整保留
+# --------------------------------------------------------------------------- #
+def test_pdf_table_keeps_user_requested_columns() -> None:
+    """表格过宽时**换行**而不是截断 —— 旧实现把列宽压到 4 字符再截断，
+    用户通过 customize_report 追加的 id 列在 PDF 里就没了（真实报障）。"""
+    from docking_agent.reporting.pdf import _format_table
+
+    rows = [["rank", "id", "name", "smiles", "affinity", "LE", "grade"],
+            ["1", "PGR137", "阿司匹林", "CC(=O)Oc1ccccc1C(=O)O", "-5.73", "0.626", "C"],
+            ["2", "PGR042", "布洛芬", "CC(C)Cc1ccc(cc1)C(C)C(=O)O", "-5.97", "0.656", "C"]]
+    text = "\n".join(_format_table(rows, 78))
+    assert "id" in text, "表头必须保留用户要求的 id 列"
+    assert "PGR137" in text and "PGR042" in text, text
+    # 长 SMILES 允许折行，但不得丢字符
+    assert text.replace("\n", "").count("CC(=O)Oc1ccccc1C(=O)O") >= 1
+    # 折行会把同一单元格的两半放在两行（中间隔着其它列），因此按"两半都在"判断完整性
+    assert "CC(C)Cc1ccc(cc1)C(C)C(=O" in text and ")O" in text, text
+
+
+def test_pdf_table_still_compresses_reasonably() -> None:
+    """换行不等于放任：窄表不该被无谓折行，列宽仍按内容自适应。"""
+    from docking_agent.reporting.pdf import _format_table
+
+    rows = [["rank", "name", "affinity"], ["1", "阿司匹林", "-5.73"]]
+    lines = _format_table(rows, 78)
+    assert len(lines) == 3, lines          # 表头 + 分隔线 + 一行数据（无附加折行）
