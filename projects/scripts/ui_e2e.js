@@ -692,6 +692,10 @@ async function runChatChoicesScenario(check, sleep) {
   }
   const buttons = Array.from(doc.querySelectorAll('.chat-choice'));
   check(buttons.length >= 2, `choices 事件渲染成可选按钮（${buttons.length} 个）`);
+  // 回归：同一批候选只能出现在一个承载面 —— 对话模式用气泡，面板必须为空
+  check(doc.querySelectorAll('#choice-list .chat-choice').length === 0,
+    '对话模式下候选只出现在助手气泡里（面板不同时显示，避免两份）',
+    `面板按钮 ${doc.querySelectorAll('#choice-list .chat-choice').length} 个`);
   check(buttons.every((b) => b.tagName === 'BUTTON'), '选项渲染为真正的 button 元素');
   check(!!buttons[0] && buttons[0].getAttribute('data-choice-value') === 'P08922',
     '按钮带机器可用的 data-choice-value（accession）',

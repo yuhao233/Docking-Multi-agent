@@ -2878,6 +2878,46 @@ function choiceDetailText(detail) {
   return parts.join(' · ');
 }
 
+/**
+ * 把候选项挂到**唯一**的承载面（避免同一批候选同时出现在气泡与面板里）。
+ *
+ * 规则：对话模式 → 助手气泡下方（用户视线所在）；参数模式 / 载入历史 → 中栏选项面板。
+ * 每次都先把另一面清空，因此任何时刻最多只有一处显示候选。
+ */
+function showChoices(choices, note, kind) {
+  const items = Array.isArray(choices) ? choices.slice() : [];
+  const useBubble = state.page === 'chat';
+  clearChoicesEverywhere();
+  if (!items.length) return;
+  if (useBubble) {
+    if (!state.chatActiveId) state.chatActiveId = appendChatMessage('assistant', '', '请选择');
+    const message = findChatMessage(state.chatActiveId);
+    if (message) {
+      message.choices = items;
+      message.choiceNote = note || '';
+      if (message.status === '运行中') message.status = '请选择';
+      renderChatHistory();
+      return;                       // 气泡承载成功：面板保持为空
+    }
+  }
+  setPendingChoices(items, note, kind || (items[0] && items[0].kind));
+}
+
+/** 清空两个承载面（气泡上的候选 + 中栏面板） */
+function clearChoicesEverywhere() {
+  state.pendingChoices = null;
+  renderChoicePanel();
+  let touched = false;
+  (state.chatMessages || []).forEach((message) => {
+    if (message && message.choices && message.choices.length) {
+      message.choices = [];
+      message.choiceNote = '';
+      touched = true;
+    }
+  });
+  if (touched) renderChatHistory();
+}
+
 /** 设置/清空待确认候选（SSE 事件与历史载入共用） */
 function setPendingChoices(items, note, kind) {
   const list = Array.isArray(items) ? items.slice() : [];
@@ -2915,19 +2955,10 @@ function statusLabel(status) {
 function handleChoicesEvent(data) {
   const choices = Array.isArray(data && data.choices) ? data.choices : [];
   if (!choices.length) return;
-  // 两种模式都渲染：参数模式没有聊天气泡，靠中栏的选项面板承载（真实缺陷修复）
-  setPendingChoices(choices, (data && data.note) || '', choices[0] && choices[0].kind);
-  if (state.page === 'chat') {
-    if (!state.chatActiveId) state.chatActiveId = appendChatMessage('assistant', '', '请选择');
-    const message = findChatMessage(state.chatActiveId);
-    if (message) {
-      message.choices = choices.slice();
-      message.choiceNote = (data && data.note) || '';
-      if (message.status === '运行中') message.status = '请选择';
-      renderChatHistory();
-    }
-  }
-  logLine('收到 ' + choices.length + ' 个候选可选项：可在中栏「需要你确认的选项」中点选。', 'stage');
+  // 只挂一个面：对话模式用气泡，参数模式用中栏面板（此前两面同时渲染 → 用户看到两份）
+  showChoices(choices, (data && data.note) || '', choices[0] && choices[0].kind);
+  logLine('收到 ' + choices.length + ' 个候选可选项：请在'
+          + (state.page === 'chat' ? '助手气泡下方' : '中栏「需要你确认的选项」中') + '点选。', 'stage');
 }
 
 /* 点选某个候选：清空按钮 → 把等价追问写进输入框 → 以同一 conversation_id 继续运行 */
@@ -3631,7 +3662,7 @@ function setRunning(running) {
 
 async function startRun(messageOverride) {
   if (state.running) return;
-  setPendingChoices([], '', '');          // 新一轮开始：清掉上一轮的候选面板
+  clearChoicesEverywhere();               // 新一轮开始：清掉上一轮的两处候选
   const payload = buildPayload(messageOverride);
 
   // 分模式校验：对话模式宽松（高级设置未展开时无需任何参数）
@@ -5430,8 +5461,8 @@ async function loadRun(runId, options) {
     else resetLiveTableForLoadedRun(state.ranking.total);
     // 该运行当时停在"等待用户选择"时，把候选重新挂出来：刷新页面或换设备后依然可点选
     const loadedRun = (payload && payload.run) || {};
-    setPendingChoices(loadedRun.choices || [], loadedRun.choices_note || '',
-                      (loadedRun.choices || [{}])[0].kind || '');
+    showChoices(loadedRun.choices || [], loadedRun.choices_note || '',
+                (loadedRun.choices || [{}])[0].kind || '');
     if (!opts.silent) setRunHint('已载入运行 ' + runId + '（结果按服务端分页展示）。');
     return payload;
   } catch (error) {
