@@ -1417,6 +1417,30 @@ SSE `choices` 事件与 `GET /api/runs/{id}` 的 `run.choices` 给出结构化�
 
 ---
 
+## 外部工具探测
+
+`POST /api/tools/probe`（无需请求体）
+
+探测用户自行安装的外部工具并返回结论，与 `bash scripts/doctor.sh`、设置页「检测」按钮**同源**
+（共用 `core.external_tools`）：
+
+```json
+{
+  "engine": {
+    "configured": true, "ok": true, "state": "ready",
+    "bin": "/opt/unidock", "flavor": "unidock", "flavor_label": "Uni-Dock",
+    "version_line": "Uni-Dock v1.2.0 (CUDA 12.2)", "device": 0, "batch_size": 100,
+    "gpu": {"ok": true, "tool": "nvidia-smi", "devices": ["GPU 0: NVIDIA GeForce RTX 5090"]}
+  },
+  "p2rank": {"ok": true, "detail": "/path/prank", "hint": ""},
+  "pdb2pqr": {"ok": false, "detail": "", "hint": "设置 PDB2PQR_BIN 指向可用的 pdb2pqr"}
+}
+```
+
+`engine.state` 取值：`not_configured`（未提供，用内置 CPU Vina）、`ready`、`no_gpu`、
+`invalid`（路径/权限问题）、`probe_failed`、`unrecognized`（无法识别引擎类型）。
+除 `not_configured` 与 `ready` 之外的状态都会让对接任务**拒绝启动**并返回 `hint` 中的补齐方法。
+
 ## 标准 Agent Protocol 面（兼容子集，阶段 1）
 
 > **这个面是什么**：它是**产品面**的一部分 —— 我们自己实现的 Agent Protocol 兼容子集

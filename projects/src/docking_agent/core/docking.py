@@ -922,6 +922,16 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
         return {"status": "no_molecules",
                 "message": "未提供待对接的小分子配体，请先提供候选小分子库（SMILES/名称）。"}
 
+    # 外部引擎（用户在设置页提供的 GPU 对接工具）：已配置但不可用时**拒绝启动**，
+    # 不静默回退到内置实现 —— 否则用户以为在用 GPU，实际是 CPU 结果（真实缺陷类问题）。
+    from docking_agent.core.external_tools import configured_bin, require_engine
+
+    external = require_engine() if configured_bin() else {}
+    if external and callable(note_cb):
+        note_cb(f"外部对接引擎已登记：{external.get('flavor_label', '')}"
+                f"（设备 {external.get('device')}，单批 {external.get('batch_size')} 个配体）；"
+                "执行适配启用前，本次仍由内置引擎完成计算。")
+
     # 安全阀：限制单次对接分子数，避免误传大库导致长时间占用
     if max_ligands is None:
         try:

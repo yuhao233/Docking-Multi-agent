@@ -6484,6 +6484,13 @@ function renderSettingsGroups(data) {
       details.appendChild(renderRoleCards(specs, data));
     } else if (group.id === 'models') {
       details.appendChild(renderModelsPanel(data));
+    } else if (group.id === 'external') {
+      if (specs.length) {
+        const grid = el('div', 'set-grid');
+        specs.forEach((spec) => grid.appendChild(settingsFieldNode(spec, data)));
+        details.appendChild(grid);
+      }
+      details.appendChild(renderExternalToolsPanel());
     } else if (specs.length) {
       const grid = el('div', 'set-grid');
       specs.forEach((spec) => grid.appendChild(settingsFieldNode(spec, data)));
@@ -6494,6 +6501,67 @@ function renderSettingsGroups(data) {
   // 关键字：模型名可下拉选择（datalist 由 renderModelsPanel 生成）
   renderModelDatalist(data);
   renderSettingsAnchor(data.groups || []);
+}
+
+/**
+ * 外部工具面板：一键探测用户自行安装的工具（GPU 对接引擎 / P2Rank / pdb2pqr）。
+ *
+ * 结果与 `scripts/doctor.sh`、`/api/tools/probe` 同源，因此三处结论一致；
+ * 探测不通过时给出补齐方法，而不是静默改用别的实现。
+ */
+function renderExternalToolsPanel() {
+  const box = el('div', 'ext-tools');
+  const bar = el('div', 'row');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = 'btn-probe-external';
+  btn.className = 'sec';
+  btn.textContent = '检测外部工具';
+  bar.appendChild(btn);
+  bar.appendChild(el('span', 'hint-inline', '检测结果与 bash scripts/doctor.sh 一致'));
+  box.appendChild(bar);
+  const out = el('div', 'ext-tools-result');
+  out.id = 'ext-tools-result';
+  box.appendChild(out);
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    clear(out);
+    out.appendChild(el('div', 'hint', '正在检测…'));
+    try {
+      const r = await fetch('/api/tools/probe', { method: 'POST' });
+      const data = await r.json();
+      renderExternalToolsResult(out, data);
+    } catch (err) {
+      clear(out);
+      out.appendChild(el('div', 'hint', '检测失败：' + (err && err.message ? err.message : err)));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return box;
+}
+
+function renderExternalToolsResult(host, data) {
+  clear(host);
+  const rows = [
+    ['GPU 对接引擎', data && data.engine],
+    ['P2Rank（口袋预测）', data && data.p2rank],
+    ['pdb2pqr（受体 pH）', data && data.pdb2pqr],
+  ];
+  rows.forEach(([label, info]) => {
+    const line = el('div', 'ext-tools-row');
+    const notConfigured = !!(info && info.state === 'not_configured');
+    const state = notConfigured ? '未提供' : (info && info.ok ? '已就绪' : '不可用');
+    const cls = notConfigured ? 'ext-none' : (info && info.ok ? 'ext-ok' : 'ext-bad');
+    line.appendChild(el('span', 'ext-tools-name', label));
+    line.appendChild(el('span', cls, state));
+    const detail = (info && (info.flavor_label || info.detail || info.reason || info.message)) || '';
+    line.appendChild(el('span', 'ext-tools-detail', String(detail)));
+    host.appendChild(line);
+    if (info && !info.ok && info.hint) {
+      host.appendChild(el('div', 'hint', '补齐：' + info.hint));
+    }
+  });
 }
 
 /** 设置分组容器的 id 前缀（DOM 里由 renderSettingsGroups 生成） */

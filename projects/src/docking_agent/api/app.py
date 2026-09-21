@@ -213,7 +213,7 @@ def _settings_payload() -> Dict[str, Any]:
         values[spec.path] = stored
         effective[spec.path] = stored if stored is not None else spec.default
         sources[spec.path] = "界面设置" if stored is not None else "内置默认"
-    for spec in S.RUNTIME_SPECS + S.DEPLOY_SPECS:
+    for spec in S.EXTERNAL_SPECS + S.RUNTIME_SPECS + S.DEPLOY_SPECS:
         stored = S.get_dotted(stored_all, spec.path)
         values[spec.path] = stored
         effective[spec.path] = S.runtime_effective(spec)
@@ -550,6 +550,30 @@ def create_app() -> FastAPI:
     async def api_models() -> Dict[str, Any]:
         """从当前端点拉取可用模型列表（OpenAI 兼容 GET /models）。"""
         return await asyncio.to_thread(_fetch_endpoint_models)
+
+    @app.post("/api/tools/probe")
+    async def api_tools_probe() -> Dict[str, Any]:
+        """探测用户提供的外部工具（GPU 对接引擎 / P2Rank / pdb2pqr）。
+
+        与 `scripts/doctor.sh`、设置页「检测」共用同一份实现（`core.external_tools`），
+        因此三处结论必然一致；返回 `ok=false` 时 `hint` 给出补齐方法。
+        """
+        from docking_agent.core.external_tools import collect
+        from docking_agent.core.pockets import p2rank_command
+        from docking_agent.core.receptor_ph import pdb2pqr_bin
+
+        def probe() -> Dict[str, Any]:
+            engine = collect()
+            p2rank = p2rank_command()
+            return {
+                "engine": engine,
+                "p2rank": {"ok": bool(p2rank), "detail": " ".join(str(x) for x in (p2rank or [])),
+                           "hint": "" if p2rank else "bash scripts/fetch_tools.sh 或设置 P2RANK_HOME"},
+                "pdb2pqr": {"ok": bool(pdb2pqr_bin()), "detail": pdb2pqr_bin() or "",
+                            "hint": "" if pdb2pqr_bin() else "设置 PDB2PQR_BIN 指向可用的 pdb2pqr"},
+            }
+
+        return await asyncio.to_thread(probe)
 
     @app.post("/api/settings/test")
     async def api_settings_test(request: Request) -> Dict[str, Any]:

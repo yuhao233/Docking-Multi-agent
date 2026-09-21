@@ -3776,3 +3776,14 @@ html:not(.has-tip-js) [data-tip]:focus::after {
   cursor: pointer;
 }
 .run-note-toggle:hover { color: var(--accent); border-color: var(--accent-line); }
+
+/* 设置页 · 外部工具检测（v0.30） */
+.ext-tools { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.ext-tools .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ext-tools-result { display: flex; flex-direction: column; gap: 4px; }
+.ext-tools-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ext-tools-name { min-width: 190px; color: var(--text-dim); }
+.ext-tools-detail { color: var(--text-dim); font-size: 12px; word-break: break-all; }
+.ext-ok { color: var(--ok, #46c07a); font-weight: 600; }
+.ext-none { color: var(--text-dim); }
+.ext-bad { color: var(--warn, #d08a2a); font-weight: 600; }

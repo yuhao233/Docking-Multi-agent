@@ -77,7 +77,7 @@ def test_doctor_reports_capability_matrix() -> None:
     assert report["exit_code"] == proc.returncode
     keys = {item["key"] for item in report["items"]}
     for needed in ("python", "dep:rdkit", "dep:vina", "port", "java", "p2rank",
-                   "pdb2pqr", "autodock", "cjk_font", "llm"):
+                   "pdb2pqr", "autodock", "external_engine", "cjk_font", "llm"):
         assert needed in keys, f"doctor 缺少能力项 {needed}：{sorted(keys)}"
     for item in report["items"]:
         assert item["label"] and item["detail"], item

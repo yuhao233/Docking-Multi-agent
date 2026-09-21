@@ -193,6 +193,30 @@ def check_cjk_font() -> Dict[str, Any]:
                  degrade="图表与 PDF 中的中文可能显示为方块")
 
 
+def check_external_engine() -> Dict[str, Any]:
+    """用户提供的外部对接引擎：登记/探测/兼容性识别（与设置页「检测」同一份实现）。"""
+    try:
+        from docking_agent.core.external_tools import collect
+
+        report = collect()
+    except Exception as e:  # noqa: BLE001
+        return _item("external_engine", "外部对接引擎（用户提供）", False, f"探测失败：{e}",
+                     required=False, degrade="使用内置 CPU Vina")
+    state = report.get("state")
+    if state == "not_configured":
+        return _item("external_engine", "外部对接引擎（用户提供）", False, "未提供",
+                     hint="设置页「外部工具」填入 GPU 对接可执行文件路径（可选）",
+                     required=False, degrade="使用内置 CPU Vina")
+    if report.get("ok"):
+        return _item("external_engine", "外部对接引擎（用户提供）", True,
+                     f"{report.get('flavor_label', '')} · {report.get('version_line', '')}",
+                     required=False)
+    return _item("external_engine", "外部对接引擎（用户提供）", False,
+                 report.get("reason") or state or "探测未通过",
+                 hint=report.get("hint", ""), required=False,
+                 degrade="已配置但不可用：运行会直接失败而不会静默回退（需要时清空该设置）")
+
+
 def check_llm() -> Dict[str, Any]:
     try:
         from docking_agent.config import env
@@ -255,7 +279,7 @@ def collect(*, online: bool = False) -> Dict[str, Any]:
     items += check_workspace()
     items.append(check_port(default_port()))
     items += [check_java(), check_p2rank(), check_pdb2pqr(), check_autodock(),
-              check_cjk_font(), check_llm()]
+              check_external_engine(), check_cjk_font(), check_llm()]
     if online:
         items.append(check_llm_reachable())
     required_bad = [i for i in items if i["required"] and not i["ok"]]

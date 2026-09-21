@@ -61,7 +61,8 @@ def _settings(client):
 def test_settings_snapshot_shape(client, settings_file):
     data = _settings(client)
     assert len(data["specs"]) > 40
-    assert [g["id"] for g in data["groups"]] == ["llm", "models", "roles", "docking", "runtime", "deploy"]
+    assert [g["id"] for g in data["groups"]] == [
+        "llm", "models", "roles", "docking", "external", "runtime", "deploy"]
     for key in ("values", "effective", "sources", "secret", "meta", "roles", "agent_models"):
         assert key in data
     # 每个 spec 都要有当前值/生效值/来源三个视图

@@ -183,6 +183,7 @@ bash start.sh --setup           # 强制重装依赖
 | `autodock4`/`autogrid4` | 可选 | 只有 Vina 可用（`engine=autodock` 会失败）；`apt-get install autodock autogrid` |
 | 中文字体（Noto CJK 等） | 可选 | 图表/PDF 中文可能显示为方块；`apt-get install fonts-noto-cjk` |
 | LLM（`LLM_API_KEY` + `LLM_BASE_URL`） | 可选 | 多 Agent 模式不可用，**确定性流水线照常可用**（参数模式·流水线） |
+| GPU 对接引擎（用户自行安装） | 可选 | 设置页「外部工具」填写可执行文件路径；填了但检测不通过则**拒绝启动**并提示补齐方法，不会静默改用 CPU |
 | 默认端口 5000 空闲 | 可选 | `start.sh` 自动顺延到下一个可用端口（`doctor` 会告知将用哪个） |
 
 离线环境同样可用：确定性流水线 + 注册表受体（thrombin / trypsin）+ 上传文件；
@@ -2013,6 +2014,35 @@ node scripts/ui_e2e.js http://127.0.0.1:5000    # 143 项：导航切换 / hash 
       `snapshot_ids` 无移除；`bash start.sh --check` 端到端实跑（doctor → 真实 1 分子对接）通过。
     - **留待 P1/P2（未做，需你批准）**：`uv.lock` 固化（当前 `setup.sh` 仍是 `uv pip install -e .`）、
       离线断言、端点/SSE 帧快照、`prune_runs.sh`、`run.json` schema 版本、Docker 构建验证。
+
+59. **外部对接引擎（用户自行安装）：登记 / 探测 / 拒绝启动（P0）**：
+    - **背景**：GPU 版对接工具（Uni-Dock / Vina-GPU / AutoDock-GPU）编译与驱动依赖复杂，
+      随项目分发不现实。约定：**二进制由用户在设置页提供**，本项目**不新增引擎身份** ——
+      外部工具是 `vina` 引擎的另一种执行器（同一打分函数族、不同运行后端）。
+    - **唯一探测实现** `src/docking_agent/core/external_tools.py`：路径存在 / 可执行 /
+      `--version|--help` 能跑通 / GPU 可见（`nvidia-smi` → `clinfo`）/ **引擎类型识别**
+      （按版本输出特征串区分 Uni-Dock、Vina-GPU、AutoDock-GPU 三类 CLI）；并提供
+      `build_argv()` 固定三类调用形状（避免执行期再猜参数）。设置页「检测」按钮、
+      `POST /api/tools/probe`、`scripts/doctor.sh` **共用这一份**，三处结论必然一致。
+    - **三条边界行为（不静默）**：未提供路径 → 内置 CPU Vina（行为与之前完全一致）；
+      提供但探测不通过 → `require_engine()` 抛错，`dock_library` 在进入任何计算前
+      **拒绝启动**并在 `hint` 里给出补齐方法；提供且通过 → 记录类型/版本/设备/单批大小，
+      并以运行笔记如实播报"执行适配启用前本次仍由内置引擎完成计算"（P1 去掉这句话）。
+    - **设置页**：新增「外部工具（自行安装）」分组 —— `external.docking_bin`（`EXTERNAL_DOCKING_BIN`）、
+      `external.gpu_device`（`GPU_DEVICE`）、`external.gpu_batch_size`（`GPU_BATCH_SIZE`），
+      并把原先只能改 `.env` 的 `P2RANK_HOME`、`PDB2PQR_BIN` 一并搬进界面；字段经
+      `apply_runtime_env()` 注入环境变量，`core/` 侧读取逻辑不变。分组内提供「检测外部工具」按钮，
+      逐项显示就绪状态与补齐方法。
+    - **兼容性增强**：三类引擎的 argv 形状集中在一个适配器里（`FLAVOR_ARGV_STYLE` + `build_argv`），
+      输出解析按类型分支（P1 实现），**不新增引擎枚举值**。
+    - **门禁**：新增 `tests/test_external_engine.py` **15 项**（未配置即用内置、路径缺失/目录/无执行权限、
+      三类引擎识别、未知类型拒绝、`require_engine` 拒绝启动、对接入口在计算前即拒绝、
+      三类 argv 形状、设备与批量来自环境变量、设置页字段与环境变量映射、探测接口三块结果、
+      doctor 能力行）；`tests/test_settings.py` 分组清单同步为 7 组。全量 `pytest`、`lint_local`、
+      `check_web` 149/149、`ui_e2e` 210/210、`browser_check` 全部通过。
+    - **待办（P1，需你确认后开工）**：外部引擎的真实执行与输出解析（三类引擎各自的结果文件）、
+      GPU 批量调度（`plan_gpu_batch`：单设备单进程 + 分批）、对照基准
+      （CPU vs GPU 分数差 / 排序相关性 / top-1 位姿 RMSD）与报告引擎标注回归。
 
 ## 15. 注意事项
 

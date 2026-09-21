@@ -91,6 +91,9 @@ GROUPS: Tuple[Dict[str, str], ...] = (
      "help": "每个 Agent 持有独立模型实例；留空表示继承全局设置（占位符显示继承到的值）。"},
     {"id": "docking", "label": "对接默认值（界面表单预填）",
      "help": "设置页保存的默认值会在打开工作台时预填表单；单次运行仍以表单/指令为准。"},
+    {"id": "external", "label": "外部工具（自行安装）",
+     "help": "这些工具本项目不分发：填了路径并且「检测」通过才会被使用；"
+             "填了但检测不通过，运行会直接失败并提示，不会静默改用别的实现。"},
     {"id": "runtime", "label": "运行与性能参数",
      "help": "保存后对新的运行立即生效（进程内环境变量会被刷新）。"},
     {"id": "deploy", "label": "部署级参数",
@@ -188,6 +191,27 @@ DOCKING_SPECS: Tuple[Spec, ...] = (
 )
 
 # ---- 运行与性能（映射环境变量，保存后立即生效）----
+# ---- 外部工具（用户自行安装；env 映射后 core/ 侧照旧用 env() 读取）----
+EXTERNAL_SPECS: Tuple[Spec, ...] = (
+    Spec("external.docking_bin", "GPU 对接引擎可执行文件", "external", "str",
+         env="EXTERNAL_DOCKING_BIN", placeholder="/path/to/unidock",
+         help="Vina 兼容的 GPU 对接工具，识别 Uni-Dock / Vina-GPU / AutoDock-GPU 三类。"
+              "它是 vina 引擎的另一种执行器，不改变打分函数；留空则用内置 CPU Vina。"),
+    Spec("external.gpu_device", "GPU 设备序号", "external", "int",
+         env="GPU_DEVICE", default=0, minimum=0, maximum=15,
+         help="多卡机器指定用哪块卡（对应 CUDA_VISIBLE_DEVICES / OpenCL 设备序号）。"),
+    Spec("external.gpu_batch_size", "单批配体数", "external", "int",
+         env="GPU_BATCH_SIZE", default=100, minimum=1, maximum=2000,
+         help="一次提交给 GPU 引擎的配体数量；显存不足时调小。"),
+    Spec("external.p2rank_home", "P2Rank 安装目录", "external", "str",
+         env="P2RANK_HOME", placeholder="/path/to/p2rank_2.5.1",
+         help="留空则依次查找 assets/tools/p2rank* 与 PATH；缺失时口袋分析退化为内置几何法。"),
+    Spec("external.pdb2pqr_bin", "pdb2pqr 可执行文件", "external", "str",
+         env="PDB2PQR_BIN", placeholder="/path/to/pdb2pqr",
+         help="留空则查找 PATH 与 PyMOL 自带副本；缺失时受体不按目标 pH 重算质子化态。"),
+)
+
+
 RUNTIME_SPECS: Tuple[Spec, ...] = (
     Spec("runtime.pocket_engine", "口袋预测引擎", "runtime", "enum",
          env="POCKET_ENGINE", choices=("auto", "p2rank", "geometric", "known_site"),
@@ -359,11 +383,12 @@ DEPLOY_SPECS: Tuple[Spec, ...] = (
 )
 
 SPECS: Tuple[Spec, ...] = (LLM_SPECS + _role_specs() + DOCKING_SPECS
-                           + RUNTIME_SPECS + DEPLOY_SPECS)
+                           + EXTERNAL_SPECS + RUNTIME_SPECS + DEPLOY_SPECS)
 SPEC_BY_PATH = {s.path: s for s in SPECS}
 # 运行类字段（写入环境变量）
 # 对接默认值里的质子化态策略同样映射环境变量：它既是表单默认值，也是核心配体处理策略。
-ENV_SPECS = tuple(s for s in DOCKING_SPECS + RUNTIME_SPECS + DEPLOY_SPECS if s.env)
+ENV_SPECS = tuple(s for s in DOCKING_SPECS + EXTERNAL_SPECS + RUNTIME_SPECS
+                 + DEPLOY_SPECS if s.env)
 DEPLOY_PROTECTED: Tuple[str, ...] = tuple(
     s.env for s in ENV_SPECS if s.env_priority and s.env)
 
