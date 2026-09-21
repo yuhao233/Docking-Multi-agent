@@ -75,8 +75,20 @@ def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
     if not choices:
         run.data.pop("choices", None)
         run.data.pop("choices_note", None)
+        run.data.pop("_choices_signatures", None)
         return
-    run.data["choices"] = [{**(c or {}), "kind": (c or {}).get("kind") or kind} for c in choices]
+    normalized = [{**(c or {}), "kind": (c or {}).get("kind") or kind} for c in choices]
+    # 幂等：同一批候选（同 kind + 同 id 序列）在一次运行里只发布/记日志一次 ——
+    # 重复发布会让界面出现两份选项气泡（真实缺陷）。
+    signature = (kind, tuple(str(c.get("id") or "") for c in normalized))
+    published = run.data.setdefault("_choices_signatures", [])
+    if signature in published:
+        run.data["choices"] = normalized                 # 保持数据，但不重复记日志
+        if note:
+            run.data["choices_note"] = note
+        return
+    published.append(signature)
+    run.data["choices"] = normalized
     if note:
         run.data["choices_note"] = note
     try:

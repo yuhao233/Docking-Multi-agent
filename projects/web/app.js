@@ -2940,6 +2940,11 @@ function applyChoice(choice) {
   const text = String(choice.prompt || choice.value || choice.label || '');
   if (!text) return;
   clearChoicesEverywhere();               // 气泡 + 面板一起清空，避免重复提交/残留
+  // 阳性对照类选择：把所选结构作为**请求字段**下发，而不是只留在文字里 ——
+  // 否则后端读不到 positive_control（对照不会生效），共晶配体询问条件依旧成立 → 跑完又问一次。
+  if (String(choice.kind || '') === 'positive_control') {
+    state.pendingPositiveControl = String(choice.value || '');
+  }
   state.pendingMessage = text;
   logLine('已选择：' + (choice.label || text), 'cmd');
   startRun(text);                         // 追问作为显式参数下发，不依赖输入框
@@ -3269,6 +3274,8 @@ function collectParamForm() {
 
 /** 构造请求体：决定 mode / advanced / message 与参数字段的组合方式 */
 function buildPayload(messageOverride) {
+  // 由选项面板/气泡点选带入的阳性对照（一次性使用，取用后清空）
+  const controlOverride = state.pendingPositiveControl || '';
   if (state.page === 'chat') {
     const raw = String(messageOverride || $('chat-input').value || '').trim();
     // 指令里 @ 了附件、或上传了附件：把它们作为「引用文件」一并写进指令，
@@ -3352,6 +3359,10 @@ function buildPayload(messageOverride) {
   const payload = { params: params, paramChips: paramChips(form, params) };
   payload.mode = 'manual';                 // 表单参数为权威参数，由协调 Agent 执行
   if (message) payload.message = message;
+  if (controlOverride) {
+    payload.positive_control = controlOverride;
+    payload.params = { ...(payload.params || {}), positive_control: controlOverride };
+  }
   payload.form = form;
   return payload;
 }
@@ -3609,6 +3620,40 @@ function clearStopTimer() {
 
 /** 工作台是否有可看的结果：决定是否收起空控件（排序工具条 / 表格 / 图例 / 图表）。
  *  首屏与「新对话」时收起，载入到有排序或报告后展开 —— 少看一堆空控件。 */
+/**
+ * 开始新一轮前重置运行态：编排节点回到等待、日志/工具轨迹/实时分子表/关键指标清空。
+ * 真实问题：再发起一次对接时，界面仍显示上一次的「完成」状态（编排全绿、KPI 与日志是旧的），
+ * 看起来像新任务"没跑就已经完成"。
+ */
+function resetRunViewForNewRun() {
+  // 编排节点回到「等待」：函数名是 setOrchNode（此前误写成 setOrchStatus 会直接抛错）
+  Object.keys(state.orch || {}).forEach((node) => {
+    if (node !== 'overall' && node !== 'coord' && typeof setOrchNode === 'function') {
+      setOrchNode(node, 'wait');
+    }
+  });
+  ['log-box', 'tool-trace'].forEach((id) => {
+    const node = $(id);
+    if (!node) return;
+    clear(node);
+    node.appendChild(el('p', 'empty', '运行中…'));
+  });
+  const mols = $('molecules-tbody');
+  if (mols) clear(mols);
+  const molsEmpty = $('molecules-empty');
+  if (molsEmpty) molsEmpty.classList.remove('hidden');
+  const liveCount = $('live-count');
+  if (liveCount) liveCount.textContent = '0';
+  ['run-kpis', 'run-summary', 'aggregates-bar'].forEach((id) => { const node = $(id); if (node) clear(node); });
+  const notes = $('run-notes');
+  if (notes) { clear(notes); notes.classList.add('hidden'); }
+  state.liveCount = 0;
+  state.reportMarkdown = '';
+  renderReport('');
+  setWorkbenchHasRun(false);            // 结果面板回到空态，跑完再展示本次结果
+  setRunHint('运行中…可随时点击「停止」。', 'run');
+}
+
 function setWorkbenchHasRun(has) {
   const view = $('view-workbench');
   if (view) view.classList.toggle('no-run', !has);
@@ -3652,6 +3697,8 @@ function setRunning(running) {
 async function startRun(messageOverride) {
   if (state.running) return;
   clearChoicesEverywhere();               // 新一轮开始：清掉上一轮的两处候选
+  state.pendingPositiveControl = state.pendingPositiveControl || '';
+  resetRunViewForNewRun();                // 重置运行态：不再显示上一次的"已完成"
   const payload = buildPayload(messageOverride);
 
   // 分模式校验：对话模式宽松（高级设置未展开时无需任何参数）
@@ -3722,6 +3769,7 @@ async function startRun(messageOverride) {
     input: {
       ...body,
       conversation_id: threadId,
+      ...(body.positive_control ? { positive_control: body.positive_control } : {}),
       messages: body.message ? [{ type: 'human', content: body.message }] : []
     }
   };

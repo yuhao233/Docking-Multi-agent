@@ -342,6 +342,34 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         # 没有它时，chat/多 Agent 模式下按停止只会等工具自己跑完（真实缺陷）。
         from docking_agent.cancellation import cancel_flag  # noqa: PLC0415（避免循环导入）
 
+        # ---- 对接前询问：受体自带共晶配体且未指定阳性对照时，先问用户是否用作对照 ----
+        # 用户要求"在开始对接前询问"：这里在调用任何引擎之前拦下，避免先跑一遍再问，
+        # 也避免"跑完又问一次"（选择会由前端作为 positive_control 下发）。
+        try:
+            from docking_agent.core.receptors import resolve_receptor_specs  # noqa: PLC0415
+            from docking_agent.tools.choices import (  # noqa: PLC0415
+                clear_choices, offer_cocrystal_positive_control)
+
+            preview_specs, _notes = resolve_receptor_specs(
+                receptor, keep_hetatm=tuple(keep), protonation=(protonation or None),
+                ph=(protonation_ph or None))
+            preview_blocks = [{"receptor": s.get("key") or s.get("label") or "",
+                               "receptor_pdb": str(s.get("pdb") or ""),
+                               "cocrystal_ligand": s.get("cocrystal_ligand") or {}}
+                              for s in preview_specs]
+            offered = offer_cocrystal_positive_control(
+                preview_blocks, specified_control=control, runtime=runtime)
+            if offered:
+                return json.dumps({
+                    "status": "needs_user_input",
+                    "message": ("受体结构自带共晶配体：请用户确认是否把它作为阳性对照"
+                                "（结合模式基线）后再开始对接。"),
+                    "choices": offered,
+                }, ensure_ascii=False)
+            clear_choices("positive_control", runtime=runtime)
+        except Exception as exc:  # noqa: BLE001 - 询问失败不阻塞对接
+            logger.warning("对接前的共晶配体询问失败（继续对接）：%s", exc)
+
         out = dock_library(molecules, receptor=receptor, keep_hetatm=keep,
                            exhaustiveness=int(exhaustiveness), n_poses=int(n_poses),
                            engine=(engine or "auto"), protonation=(protonation or ""),
@@ -359,17 +387,6 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         if run is not None:
             run.data.pop("live_progress", None)
 
-        # 受体自带共晶配体、且未指定阳性对照 → 询问是否用作对照（阳性对照只是基线，
-        # 因此**不阻塞**本次筛选；用户的点选会以同一会话发起新一轮并带上对照）
-        try:
-            from docking_agent.tools.choices import offer_cocrystal_positive_control  # noqa: PLC0415
-
-            offered = offer_cocrystal_positive_control(
-                out.get("receptors") or [], specified_control=control, runtime=runtime)
-            if offered:
-                out["positive_control_offer"] = offered
-        except Exception as exc:  # noqa: BLE001 - 询问失败绝不影响对接结果
-            logger.warning("生成共晶配体阳性对照询问失败（忽略）：%s", exc)
 
         # ---- 写入共享黑板：供结合模式检测 Agent 交叉核验（横向协作）----
         board = active_blackboard(runtime)
