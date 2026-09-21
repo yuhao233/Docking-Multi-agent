@@ -267,3 +267,56 @@ def test_no_offer_without_ligand_or_smiles(tmp_path: Path,
     assert CH.offer_cocrystal_positive_control(
         [{"cocrystal_ligand": ligand, "receptor_pdb": str(tmp_path / "missing.pdb")}],
         specified_control="") == []
+
+
+def test_ligand_smiles_recovered_from_request_file(tmp_path: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """对接用的是「已去配体」的准备结构时，要能从请求里的原始受体文件恢复配体 SMILES。
+
+    真实案例（run 20260921-191324-9245，7YHP 的共晶配体 5CM）：只读准备结构会解不出，
+    于是系统放弃了询问；现在按「准备结构 → 请求原始文件 → 在线解析缓存」依次尝试。
+    """
+    from docking_agent.core.pockets import cocrystal_ligand
+    from docking_agent.tools import choices as CH
+
+    with_ligand = _pdb_with_ligand(tmp_path)
+    ligand = cocrystal_ligand(str(with_ligand))
+    assert ligand
+    prepared = tmp_path / "prepared.pdb"                 # 只有蛋白、没有配体
+    prepared.write_text("ATOM      1  N   ALA A   1      11.000  11.000  11.000  "
+                        "1.00  0.00           N\nEND\n", encoding="utf-8")
+
+    class _Run:
+        data = {"request": {"receptor_file": str(with_ligand)}}
+
+    monkeypatch.setattr(CH, "active_run", lambda runtime=None: _Run())
+    block = {"receptor": "ROS1 (7YHP)", "receptor_pdb": str(prepared),
+             "cocrystal_ligand": ligand}
+    paths = CH._ligand_candidate_paths(block)
+    assert str(prepared) in paths and str(with_ligand) in paths
+    smiles, tried = CH._ligand_smiles_from_candidates(ligand, paths)
+    assert smiles, f"应能从请求里的原始文件恢复（试过 {tried}）"
+    assert str(with_ligand) in tried
+
+
+def test_missing_ligand_message_lists_tried_paths(tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    """解不出时，运行日志要说清"试过哪些结构"，而不是只报一句失败。"""
+    from docking_agent.core.pockets import cocrystal_ligand
+    from docking_agent.tools import choices as CH
+
+    logs: list = []
+
+    class _Run:
+        data = {"request": {}}
+
+        def log(self, message: str) -> None:
+            logs.append(message)
+
+    monkeypatch.setattr(CH, "active_run", lambda runtime=None: _Run())
+    monkeypatch.setattr(CH, "publish_choices", lambda *a, **k: None)
+    ligand = {"key": "C:26:5CM", "resname": "5CM", "n_atoms": 20}
+    assert CH.offer_cocrystal_positive_control(
+        [{"receptor_pdb": str(tmp_path / "missing.pdb"), "cocrystal_ligand": ligand}]) == []
+    assert logs and "5CM（C:26:5CM，20 原子）" in logs[0], logs
+    assert "missing.pdb" in logs[0] and "解不出 SMILES" in logs[0], logs

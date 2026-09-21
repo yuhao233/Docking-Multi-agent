@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Tuple
 
 from docking_agent.core.resolve import candidate_brief, summarize_attempts
+from docking_agent.paths import project_root
 from docking_agent.runtime.context import active_run
 
 logger = logging.getLogger(__name__)
@@ -186,6 +189,50 @@ def mixture_choices(comp: Dict[str, Any], query: str) -> List[Dict[str, Any]]:
         })
     return choices
 
+def _ligand_smiles_from_candidates(ligand: Dict[str, Any], paths: List[str]) -> Tuple[str, List[str]]:
+    """按候选路径依次尝试解出共晶配体 SMILES，返回 (smiles, 尝试过的路径)。
+
+    为什么需要多个来源：对接用的受体是**已去配体**的准备结构（蛋白-only），
+    配体原子在那里已经不存在；原始结构（上传文件 / 在线解析缓存）里才有。
+    """
+    from docking_agent.core.pockets import cocrystal_ligand_smiles  # noqa: PLC0415
+
+    tried: List[str] = []
+    for path in paths:
+        if not path:
+            continue
+        tried.append(path)
+        smiles = cocrystal_ligand_smiles(path, ligand)
+        if smiles:
+            return smiles, tried
+    return "", tried
+
+
+def _ligand_candidate_paths(block: Dict[str, Any], runtime: Any = None) -> List[str]:
+    """共晶配体的候选结构来源：本次对接所用结构 → 请求里的原始受体文件 → 在线解析缓存。"""
+    candidates: List[str] = [str((block or {}).get("receptor_pdb") or "")]
+    run = active_run(runtime)
+    request = (getattr(run, "data", None) or {}).get("request") or {}
+    for key in ("receptor_file", "receptor"):
+        value = str(request.get(key) or "").strip()
+        if value and not value.startswith(("http://", "https://")) and os.path.isfile(value):
+            candidates.append(value)
+    # 受体标签里若带 4 位 PDB 编号（如 7YHP），在线解析的原始结构通常在 assets/cache
+    label = str((block or {}).get("receptor") or "")
+    for token in re.findall(r"\b([0-9][A-Za-z0-9]{3})\b", label):
+        cached = project_root() / "assets" / "cache" / f"{token.upper()}.pdb"
+        if cached.is_file():
+            candidates.append(str(cached))
+    # 去重且保持顺序
+    seen: set = set()
+    out: List[str] = []
+    for path in candidates:
+        if path and path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
 def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
                                      specified_control: str = "",
                                      runtime: Any = None) -> List[Dict[str, Any]]:
@@ -193,34 +240,39 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
 
     阳性对照只是方法学基线，缺了不影响候选分子的对接结果，因此这里只"询问"，
     让筛选照常出结果；用户的点选会以同一会话发起新一轮并带上对照。
-    解不出 SMILES 时不询问（并在返回值里说明原因），绝不拿不确定的结构当对照。
+    解不出 SMILES 时不询问（并在运行日志里说明**试过哪些结构**），绝不拿不确定的结构当对照。
     """
-    from docking_agent.core.pockets import cocrystal_ligand_smiles  # noqa: PLC0415
-
     if str(specified_control or "").strip():
         return []                                   # 用户/上游已指定对照：不打扰
     for block in blocks or []:
         ligand = (block or {}).get("cocrystal_ligand") or {}
-        pdb = str((block or {}).get("receptor_pdb") or "")
-        if not ligand or not ligand.get("resname"):
+        resname = str(ligand.get("resname") or "")
+        if not resname:
             continue
-        smiles = cocrystal_ligand_smiles(pdb, ligand)
-        label = f"{ligand.get('resname')}（{ligand.get('key')}，{ligand.get('n_atoms')} 原子）"
+        smiles, tried = _ligand_smiles_from_candidates(
+            ligand, _ligand_candidate_paths(block, runtime))
+        parts = [resname]
+        if ligand.get("key"):
+            parts.append(str(ligand["key"]))
+        if ligand.get("n_atoms"):
+            parts.append(f"{ligand['n_atoms']} 原子")
+        label = "（".join([parts[0], "，".join(parts[1:]) + "）"]) if len(parts) > 1 else parts[0]
         if not smiles:
             try:
                 run = active_run(runtime)
                 if run is not None:
-                    run.log(f"检测到共晶配体 {label}，但无法从结构解出 SMILES，"
+                    run.log(f"检测到共晶配体 {label}，但在 "
+                            f"{'、'.join(tried) or '（无可读结构）'} 中都解不出 SMILES，"
                             "因此未询问是否用作阳性对照")
             except Exception:  # noqa: BLE001 - 记录失败不影响对接
                 logger.debug("写共晶配体说明失败", exc_info=True)
             return []
         receptor = str((block or {}).get("receptor") or "")
         choices = [
-            {"id": f"positive_control:{ligand.get('key')}", "kind": "positive_control",
+            {"id": f"positive_control:{ligand.get('key') or resname}", "kind": "positive_control",
              "label": f"把共晶配体 {label} 作为阳性对照，做结合模式对比",
              "value": smiles,
-             "detail": {"resname": ligand.get("resname"), "key": ligand.get("key"),
+             "detail": {"resname": resname, "key": ligand.get("key"),
                         "n_atoms": ligand.get("n_atoms"), "smiles": smiles,
                         "note": "共晶配体来自受体结构本身，是天然的方法学基线"},
              "prompt": (f"把受体 {receptor or ''} 自带的共晶配体（{label}，SMILES {smiles}）"
