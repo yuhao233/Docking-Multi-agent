@@ -48,6 +48,9 @@ langgraph-deploy/var/
 langgraph-deploy/.env
 .langgraph_api/
 
+# ---- 文档构建中间产物（LibreOffice 用户配置等）----
+.lo-profile/
+
 # ---- 编辑器 / 系统 ----
 .DS_Store
 *.swp

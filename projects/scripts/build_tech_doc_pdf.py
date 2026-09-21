@@ -14,6 +14,7 @@ import argparse
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
@@ -303,7 +304,8 @@ def soffice_pdf(docx: Path, out_dir: Path) -> Optional[Path]:
     if not Path(soffice).exists():
         print("  [warn] 未找到 soffice，跳过 PDF 转换")
         return None
-    profile = out_dir / ".lo-profile"
+    # 用户配置放系统临时目录：放到仓库里会污染工作区（首次生成时真的发生过）
+    profile = Path(tempfile.gettempdir()) / "tech-doc-lo-profile"
     profile.mkdir(parents=True, exist_ok=True)
     cmd = [soffice, "--headless", "--norestore", "--invisible", "--nolockcheck",
            f"-env:UserInstallation=file://{profile}",
