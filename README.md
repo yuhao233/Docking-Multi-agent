@@ -114,8 +114,31 @@ bash start.sh                   # 首次安装依赖并启动服务（默认 htt
 
 ### 接口与平台
 
-系统提供标准智能体协议接口与命令行入口，计算内核也可作为库直接调用。`langgraph-deploy/` 目录
-把编排层暴露为六张图，可在可视化调试环境中查看状态与中断，或通过平台 SDK 调用。
+服务启动后即暴露 HTTP 接口（默认仅监听本机）：**产品接口** `/api/...` 承载业务与产物访问，
+**运行接口** `/threads`、`/runs`、`/assistants` 遵循标准智能体协议，用于发起与跟踪运行；两者
+共享同一套编排与计算实现。命令行入口与计算内核的库调用同样可用。
+
+| 分组 | 代表端点 | 用途 |
+| --- | --- | --- |
+| 运行 | `POST /threads/{id}/runs/stream`、`/runs/wait`、`.../cancel` | 发起、等待与取消一次运行（事件流含文本增量、阶段进展与逐分子结果） |
+| 助手 | `GET /assistants/search`、`/assistants/{id}/schemas` | 列出助手与其输入输出结构 |
+| 历史 | `GET /api/runs`（支持 `q` / `status` / `receptor` / `since` / `until` / 分页） | 运行检索，关闭页面后仍可查回 |
+| 产物 | `GET /api/runs/{id}/report.pdf`、`/export.csv`、`/poses.zip`、`/download.zip` | 报告、排序表、位姿与整包下载 |
+| 输入 | `POST /api/uploads`、`GET /api/libraries`、`/api/receptors` | 上传与登记受体、分子库 |
+| 配置 | `GET/PUT /api/settings`、`POST /api/tools/probe` | 设置读写与外部工具探测 |
+
+```bash
+curl -s -X POST localhost:5000/threads -H 'Content-Type: application/json' -d '{}'   # 建会话
+curl -N -X POST localhost:5000/threads/<thread_id>/runs/stream \
+     -H 'Content-Type: application/json' \
+     -d '{"assistant_id":"coordinator","stream_mode":["messages","updates","custom"],
+          "input":{"mode":"chat","message":"用示例库对接凝血酶前 5 个分子"}}'
+curl -s "localhost:5000/api/runs?q=阿司匹林&status=ok&limit=20"                        # 检索历史
+```
+
+完整端点清单、字段与事件流帧格式见 [`projects/docs/api.md`](projects/docs/api.md)。
+
+`langgraph-deploy/` 目录把编排层暴露为六张图，可在可视化调试环境中查看状态与中断，或通过平台 SDK 调用。
 
 ## 运行记录与可复现性
 
@@ -165,7 +188,7 @@ var/runs/<run_id>/
 | [`projects/README.md`](projects/README.md) | 工程主文档：全部配置项、接口契约、运行记录格式与逐轮改造记录 |
 | [`projects/docs/architecture.md`](projects/docs/architecture.md) | 架构与设计决策、非目标与硬约束 |
 | [`projects/docs/adr/`](projects/docs/adr/) | 架构决策记录 |
-| [`projects/docs/api.md`](projects/docs/api.md) | HTTP 接口契约与流式帧格式 |
+| [`projects/docs/api.md`](projects/docs/api.md) | HTTP 接口契约与流式帧格式（完整端点、字段与错误语义） |
 
 ## 引用与许可
 
