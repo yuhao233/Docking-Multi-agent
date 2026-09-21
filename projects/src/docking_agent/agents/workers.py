@@ -85,10 +85,24 @@ def _make_agent(llm, sp, tools, mem, name: str = "worker", structured: bool = Tr
     """
     model_cls = report_model(name) if structured else None
     structured_kwargs: Dict[str, Any] = {}
-    if model_cls is not None and uses_structured_output():
+    from docking_agent.agents.capabilities import structured_output_decision  # noqa: PLC0415
+
+    # 供应商能力记忆：已知该模型不支持强制 tool_choice 时**直接不挂** ToolStrategy，
+    # 不再每次运行先撞一次 400（真实问题：pocket/property/docking 每轮都刷降级日志）。
+    decision = structured_output_decision(name or "") if model_cls is not None else "text"
+    if model_cls is not None and decision == "tool":
         from langchain.agents.structured_output import ToolStrategy  # 延迟导入，构建期开销小
 
         structured_kwargs["response_format"] = ToolStrategy(model_cls)
+    elif model_cls is not None and decision == "json_mode":
+        # JSON 模式：供应商保证返回合法 JSON（提示词里已要求 JSON），仍由必需字段校验把关
+        try:
+            llm = llm.bind(response_format={"type": "json_object"})
+        except Exception as exc:  # noqa: BLE001 - 不支持绑定时退回纯文本契约
+            logger.warning("%s 子 Agent：绑定 JSON 模式失败（退回文本契约）：%s", name, exc)
+            decision = "text"
+    if name:
+        _worker_decisions[str(name)] = decision
     return create_agent(model=llm, system_prompt=sp, tools=tools,
                         middleware=build_agent_middleware(llm, role=name or "worker"),
                         checkpointer=mem, state_schema=None,
@@ -156,6 +170,7 @@ def reset_workers() -> None:
     _agent_roles.clear()
     _WORKER_BUILDERS.clear()
     _worker_text_fallbacks.clear()
+    _worker_decisions.clear()
 
 
 def get_property_agent():
@@ -195,8 +210,16 @@ def worker_llm_models() -> Dict[str, Any]:
     return {role: meta.get("model") for role, meta in worker_llm_info().items()}
 
 
+#: 角色 → 本次构建采用的结构化输出方式（tool / json_mode / text），供日志与运行记录说明
+_worker_decisions: Dict[str, str] = {}
+
 #: 结构化输出被供应商拒绝后，按 `id(名字图)` 缓存对应的「文本契约」图（懒构建，只建一次）
 _worker_text_fallbacks: Dict[int, Any] = {}
+
+
+def worker_structured_decisions() -> Dict[str, str]:
+    """各子 Agent 实际采用的结构化输出方式（运行记录/诊断用）。"""
+    return dict(_worker_decisions)
 
 
 def _text_fallback_agent(agent: Any, role: str) -> Any:
@@ -243,15 +266,22 @@ def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
         fallback = _text_fallback_agent(agent, role)
         if fallback is None:
             raise
+        reason = str(getattr(exc, "message", "") or exc)
         logger.warning("%s 子 Agent：供应商拒绝结构化输出（%s），已降级为文本 JSON 契约"
-                       "（AGENT_STRUCTURED_OUTPUT=off 可彻底关闭结构化输出）",
-                       role, getattr(exc, "message", "") or exc)
-        # 如实写进运行记录：报告/运行详情里能看到"本次为什么没用结构化输出"
+                       "（AGENT_STRUCTURED_OUTPUT=off 可彻底关闭结构化输出）", role, reason)
+        # 记住这次探测结果：后续进程构建期直接跳过强制 tool_choice，不再重复付 400 的代价
+        try:
+            from docking_agent.agents.capabilities import (  # noqa: PLC0415
+                mark_forced_tool_choice_unsupported)
+            mark_forced_tool_choice_unsupported(role, reason)
+        except Exception:  # noqa: BLE001 - 记忆失败不影响本次调用
+            logger.debug("能力记忆写入失败（忽略）", exc_info=True)
+        # 如实写进运行记录：说明本次为何未用强制结构化输出（含"已记录、后续不再重试"）
         run = active_run()
         if run is not None and hasattr(run, "log"):
             try:
-                run.log(f"{role} 子 Agent：供应商拒绝结构化输出（thinking 模式不支持强制 "
-                        f"tool_choice），已降级为文本 JSON 契约（结果仍经必需字段校验）")
+                run.log(f"{role} 子 Agent：本模型不支持强制结构化输出（已记录该能力，"
+                        f"后续运行不再重试），改用文本 JSON 契约，结果仍经必需字段校验")
             except Exception:  # noqa: BLE001 - 记录失败不影响本次调用
                 logger.debug("降级说明写入运行记录失败（忽略）", exc_info=True)
         result = fallback.invoke(payload, config=config, context=current_agent_context())

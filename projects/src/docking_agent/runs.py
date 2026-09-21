@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import os
 import logging
 import re
@@ -286,6 +287,10 @@ class RunStore:
     def __init__(self, root: Optional[Path] = None):
         self.root = Path(root) if root else runs_dir()
         self.root.mkdir(parents=True, exist_ok=True)
+        # 历史检索索引（惰性建立，进程内缓存；运行目录变化时重建）
+        self._index_cache: Optional[List[Dict[str, Any]]] = None
+        self._index_signature: Optional[Any] = None
+        self._index_lock = threading.Lock()
 
     def new(self, kind: str, request: Dict[str, Any], run_id: Optional[str] = None) -> Run:
         rid = run_id or new_run_id()
@@ -305,6 +310,117 @@ class RunStore:
         except json.JSONDecodeError:
             logger.warning("run.json 解析失败: %s", meta_path)
             return None
+
+    # --------------------------------------------------------------------- #
+    # 历史检索：关闭页面后仍可按关键词 / 状态 / 受体 / 时间找回旧运行
+    # --------------------------------------------------------------------- #
+    def _index_entry(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """一条索引记录：运行元数据 + 排序表前若干行的分子名/ID（用于按分子检索）。
+
+        只读 `run.json` 与排序文件的前 64 KB —— 3 千多条运行也能在数秒内建成索引，
+        且不受大库产物体积影响。
+        """
+        meta = self.meta(run_id)
+        if not meta:
+            return None
+        run_dir = self.root / run_id
+        parts: List[str] = [run_id, str(meta.get("kind") or ""), str(meta.get("status") or ""),
+                            str(meta.get("receptor_label") or ""), str(meta.get("receptor") or "")]
+        request = meta.get("request") or {}
+        if isinstance(request, dict):
+            for key in ("message", "goal", "molecule_file", "ligands_text", "receptor_file"):
+                value = request.get(key)
+                if isinstance(value, str):
+                    parts.append(value[:500])
+        for note in (meta.get("notes") or [])[:10]:
+            parts.append(str(note)[:200])
+        molecules: List[str] = []
+        for name in ("ranking.csv", "ranking.json"):
+            path = run_dir / name
+            if not path.is_file():
+                continue
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    chunk = fh.read(65536)
+            except OSError as exc:
+                logger.debug("读取排序文件失败（跳过分子索引）：%s", exc)
+                continue
+            for line in chunk.splitlines()[:200]:
+                cells = [cell.strip() for cell in line.split(",")[:3]]
+                for cell in cells:
+                    if cell and cell.lower() not in ("rank", "id", "name", "smiles"):
+                        molecules.append(cell[:64])
+            break
+        parts.extend(molecules)
+        return {"run_id": run_id,
+                "created_at": str(meta.get("created_at") or ""),
+                "status": str(meta.get("status") or ""),
+                "kind": str(meta.get("kind") or ""),
+                "receptor": str(meta.get("receptor_label") or meta.get("receptor") or ""),
+                "molecule_count": int(meta.get("molecule_count") or 0),
+                "blob": " ".join(parts).lower()}
+
+    def _ensure_index(self) -> List[Dict[str, Any]]:
+        """惰性建立/刷新检索索引（进程内缓存；运行目录变化时重建）。"""
+        if not self.root.is_dir():
+            return []
+        dirs = [d for d in self.root.iterdir() if d.is_dir()]
+        signature = (str(self.root), len(dirs), max((d.stat().st_mtime for d in dirs), default=0.0))
+        with self._index_lock:
+            if self._index_cache is not None and self._index_signature == signature:
+                return self._index_cache
+            entries: List[Dict[str, Any]] = []
+            for d in sorted(dirs, reverse=True):
+                entry = self._index_entry(d.name)
+                if entry:
+                    entries.append(entry)
+            self._index_cache = entries
+            self._index_signature = signature
+            logger.info("运行检索索引已建立：%d 条", len(entries))
+            return entries
+
+    def search(self, *, q: str = "", status: str = "", kind: str = "", receptor: str = "",
+               since: str = "", until: str = "", offset: int = 0,
+               limit: int = 20) -> Dict[str, Any]:
+        """按关键词/状态/类型/受体/时间检索历史运行，返回分页结果。
+
+        `q` 会在 run_id、受体、状态、任务描述与**排序表里的分子名/ID**上做子串匹配
+        （大小写不敏感，空格分隔的多个词按 AND 处理）。`since`/`until` 接受
+        `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`，按运行创建时间比较。
+        """
+        entries = self._ensure_index()
+        terms = [t for t in str(q or "").lower().split() if t]
+        status_l = str(status or "").strip().lower()
+        kind_l = str(kind or "").strip().lower()
+        receptor_l = str(receptor or "").strip().lower()
+        since_s, until_s = str(since or "").strip(), str(until or "").strip()
+        if len(until_s) == 10:                     # 只给日期 → 含当天整天
+            until_s += "T23:59:59"
+        if len(since_s) == 10:
+            since_s += "T00:00:00"
+
+        def _keep(entry: Dict[str, Any]) -> bool:
+            if status_l and entry["status"].lower() != status_l:
+                return False
+            if kind_l and entry["kind"].lower() != kind_l:
+                return False
+            if receptor_l and receptor_l not in entry["receptor"].lower():
+                return False
+            created = entry["created_at"]
+            if since_s and created and created < since_s:
+                return False
+            if until_s and created and created > until_s:
+                return False
+            blob = entry["blob"]
+            return all(term in blob for term in terms)
+
+        hits = [e for e in entries if _keep(e)]
+        total = len(hits)
+        start = max(0, int(offset))
+        rows = [{k: v for k, v in e.items() if k != "blob"} for e in hits[start:start + max(0, limit)]]
+        return {"runs": rows, "total": total, "offset": start, "limit": max(0, limit),
+                "query": {"q": q, "status": status, "kind": kind, "receptor": receptor,
+                          "since": since, "until": until}}
 
     def list(self, limit: int = 20) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []

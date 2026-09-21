@@ -1095,18 +1095,7 @@ input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); box-sh
   animation: view-in var(--dur-slow) var(--ease) both;
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: minmax(340px, var(--sidebar-w)) minmax(0, 1fr);
-  gap: var(--sp-4);
-  align-items: start;
-  max-width: 1760px;
-  margin: 0 auto;
-  padding: var(--sp-4) var(--sp-5) var(--sp-6);
-  min-width: 0;
-}
-/* 结果面板是 .layout 的第三个直接子元素：跨满两列全宽 */
-.panel-result { grid-column: 1 / -1; }
+/* 布局规则统一在文件末尾的「v0.31 三栏」一节（早期两栏规则已删除，避免两处漂移） */
 
 .main-col {
   display: flex;
@@ -3566,18 +3555,58 @@ html:not(.has-tip-js) [data-tip]:focus::after {
    27. v0.28 布局重排：对话居中放大 · 参数收窄 · 运行详情默认收起 · 设置页两栏
    ========================================================================== */
 
-/* 单列居中：工作台只保留一条阅读动线（配置 → 结果 → 运行详情），
-   最大宽度收敛到 1240px，长行不再横跨整屏，读起来更稳。 */
+/* v0.31 三栏：左=参数设置 / 中=对话与结果 / 右=运行详情（阶段日志 + 实时逐分子结果）。
+   侧栏可折叠（body.cols-*-collapsed），窄屏自动降为两栏/单栏，不出现横向滚动。 */
 .layout {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) minmax(300px, 400px);
   gap: var(--sp-4);
-  max-width: 1240px;
+  align-items: start;
+  max-width: 1920px;
   margin: 0 auto;
   padding: var(--sp-4) var(--sp-4) var(--sp-6);
+  min-width: 0;
 }
-.layout > .panel-result { order: 1; }
-.layout > .main-col { order: 2; }
+.center-col { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.col-toggle {
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text-dim);
+  border-radius: var(--r-sm);
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  align-self: flex-end;
+}
+.col-toggle:hover { color: var(--text); border-color: var(--accent); }
+body.cols-params-collapsed .layout { grid-template-columns: 64px minmax(0, 1fr) minmax(300px, 400px); }
+body.cols-live-collapsed .layout { grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) 64px; }
+body.cols-params-collapsed.cols-live-collapsed .layout { grid-template-columns: 64px minmax(0, 1fr) 64px; }
+body.cols-params-collapsed #config-panel > *:not(.panel-head):not(.col-toggle),
+body.cols-live-collapsed .main-col > *:not(.col-toggle) { display: none; }
+@media (max-width: 1400px) {
+  .layout { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(280px, 340px); }
+}
+@media (max-width: 1180px) {
+  .layout { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
+  .main-col { grid-column: 1 / -1; }
+}
+@media (max-width: 900px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .center-col, .main-col { grid-column: 1 / -1; }
+}
+/* 历史检索栏（v0.31）：窄屏自动换行，不撑破表格 */
+.history-search { flex-wrap: wrap; gap: 6px; }
+.history-search .input { min-width: 190px; }
+.history-search select,
+.history-search input[type="date"] {
+  background: var(--bg-soft);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+}
+.panel-result { min-width: 0; }
 .panel-config { overflow: visible; }
 
 /* 参数区收窄：提示语与参数条合成一条工具带，不再各占一行 */

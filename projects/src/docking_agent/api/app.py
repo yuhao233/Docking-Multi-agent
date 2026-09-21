@@ -916,8 +916,22 @@ def create_app() -> FastAPI:
 
     # ---------------- 运行记录与中间数据 ----------------
     @app.get("/api/runs")
-    async def api_runs(limit: int = 20) -> Dict[str, Any]:
-        return {"runs": get_run_store().list(limit=max(1, min(limit, 200)))}
+    async def api_runs(limit: int = 20, offset: int = 0, q: str = "", status: str = "",
+                       kind: str = "", receptor: str = "", since: str = "",
+                       until: str = "") -> Dict[str, Any]:
+        """历史运行列表 / 检索。
+
+        无检索参数时行为与以前一致（`limit` 条、按时间倒序）；带 `q`/`status`/`kind`/
+        `receptor`/`since`/`until` 时返回 `{runs, total, offset, limit, query}`，
+        `q` 会匹配 run_id、受体、状态、任务描述与排序表里的分子名/ID
+        （空格分隔多词 = AND），从而支持"关掉页面后再找回之前的运行结果"。
+        """
+        store = get_run_store()
+        if not any(str(x or "").strip() for x in (q, status, kind, receptor, since, until)):
+            return {"runs": store.list(limit=max(1, min(limit, 200)))}
+        return await asyncio.to_thread(
+            store.search, q=q, status=status, kind=kind, receptor=receptor,
+            since=since, until=until, offset=max(0, offset), limit=max(1, min(limit, 200)))
 
     @app.get("/api/runs/{run_id}")
     async def api_run_detail(run_id: str) -> Dict[str, Any]:

@@ -136,6 +136,10 @@ ROLE_FIELD_SPECS: Tuple[Spec, ...] = (
     Spec("thinking", "思考模式", "roles", "enum", choices=("", "disabled", "enabled")),
     Spec("base_url", "Base URL（独立端点，可选）", "roles", "str", placeholder="继承全局"),
     Spec("api_key", "API Key（独立密钥，可选）", "roles", "secret", placeholder="留空 = 继承全局"),
+    Spec("structured_output", "结构化输出", "roles", "enum", choices=("", "auto", "on", "off"),
+         help="auto（默认）= 先按「强制 tool_choice」试，被供应商拒绝后记住该能力并改用 JSON 模式/"
+              "文本契约，后续运行不再重试；on = 强制结构化输出（供应商不支持会失败）；"
+              "off = 直接用文本 JSON 契约。"),
 )
 
 

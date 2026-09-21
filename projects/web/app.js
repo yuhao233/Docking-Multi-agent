@@ -745,6 +745,7 @@ function getJson(path) {
  *   这里把标准帧**翻译回既有内部事件**再交给 handleEvent，
  *   因此渲染、编排、报告、历史等逻辑一行都不用改（旧端点仍保留为 deprecated 兼容层）。
  * ------------------------------------------------------------------------ */
+/* 历史检索状态：命中总数与偏移由服务端给出，本地不缓存结果本体 */
 const STANDARD_ASSISTANTS = { chat: 'coordinator', agent: 'coordinator' };
 
 function runsStreamPath(threadId) {
@@ -5398,55 +5399,153 @@ function historyRowNode(run) {
 }
 
 /**
- * 历史运行列表按 HISTORY_PAGE_SIZE 条折叠展示（数据多时不会一次性铺开过多 DOM）。
+ * 历史运行检索（关闭页面后仍能找回之前的运行）。
+ *
+ * 数据全部来自服务端 `/api/runs`（运行记录持久化在 var/runs/），本地只记「上次检索条件」，
+ * 不缓存结果本体，避免陈旧数据。`#history-more` 为旧的"显示更多"按钮（保留兼容，分页取代它）。
  */
-function renderHistory() {
-  const tbody = $('history-tbody');
-  clear(tbody);
-  const runs = state.historyRuns;
-  const shown = Math.min(state.historyShown, runs.length);
-  const empty = $('history-empty');
-  empty.classList.toggle('hidden', runs.length > 0);
-  if (!runs.length) {
-    empty.textContent = '暂无历史运行记录。';
-  }
-  const fragment = document.createDocumentFragment();
-  runs.slice(0, shown).forEach((run) => fragment.appendChild(historyRowNode(run)));
-  tbody.appendChild(fragment);
+function historyQuery() {
+  return {
+    q: ($('history-q') && $('history-q').value.trim()) || '',
+    status: ($('history-status') && $('history-status').value) || '',
+    kind: ($('history-kind') && $('history-kind').value) || '',
+    receptor: ($('history-receptor') && $('history-receptor').value.trim()) || '',
+    since: ($('history-since') && $('history-since').value) || '',
+    until: ($('history-until') && $('history-until').value) || '',
+  };
+}
 
-  const rest = runs.length - shown;
-  const more = $('history-more');
-  if (more) {
-    more.classList.toggle('hidden', rest <= 0);
-    more.textContent = '显示更多（剩余 ' + fmtInt(rest) + ' 条）';
-  }
-  const hint = $('history-hint');
-  if (hint) {
-    hint.textContent = '共 ' + fmtInt(runs.length) + ' 条记录，已显示 ' + fmtInt(shown) + ' 条' +
-      (rest > 0 ? '（点击「显示更多」展开）' : '') + '，点击任意一行可载入。';
+function historyQueryString(query, offset) {
+  const parts = ['limit=' + HISTORY_PAGE_SIZE, 'offset=' + Math.max(0, offset)];
+  Object.keys(query).forEach((key) => {
+    if (query[key]) parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(query[key]));
+  });
+  return parts.join('&');
+}
+
+function saveHistoryQuery(query, offset) {
+  try {
+    window.localStorage.setItem('docking.history.query',
+      JSON.stringify({ query: query, offset: Math.max(0, offset) }));
+  } catch (error) { /* 隐私模式等场景下忽略 */ }
+}
+
+function loadSavedHistoryQuery() {
+  try {
+    const raw = window.localStorage.getItem('docking.history.query');
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    return saved && typeof saved === 'object' ? saved : null;
+  } catch (error) {
+    return null;
   }
 }
 
-async function refreshHistory() {
+function applyHistoryQueryToForm(query) {
+  const set = (id, value) => { const node = $(id); if (node) node.value = value || ''; };
+  set('history-q', query.q); set('history-status', query.status); set('history-kind', query.kind);
+  set('history-receptor', query.receptor); set('history-since', query.since);
+  set('history-until', query.until);
+}
+
+/**
+ * 侧栏折叠：给按钮绑定 class 切换并把状态存到 localStorage（刷新后保持）。
+ * `cls` 加在 <body> 上，由 CSS 决定列宽与隐藏内容。
+ */
+function bindColumnToggle(buttonId, cls, storageKey) {
+  const button = $(buttonId);
+  if (!button) return;
+  let collapsed = false;
+  try { collapsed = window.localStorage.getItem(storageKey) === '1'; } catch (error) { collapsed = false; }
+  const apply = (next) => {
+    document.body.classList.toggle(cls, next);
+    button.textContent = next ? '展开' : '收起';
+    button.setAttribute('aria-expanded', next ? 'false' : 'true');
+    try { window.localStorage.setItem(storageKey, next ? '1' : '0'); } catch (error) { /* 忽略 */ }
+  };
+  apply(collapsed);
+  button.addEventListener('click', () => { apply(!document.body.classList.contains(cls)); });
+}
+
+function renderHistory() {
+  const tbody = $('history-tbody');
+  clear(tbody);
+  const runs = state.historyRuns || [];
+  const empty = $('history-empty');
+  empty.classList.toggle('hidden', runs.length > 0);
+  if (!runs.length) {
+    empty.textContent = state.historySearched
+      ? '没有匹配的运行记录：可换关键词（分子名 / ID / 受体 / run_id），或放宽时间范围。'
+      : '暂无历史运行记录。';
+  }
+  const fragment = document.createDocumentFragment();
+  runs.forEach((run) => fragment.appendChild(historyRowNode(run)));
+  tbody.appendChild(fragment);
+
+  const total = state.historyTotal || 0;
+  const offset = state.historyOffset || 0;
+  const page = Math.floor(offset / HISTORY_PAGE_SIZE) + 1;
+  const pages = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE));
+  const count = $('history-count');
+  if (count) count.textContent = '共 ' + fmtInt(total) + ' 条 · 第 ' + fmtInt(page) + '/' + fmtInt(pages) + ' 页';
+  const prev = $('history-prev');
+  const next = $('history-next');
+  if (prev) prev.disabled = offset <= 0;
+  if (next) next.disabled = offset + HISTORY_PAGE_SIZE >= total;
+  const more = $('history-more');
+  if (more) more.classList.add('hidden');           // 分页取代旧的「显示更多」
+  const hint = $('history-hint');
+  if (hint) {
+    const active = Object.keys(historyQuery()).filter((k) => historyQuery()[k]).length;
+    hint.textContent = active
+      ? '当前为检索结果（' + fmtInt(active) + ' 个条件）；点击任意一行可载入该次运行。'
+      : '显示最近 ' + fmtInt(runs.length) + ' 条；可按关键词/状态/受体/时间检索，点击任意一行载入。';
+  }
+}
+
+async function refreshHistory(offset) {
+  const query = historyQuery();
+  const start = Math.max(0, offset || 0);
+  state.historySearched = Object.keys(query).some((key) => query[key]);
   const hint = $('history-hint');
   try {
-    hint.textContent = '正在加载历史运行…';
-    const data = await getJson('/api/runs?limit=' + HISTORY_FETCH_LIMIT);
+    if (hint) hint.textContent = '正在检索历史运行…';
+    const data = await getJson('/api/runs?' + historyQueryString(query, start));
     const runs = Array.isArray(data.runs) ? data.runs : [];
     state.historyRuns = runs;
-    state.historyShown = Math.min(HISTORY_PAGE_SIZE, runs.length);
+    state.historyTotal = typeof data.total === 'number' ? data.total : runs.length;
+    state.historyOffset = start;
+    saveHistoryQuery(query, start);
     renderHistory();
   } catch (error) {
     state.historyRuns = [];
-    state.historyShown = 0;
+    state.historyTotal = 0;
+    state.historyOffset = 0;
     clear($('history-tbody'));
     const empty = $('history-empty');
     show(empty);
-    empty.textContent = '历史运行加载失败：' + shortError(error);
-    hint.textContent = '加载历史运行失败：' + shortError(error);
-    const more = $('history-more');
-    if (more) more.classList.add('hidden');
+    empty.textContent = '历史运行检索失败：' + shortError(error);
+    if (hint) hint.textContent = '检索失败：' + shortError(error);
   }
+}
+
+async function submitHistorySearch() {
+  await refreshHistory(0);
+}
+
+function resetHistorySearch() {
+  applyHistoryQueryToForm({});
+  saveHistoryQuery({}, 0);
+  refreshHistory(0);
+}
+
+function restoreHistorySearch() {
+  const saved = loadSavedHistoryQuery();
+  if (saved && saved.query) {
+    applyHistoryQueryToForm(saved.query);
+    return Math.max(0, Number(saved.offset) || 0);
+  }
+  return 0;
 }
 
 /* --------------------------------------------------------------------------
@@ -6053,6 +6152,10 @@ function bindStaticEvents() {
   // 参数模式恒为多 Agent 协作（表单参数为权威参数）：工具轨迹始终显示
   $('agent-box').classList.remove('hidden');
 
+  // 三栏折叠：左（参数）/ 右（运行详情）各自可收起，状态记在 localStorage
+  bindColumnToggle('btn-toggle-params', 'cols-params-collapsed', 'docking.leftCollapsed');
+  bindColumnToggle('btn-toggle-live', 'cols-live-collapsed', 'docking.rightCollapsed');
+
   // 运行控制
   $('btn-start').addEventListener('click', () => { startRun(); });
   $('btn-stop').addEventListener('click', () => { stopRun(); });
@@ -6183,7 +6286,27 @@ function bindStaticEvents() {
   });
 
   // 历史
-  $('btn-refresh-history').addEventListener('click', () => { refreshHistory(); });
+  $('btn-refresh-history').addEventListener('click', () => { refreshHistory(state.historyOffset || 0); });
+  if ($('history-search')) $('history-search').addEventListener('click', () => { submitHistorySearch(); });
+  if ($('history-reset')) $('history-reset').addEventListener('click', () => { resetHistorySearch(); });
+  if ($('history-prev')) {
+    $('history-prev').addEventListener('click', () => {
+      refreshHistory(Math.max(0, (state.historyOffset || 0) - HISTORY_PAGE_SIZE));
+    });
+  }
+  if ($('history-next')) {
+    $('history-next').addEventListener('click', () => {
+      refreshHistory((state.historyOffset || 0) + HISTORY_PAGE_SIZE);
+    });
+  }
+  ['history-q', 'history-receptor'].forEach((id) => {
+    const node = $(id);
+    if (node) node.addEventListener('keydown', (event) => { if (event.key === 'Enter') submitHistorySearch(); });
+  });
+  ['history-status', 'history-kind', 'history-since', 'history-until'].forEach((id) => {
+    const node = $(id);
+    if (node) node.addEventListener('change', () => { submitHistorySearch(); });
+  });
   $('history-more').addEventListener('click', () => {
     state.historyShown += HISTORY_PAGE_SIZE;
     renderHistory();

@@ -276,11 +276,21 @@ def main() -> int:
     check("motion-in" in styles and "num-tween" in styles and "@keyframes" in styles,
           "统一动效（入场动画 / 数字滚动 / keyframes）已定义")
 
-    # 对话输入框在左栏（含附件与 @ 引用）
-    chat_pane = re.search(r'id="chat-pane".*?</section>', html, re.S)
-    check(bool(chat_pane) and 'id="chat-form"' in chat_pane.group(0)
-          and 'id="chat-input"' in chat_pane.group(0),
-          "对话框（输入框 + 发送）在左栏「对话模式」内")
+    # v0.31 三栏：对话与结果在中栏，参数在左栏，运行详情在右栏
+    center = re.search(r'id="workbench-center".*?(?=<section class="main-col)', html, re.S)
+    check(bool(center) and 'id="chat-form"' in center.group(0)
+          and 'id="chat-input"' in center.group(0),
+          "对话框（输入框 + 发送）位于中栏「对话与结果」内")
+    check(bool(center) and 'panel panel-result' in center.group(0),
+          "结果与产物面板与对话同处中栏")
+    params_side = re.search(r'id="config-panel".*?id="workbench-center"', html, re.S)
+    check(bool(params_side) and 'id="chat-form"' not in params_side.group(0)
+          and 'id="manual-params-mount"' in params_side.group(0),
+          "左栏只放参数设置（对话输入不再留在左栏）")
+    live_side = html[html.index('<section class="main-col'):]
+    check('id="run-details"' in live_side and 'id="molecules-tbody"' in live_side
+          and 'id="tool-trace"' in live_side,
+          "右栏放阶段日志（运行详情/工具轨迹）与实时逐分子结果")
     check('id="chat-file-input"' in html and 'id="chat-attachments"' in html
           and 'id="chat-mention"' in html,
           "对话框支持上传附件与 @ 引用（文件输入 / chips / 引用选择器）")
@@ -360,9 +370,28 @@ def main() -> int:
     # 6.9) v0.28 布局重排：对话居中放大 / 运行详情默认收起 / 设置页返回入口
     check('id="btn-settings-back"' in html and "bindSettingsBack" in js,
           "设置页有「返回工作台」按钮（并支持 Esc）")
-    check(re.search(r"\.layout\s*\{[^}]*flex-direction:\s*column", styles, re.S) is not None
-          and re.search(r"\.layout\s*\{[^}]*max-width:\s*1240px", styles, re.S) is not None,
-          "工作台单列居中（flex 列 + max-width 收敛，长行不再横跨整屏）")
+    # 三栏：某条 grid-template-columns 必须声明三段轨道（左参数 / 中主内容 / 右运行详情）
+    three_cols = re.search(
+        r"\.layout\s*\{[^}]*grid-template-columns:\s*minmax\([^;]*minmax\([^;]*minmax\(",
+        styles, re.S)
+    check(three_cols is not None, "工作台三栏网格（参数 / 对话与结果 / 运行详情）")
+    check(".center-col" in styles
+          and "body.cols-params-collapsed .layout" in styles
+          and "body.cols-live-collapsed .layout" in styles,
+          "左右侧栏可折叠（body.cols-*-collapsed 控制列宽与隐藏）")
+    check("@media (max-width: 1180px)" in styles and "@media (max-width: 900px)" in styles,
+          "窄屏降为两栏/单栏（不出现横向滚动）")
+    # 历史任务查询：关掉页面后仍能按关键词/状态/受体/时间找回旧运行
+    check('id="history-q"' in html and 'id="history-search"' in html and 'id="history-reset"' in html,
+          "历史面板有关键词输入、查询与重置")
+    check('id="history-status"' in html and 'id="history-receptor"' in html
+          and 'id="history-since"' in html and 'id="history-until"' in html,
+          "历史面板有状态/受体/时间范围过滤")
+    check('id="history-prev"' in html and 'id="history-next"' in html and 'id="history-count"' in html,
+          "历史面板有分页与命中计数")
+    check("function historyQueryString(" in js and "'/api/runs?'" in js
+          and "state.historyTotal" in js and "docking.history.query" in js,
+          "历史检索走服务端 /api/runs（关键词/过滤/分页）并记住上次检索条件")
     check(re.search(r"\.chat-dock \.chat-stream\s*\{[^}]*min-height:\s*46vh", styles, re.S) is not None,
           "对话区放大（min-height 46vh，成为页面视觉中心）")
     check('id="run-details"' in html and "setRunDetailsOpen" in js,

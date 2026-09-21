@@ -84,6 +84,39 @@
 
 SSE 统一报文：`event: message\ndata: {JSON}\n\n`；最后一条一定是 `type=done` 或 `type=error`。
 
+### `GET /api/runs` —— 历史运行列表 / 检索
+
+不带检索参数时返回最近若干条（`{"runs":[...]}`，与旧版一致）：
+
+```bash
+curl -s "localhost:5000/api/runs?limit=20"
+```
+
+带任一检索参数时返回分页结构，用于"关掉页面后仍能找回之前的运行"：
+
+```bash
+curl -s "localhost:5000/api/runs?q=阿司匹林&status=ok&since=2026-09-01&offset=0&limit=20"
+```
+
+```json
+{ "runs": [{"run_id": "20260921-095530-0405", "created_at": "2026-09-21T09:55:30",
+            "status": "ok", "kind": "agent", "receptor": "thrombin(1DWC)",
+            "molecule_count": 2}],
+  "total": 39, "offset": 0, "limit": 20,
+  "query": {"q": "阿司匹林", "status": "ok", "kind": "", "receptor": "", "since": "2026-09-01", "until": ""} }
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `q` | 关键词，匹配 run_id、受体、状态、任务描述与**排序表里的分子名/ID**；空格分隔多个词表示 AND |
+| `status` | `ok` / `no_op` / `error` |
+| `kind` | `agent` / `studio`（历史记录里可能有旧值） |
+| `receptor` | 受体名模糊匹配 |
+| `since` / `until` | `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`；只给日期时含当天 |
+| `offset` / `limit` | 分页（`limit` 上限 200） |
+
+索引在进程内惰性建立（读 `run.json` 与排序表前 64 KB），3.4k 条运行首次约 0.4 s，之后毫秒级。
+
 ### 历史端点（已删除）
 
 > `POST /api/pipeline/stream` 与 `POST /pipeline` 承载的"不经过 Agent 的确定性流水线"已下线。

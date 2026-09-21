@@ -1212,8 +1212,11 @@ async function main() {
 
   // 2) 设置页内容（由 /api/settings 的 specs 驱动渲染）
   const groups = $$('#settings-groups > details');
-  check(groups.length === 6, `设置分组渲染完整（${groups.length} 组）`,
+  // 7 组：llm / models / roles / docking / external（外部工具，P0 新增）/ runtime / deploy
+  check(groups.length === 7, `设置分组渲染完整（${groups.length} 组）`,
     groups.map((g) => g.dataset.group).join(','));
+  check(groups.some((g) => g.dataset.group === 'external'),
+    '设置页有「外部工具（自行安装）」分组');
   const fields = $$('[data-setting-path]');
   check(fields.length >= 60, `配置项控件渲染完整（${fields.length} 个）`);
   const roleCards = $$('.role-card');

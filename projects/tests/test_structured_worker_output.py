@@ -276,7 +276,9 @@ def test_degradation_is_recorded_in_the_run_log(monkeypatch: pytest.MonkeyPatch)
         W.invoke_worker(agent, "评估", "t1")
     finally:
         current_run.reset(token)
-    assert logs and "降级为文本 JSON 契约" in logs[0], logs
+    # 文案已按能力记忆改写：说明"这是已记录的模型能力、后续不再重试"，仍如实写进运行记录
+    assert logs and "不支持强制结构化输出" in logs[0] and "文本 JSON 契约" in logs[0], logs
+    assert "已记录" in logs[0], logs
 
 
 def test_invoke_worker_reraises_unrelated_errors(monkeypatch: pytest.MonkeyPatch) -> None:
