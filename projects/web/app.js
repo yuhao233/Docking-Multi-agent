@@ -2944,6 +2944,8 @@ function applyChoice(choice) {
   // 否则后端读不到 positive_control（对照不会生效），共晶配体询问条件依旧成立 → 跑完又问一次。
   if (String(choice.kind || '') === 'positive_control') {
     state.pendingPositiveControl = String(choice.value || '');
+    // 记录"用/不用"这一决定本身：报告正文要能单列一行追溯（后端 positive_control_decision）
+    state.pendingPositiveControlDecision = choice.value ? 'use' : 'skip';
   }
   state.pendingMessage = text;
   logLine('已选择：' + (choice.label || text), 'cmd');
@@ -3276,6 +3278,7 @@ function collectParamForm() {
 function buildPayload(messageOverride) {
   // 由选项面板/气泡点选带入的阳性对照（一次性使用，取用后清空）
   const controlOverride = state.pendingPositiveControl || '';
+  const controlDecision = state.pendingPositiveControlDecision || '';
   if (state.page === 'chat') {
     const raw = String(messageOverride || $('chat-input').value || '').trim();
     // 指令里 @ 了附件、或上传了附件：把它们作为「引用文件」一并写进指令，
@@ -3363,6 +3366,7 @@ function buildPayload(messageOverride) {
     payload.positive_control = controlOverride;
     payload.params = { ...(payload.params || {}), positive_control: controlOverride };
   }
+  if (controlDecision) payload.positive_control_decision = controlDecision;
   payload.form = form;
   return payload;
 }
@@ -3770,6 +3774,8 @@ async function startRun(messageOverride) {
       ...body,
       conversation_id: threadId,
       ...(body.positive_control ? { positive_control: body.positive_control } : {}),
+      ...(body.positive_control_decision
+        ? { positive_control_decision: body.positive_control_decision } : {}),
       messages: body.message ? [{ type: 'human', content: body.message }] : []
     }
   };

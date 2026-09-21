@@ -246,3 +246,32 @@ def test_pdf_table_still_compresses_reasonably() -> None:
     rows = [["rank", "name", "affinity"], ["1", "阿司匹林", "-5.73"]]
     lines = _format_table(rows, 78)
     assert len(lines) == 3, lines          # 表头 + 分隔线 + 一行数据（无附加折行）
+
+
+# --------------------------------------------------------------------------- #
+# 共晶配体是否用作阳性对照：报告正文必须单列一行（便于单独追溯）
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("offer,decision,expected", [
+    ({"resname": "5CM", "key": "C:26:5CM", "n_atoms": 20, "smiles": "CCO",
+      "label": "5CM（C:26:5CM，20 原子）"}, "use", "用作阳性对照"),
+    ({"resname": "5CM", "key": "C:26:5CM", "n_atoms": 20, "smiles": "CCO",
+      "label": "5CM（C:26:5CM，20 原子）"}, "skip", "不使用"),
+    ({"resname": "5CM", "label": "5CM（C:26:5CM，20 原子）"}, "", "未见用户选择"),
+    ({}, "", "未检测到"),
+])
+def test_report_states_cocrystal_control_decision(offer: dict, decision: str,
+                                                  expected: str) -> None:
+    """报告 §1 的「受体共晶配体」一行必须写清：检测到什么、是否询问、用户怎么选。"""
+    from docking_agent.reporting import build_markdown_report
+
+    md = build_markdown_report(
+        {"ranking": [], "molecules": [], "binding": {}, "docking": {},
+         "cocrystal_control_offer": offer, "positive_control_decision": decision},
+        run_id="T")
+    row = [line for line in md.splitlines() if "受体共晶配体" in line]
+    assert row, "报告缺少「受体共晶配体」一行"
+    assert expected in row[0], row[0]
+    if decision == "use" and offer.get("smiles"):
+        assert offer["smiles"] in row[0], "用作对照时应写明所用 SMILES"
+    if decision == "skip":
+        assert "未做对照分析" in row[0], row[0]

@@ -22,9 +22,10 @@ class AgentRequest(BaseModel):
     ligands_text: str = ""
     molecule_file: str = ""
     positive_control: str = ""
-    # 「留空 = 自动」：客户端没改动就不发这些字段，服务端按自动规划/系统默认处理；
-    # 一旦给了数值即视为用户显式指定（不再被自动规划改写）。实测背景：界面上打开过
-    # 「高级设置」又关掉时，旧实现会把这些默认值当成用户参数下发。
+    positive_control_decision: str = Field(
+        default="",
+        description=("共晶配体是否用作阳性对照的用户决定：use=用作对照"
+                     "（此时 positive_control 为该配体的 SMILES）/ skip=不使用 / 空=未询问"))
     exhaustiveness: Optional[int] = Field(
         default=None,
         description="搜索强度；留空(None)=自动规划（界面勾「自动」时不发本字段），给值=用户显式指定")

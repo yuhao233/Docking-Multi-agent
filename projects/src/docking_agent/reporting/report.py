@@ -272,6 +272,30 @@ def _ph_policy_text(prot: Dict[str, Any], suffix: str = "重新分配质子化�
     return f"按目标 pH {suffix}"
 
 
+
+def _cocrystal_control_line(result: Dict[str, Any]) -> str:
+    """报告正文中的一行：受体是否自带共晶配体、是否询问、用户最终怎么选。
+
+    用户要求：该决定要能**单独追溯**（不必回看对话）。因此这里把三件事写全：
+    检测到的配体（残基名/链:残基号/原子数）、是否询问过、用户的决定与据此采取的动作。
+    """
+    offer = result.get("cocrystal_control_offer") or {}
+    decision = str(result.get("positive_control_decision") or "").strip().lower()
+    if not offer:
+        if decision == "skip":
+            return "用户选择不使用阳性对照（报告未做对照分析）"
+        return "未检测到（受体结构未带可用的共晶配体）"
+    label = str(offer.get("label") or offer.get("resname") or "")
+    smiles = str(offer.get("smiles") or "")
+    if decision == "use":
+        return (f"检测到 {label}，已询问用户 → 用户选择**用作阳性对照**"
+                + (f"（SMILES `{smiles}`）" if smiles else ""))
+    if decision == "skip":
+        return f"检测到 {label}，已询问用户 → 用户选择**不使用**（本轮未做对照分析）"
+    return f"检测到 {label}，已询问用户是否用作阳性对照（本次运行未见用户选择）"
+
+
+
 def build_markdown_report(result: Dict[str, Any], *, kind: str = "agent",
                           run_id: str = "", receptor_label: str = "",
                           site: Optional[Dict[str, Any]] = None,
@@ -486,6 +510,7 @@ def build_markdown_report(result: Dict[str, Any], *, kind: str = "agent",
         ["随机种子", f"`seed={seed_value}` / `seed_policy={seed_policy}`"],
         ["候选分子数", len(molecules)],
         ["阳性对照", (f"{pc.get('name') or '—'}（{_num(pc_aff)} kcal/mol）") if pc else "未提供（未做对照分析）"],
+        ["受体共晶配体", _cocrystal_control_line(result)],
         ["任务受理", meta_spec_cell],
     ]
     models_cell = _models_cell()

@@ -297,6 +297,12 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
         ]
         note = (f"受体结构自带共晶配体 {label}：是否把它作为阳性对照（结合模式基线）？"
                 "选择后系统会以同一会话继续；不选也不影响本次候选分子的对接结果。")
+        run = active_run(runtime)
+        if run is not None:
+            # 记录"问了什么"，报告可据此单列一行（用户/审稿人无需翻对话即可追溯）
+            run.data["cocrystal_control_offer"] = {
+                "resname": resname, "key": ligand.get("key"),
+                "n_atoms": ligand.get("n_atoms"), "smiles": smiles, "label": label}
         publish_choices("positive_control", choices, note=note, runtime=runtime)
         return choices
     return []

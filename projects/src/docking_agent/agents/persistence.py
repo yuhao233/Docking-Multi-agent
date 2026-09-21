@@ -452,6 +452,10 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         "notes": docking.get("notes") or [],
         # 协调 Agent 通过 customize_report 记录的「按用户要求定制」（标题/附加列/要点/要求与响应）
         "report_customization": dict(run.data.get("report_customization") or {}),
+        # 共晶配体是否用作阳性对照：检测到的配体 + 用户决定（报告正文单列一行，便于单独追溯）
+        "cocrystal_control_offer": dict(run.data.get("cocrystal_control_offer") or {}),
+        "positive_control_decision": str(
+            (run.data.get("request") or {}).get("positive_control_decision") or ""),
     }
 
     # ---- 没有真实计算的运行**不产规范报告** ----
@@ -520,7 +524,8 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     run.write_json("result", {k: result.get(k) for k in
                               ("status", "ranking", "positive_control", "receptors", "notes",
                                "pockets", "pocket_analysis", "param_plan", "task_spec",
-                               "report_customization")},
+                               "report_customization", "cocrystal_control_offer",
+                               "positive_control_decision")},
                    label="完整结果（JSON）")
 
     _finish_run_meta(run, result, molecules, receptors_block, ranking, args)
