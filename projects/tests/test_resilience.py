@@ -149,7 +149,8 @@ def test_agent_skips_positive_control_when_not_provided(client, monkeypatch) -> 
     # 等价于原流水线 note：受理层把「未提供阳性对照」记为假设，报告也如实写明
     spec = result.get("task_spec") or {}
     assert any("未提供阳性对照" in a for a in (spec.get("assumptions") or [])), spec.get("assumptions")
-    assert "本次未提供阳性对照" in detail["report_markdown"]
+    assert "未提供阳性对照" in detail["report_markdown"]
+    assert "不判定「命中」" in detail["report_markdown"], "没有对照基准时不得判定命中"
     assert result["ranking"], "候选分子仍应正常排序"
 
 

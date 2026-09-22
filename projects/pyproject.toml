@@ -40,6 +40,13 @@ docking-agent = "docking_agent.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docking_agent"]
+# 打包口径（审计 3.8 方案 B）：**只支持源码检出 / `pip install -e .`**。
+# `web/`、`config/`、`assets/` 与 `var/` 都是**运行期读写**的目录（设置页写
+# `config/local_settings.json`、缓存与上传写 `assets/`、运行产物写 `var/`），
+# 放进 site-packages 是错误设计；因此**不使用 force-include**。
+# 非 editable 安装会在服务入口（`docking-agent -m http`）被
+# `paths.assert_runtime_layout(strict=True)` 当场拒绝，而不是等到前端 404。
+# 回归见 tests/test_packaging.py::test_runtime_layout_is_intentionally_outside_the_wheel
 
 [tool.uv]
 # 使用阿里云镜像作为默认源，替代 pypi.org
@@ -57,6 +64,12 @@ explicit = true
 dev = [
     "pytest",
     "pytest-asyncio>=0.23,<1",
+    # 覆盖率（只报告、不设阈值）：`COVERAGE=1 bash scripts/check.sh --fast`
+    "pytest-cov>=6",
+    # 静态检查：pyflakes 类高信号规则（未定义名/未使用导入/重复定义）
+    "ruff>=0.9",
+    # 类型检查（渐进白名单，见 [tool.mypy].files）
+    "mypy>=1.11",
     # 前端视觉验证（可选）：真浏览器截图 / 视觉回归 / 布局体检，见 scripts/ui_shot.py
     # 首次需下载浏览器：PLAYWRIGHT_BROWSERS_PATH=$PWD/var/cache/ms-playwright \
     #   .venv/bin/python -m playwright install chromium
@@ -66,3 +79,64 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# `engine` 标记由 tests/conftest.py 按文件自动打（名单见 ENGINE_TEST_FILES）：
+# 这些用例需要本机真实引擎 / 外部二进制（Vina / P2Rank / pdb2pqr / meeko）或完整工作区。
+# 本机全量跑；CI 用 `DOCKING_ENGINE_TESTS=0`（或 `-m "not engine"`）跳过。
+markers = [
+    "engine: 需要本机真实计算引擎 / 外部二进制 / 完整工作区（CI 用 DOCKING_ENGINE_TESTS=0 跳过）",
+]
+
+[tool.ruff]
+# 只做**高信号**检查：pyflakes（F，含未定义名/未使用导入）+ 语法与空白类（E9/W）。
+# 不引入 E501/E7xx 等风格规则 —— 行宽与排版由 `scripts/lint_local.py` 与人工 review 负责，
+# 再叠一套风格规则只会制造噪音。
+target-version = "py312"
+line-length = 120
+extend-exclude = ["var", "assets", ".venv", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "W"]
+# 说明：F811（重复定义）保留启用 —— 它抓到过 `import re` 写两遍这类真实重复；
+# 本仓的函数内懒加载（matplotlib/rdkit/vina）不会与模块级导入撞名，因此不需要豁免。
+# `external`：本仓历史 `# noqa` 里用了别的工具/未启用规则集的代码，声明后不再报
+# 「Invalid noqa directive」噪音（这些豁免由 `scripts/lint_local.py` 自己解释）。
+external = ["A003", "ANN001", "ANN201", "ANN202", "BLE001", "D102",
+            "E402", "N802", "PLC0415", "S310", "S603"]
+
+[tool.ruff.lint.per-file-ignores]
+# 门禁脚本里允许「取到值只为给人看/供后续断言」的中间变量（非产品代码）
+"scripts/*.py" = ["F841"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+ignore_missing_imports = true
+# 类型检查采用**渐进白名单**：本仓大部分模块还没标注类型，全量 mypy 会产生几十条
+# union-attr 噪音（实测 core/ 就有 45 条），无法当作门禁。
+# 策略：只检查下面这些**当前就能过**的模块；新增代码若落在白名单里必须过。
+# 把新模块加进来 = 渐进改进；**只增不减**（见 scripts/check.sh 的 mypy 步骤）。
+files = [
+    "src/docking_agent/cancellation.py",
+    "src/docking_agent/config.py",
+    "src/docking_agent/paths.py",
+    "src/docking_agent/runtime/context.py",
+    "src/docking_agent/core/ranking.py",
+    "src/docking_agent/core/inchikey.py",
+    "src/docking_agent/core/files.py",
+    # 报告模板第 2 波拆分后的 4 个模块：新代码，标注齐全，直接纳入白名单
+    "src/docking_agent/reporting/report.py",
+    "src/docking_agent/reporting/report_context.py",
+    "src/docking_agent/reporting/report_sections_setup.py",
+    "src/docking_agent/reporting/report_sections_results.py",
+    # api 层第 2 波拆分后的模块：原先是一个 700+ 行 create_app 闭包，拆分后标注齐全
+    "src/docking_agent/api/app.py",
+    "src/docking_agent/api/support.py",
+    "src/docking_agent/api/agent_flow.py",
+    "src/docking_agent/api/routers/__init__.py",
+    "src/docking_agent/api/routers/settings.py",
+    "src/docking_agent/api/routers/meta.py",
+    "src/docking_agent/api/routers/uploads.py",
+    "src/docking_agent/api/routers/runs.py",
+    "src/docking_agent/api/routers/agent.py",
+    "src/docking_agent/api/routers/legacy.py",
+]

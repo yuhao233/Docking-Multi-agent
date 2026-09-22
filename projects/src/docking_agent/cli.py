@@ -15,16 +15,14 @@ import json
 import logging
 import os
 import sys
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from docking_agent import __version__
-from docking_agent.config import ensure_runtime_env, env, env_int
+from docking_agent.config import DEFAULT_RECURSION_LIMIT, ensure_runtime_env, env, env_int
 
 ensure_runtime_env()
 
 from docking_agent.logging_setup import LOG_FILE, setup_logging  # noqa: E402
-from docking_agent.runtime.context import current_agent_context
 
 # log_level 留空 = 由 setup_logging 在**调用时**读 LOG_LEVEL（此时 .env 与界面设置已生效）
 setup_logging(log_file=LOG_FILE, console_output=True)
@@ -100,6 +98,11 @@ def mode_http(args: argparse.Namespace) -> int:
 
     os.environ["PORT"] = str(args.port)
     from docking_agent.api.app import app
+    from docking_agent.paths import assert_runtime_layout
+
+    # 布局自检**严格模式**：装成 wheel（不含 config/web/assets）就当场失败，
+    # 而不是起了一个「页面 404、注册表读不到」的服务让用户猜。
+    assert_runtime_layout(strict=True)
 
     host = args.host or "127.0.0.1"
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
@@ -113,6 +116,43 @@ def mode_http(args: argparse.Namespace) -> int:
     return 0
 
 
+def _agent_message(args: argparse.Namespace) -> str:
+    """把命令行参数拼成给多 Agent 的指令（`-m flow` / `-m agent` 共用）。
+
+    **这个函数曾经整体丢失**（`1e15fad` 重构删了定义、只留三处调用点），
+    于是 `-m flow` 与 `-m agent` 两个模式 100% `NameError` —— 而没有任何门禁跑到它们。
+    现在按参数拼一条明确的指令：未给出的项不写（交给系统默认/受理层判定）。
+    """
+    text = (getattr(args, "message", "") or "").strip() \
+        or (getattr(args, "input", "") or "").strip()
+    if not text:
+        text = ("请完成一次完整的分子筛选：导入候选分子库 → 物化性质评估 → 分子对接 → "
+                "生成筛选报告并给出按亲和力排序的结论。")
+    lines = [text, "", "--- 本次运行参数（来自命令行）---"]
+    if getattr(args, "receptor", ""):
+        lines.append(f"受体：{args.receptor}")
+    if getattr(args, "molecule_file", ""):
+        lines.append("候选分子库来自文件（请**原样**把它传给 import_molecule_library 的 "
+                     f"molecule_file）：{args.molecule_file}")
+    if getattr(args, "site_center", ""):
+        lines.append(f"已知结合位点盒中心 site_center=[{args.site_center}]"
+                     f"，盒尺寸 site_size=[{args.site_size or '22,22,22'}]")
+    elif getattr(args, "site_size", ""):
+        lines.append(f"盒尺寸 site_size=[{args.site_size}]（中心由口袋分析确定）")
+    lines.append(f"对接参数：exhaustiveness={args.exhaustiveness}，n_poses={args.n_poses}，"
+                 f"engine={args.engine}")
+    if getattr(args, "positive_control", ""):
+        lines.append(f"阳性对照：{args.positive_control}")
+    else:
+        lines.append("阳性对照：未提供（跳过对照分析，不要为此停下询问）")
+    if getattr(args, "max_ligands", 0):
+        lines.append(f"最多对接分子数：{args.max_ligands}")
+    lines.append("保存位姿：" + ("否" if getattr(args, "no_poses", False) else "是"))
+    if getattr(args, "no_example_fallback", False):
+        lines.append("未提供分子时**不要**回退内置示例库，改为向用户索取。")
+    return "\n".join(lines)
+
+
 def mode_flow(args: argparse.Namespace) -> int:
     """同步跑一次多 Agent。"""
     from docking_agent.agents.coordinator import build_agent
@@ -121,7 +161,7 @@ def mode_flow(args: argparse.Namespace) -> int:
 
     run = get_run_store().new("agent", {"mode": "flow", "message": _agent_message(args)})
     graph = build_agent(None)
-    config = {"configurable": {"thread_id": run.id}, "recursion_limit": env_int("RECURSION_LIMIT", 60)}
+    config = {"configurable": {"thread_id": run.id}, "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT)}
     from docking_agent.runtime.context import current_agent_context
 
     result = graph.invoke({"messages": [{"role": "user", "content": _agent_message(args)}]},
@@ -151,7 +191,7 @@ def mode_agent(args: argparse.Namespace) -> int:
 
     async def _run() -> None:
         graph = build_agent(None)
-        config = {"configurable": {"thread_id": run.id}, "recursion_limit": env_int("RECURSION_LIMIT", 60)}
+        config = {"configurable": {"thread_id": run.id}, "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT)}
         token = current_run.set(run)
         try:
             from docking_agent.runtime.context import current_agent_context

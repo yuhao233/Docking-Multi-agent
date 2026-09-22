@@ -1,7 +1,7 @@
 """分子库与阳性对照的解析（产品面与 Agent 路径共用）。
 
 从原 `pipeline.py` 迁出：删除"不经过 Agent 的确定性对接"后，这几个函数仍被 Agent 路径使用
-（`tools/dispatch.py` 的阳性对照、`api/app.py` 的库解析入口），因此单独成模块，
+（`agents/dispatch.py` 的阳性对照、`api/app.py` 的库解析入口），因此单独成模块，
 避免它们随执行器一起消失。
 """
 from __future__ import annotations

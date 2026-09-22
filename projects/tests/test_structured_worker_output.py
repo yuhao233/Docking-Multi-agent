@@ -22,7 +22,7 @@ from docking_agent.agents.reports import (BindingReport, DockingReport, PocketRe
                                           PropertyReport, ROLE_REPORTS, is_structured_rejection,
                                           report_model, structured_output_mode,
                                           uses_structured_output)
-from docking_agent.tools.dispatch import _REQUIRED_KEYS
+from docking_agent.agents.dispatch import _REQUIRED_KEYS
 
 
 def test_report_models_cover_required_keys() -> None:
@@ -116,7 +116,7 @@ def test_invoke_worker_falls_back_to_text_when_no_structured_response() -> None:
 
 def test_invoke_checked_passes_structured_result_without_retry(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    from docking_agent.tools import dispatch
+    from docking_agent.agents import dispatch
 
     calls: List[str] = []
     notes: List[str] = []
@@ -141,7 +141,7 @@ def test_invoke_checked_passes_structured_result_without_retry(
 def test_invoke_checked_still_retries_and_reports_invalid_text(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """既有语义（文本路径）必须保留：两次都不合法 → agent_output_invalid。"""
-    from docking_agent.tools import dispatch
+    from docking_agent.agents import dispatch
 
     calls: List[str] = []
 
@@ -284,8 +284,6 @@ def test_degradation_is_recorded_in_the_run_log(monkeypatch: pytest.MonkeyPatch)
 def test_invoke_worker_reraises_unrelated_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     W = _init_fake_workers(monkeypatch)
     try:
-        agent = W.get_property_agent()
-
         class _Boom:
             def invoke(self, payload: Any, config: Any = None, context: Any = None) -> Any:
                 raise RuntimeError("429 rate limit exceeded")
@@ -310,3 +308,22 @@ def test_structured_output_can_be_disabled_by_env(monkeypatch: pytest.MonkeyPatc
     finally:
         W.reset_workers()
     assert captured and all("response_format" not in c for c in captured), captured
+
+
+def test_agent_note_is_trimmed_to_one_short_sentence() -> None:
+    """`agent_note` 由契约强制「一句、≤80 字」——输出经济性靠机制，不只靠提示词。"""
+    from docking_agent.agents.reports import AGENT_NOTE_MAX, BindingReport, PropertyReport
+
+    long_note = "先规范化去重了 3 条重复 SMILES，又剔除 1 条无法解析。" + "另外还有一堆细节。" * 5
+    report = PropertyReport(status="ok", agent_note=long_note)
+    assert report.agent_note.endswith("。") and len(report.agent_note) < len(long_note)
+    assert "另外还有一堆细节" not in report.agent_note
+
+    huge = BindingReport(status="ok", agent_note="甲" * 200)
+    assert huge.agent_note.endswith("…") and len(huge.agent_note) <= AGENT_NOTE_MAX + 1
+
+    assert PropertyReport(status="ok", agent_note="").agent_note is None
+    assert PropertyReport(status="ok").agent_note is None
+    # 额外字段仍原样透传（契约不能被 schema 吃掉）
+    typed = BindingReport(status="ok", agent_note="短", results_total=7)
+    assert typed.model_dump().get("results_total") == 7

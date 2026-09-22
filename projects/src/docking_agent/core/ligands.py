@@ -1,18 +1,15 @@
 """小分子库：SMILES 文本解析、文件读取（SDF/SMI/CSV/MOL2）与 3D 构象/PDBQT 准备。"""
 from __future__ import annotations
 
-import csv
 import json
 import logging
 import os
-import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from rdkit import Chem
 from rdkit.Chem import AllChem, Descriptors
 
 from docking_agent.core.files import _fetch_file
-from docking_agent.paths import workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +43,9 @@ def _split_candidates(text: str) -> List[str]:
     import re
 
     normalized = (text or "").replace("：", ":").replace("，", ",").replace("；", ";")
+    # 「、」是中文里最常见的并列顿号（"筛一下 CCO、CCN"）。不认它就会把整段当成一个片段、
+    # 一个分子都抽不出来 → 受理层误判「没有分子来源」，向用户重复索要已经给过的分子。
+    normalized = normalized.replace("、", ",")
     normalized = normalized.replace("\t", " ").replace("\n", "\n")
     return [tok for tok in re.split(r"[,;\n\s]+", normalized) if tok.strip()]
 
@@ -94,7 +94,6 @@ def parse_smiles_text(text: str, default_name_prefix: str = "MOL") -> List[Dict[
     返回 [{"name":..., "smiles":...}]
     说明：RDKit 标准 SMILES 通常不含 ':'，因此可用 ':' 区分「名称:SMILES」。
     """
-    import re
 
     molecules: List[Dict[str, str]] = []
     seen: set = set()

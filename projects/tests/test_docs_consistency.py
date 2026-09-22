@@ -114,3 +114,105 @@ def test_docs_do_not_promise_removed_autocomplete() -> None:
         for line in text.splitlines():
             if "自动补齐" in line and not any(k in line for k in allowed_context):
                 pytest.fail(f"{name} 仍在承诺「自动补齐」：{line.strip()[:80]}")
+
+
+# --------------------------------------------------------------------------- #
+# 生成物（PDF/DOCX）必须与它们的 Markdown 源同步
+# --------------------------------------------------------------------------- #
+REPO_ROOT = PROJECT_ROOT.parent
+#: (sidecar 路径, 说明) —— sidecar 由生成器写出（见 scripts/doc_stamp.py）
+GENERATED_STAMPS = [
+    (REPO_ROOT / "docs" / ".generated.json",
+     "docs/技术文档.md → 技术文档.docx / 技术文档.pdf（scripts/build_tech_doc_pdf.py）"),
+    (PROJECT_ROOT / "docs" / ".generated.json",
+     "docs/技术报告.md → 技术报告.docx / 技术报告.pdf（scripts/build_report_docx.py）"),
+]
+
+
+def _load_stamp(path: Path) -> list:
+    try:
+        import json as _json
+
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    entries = (data or {}).get("artifacts") or {}
+    return [(name, info) for name, info in sorted(entries.items()) if isinstance(info, dict)]
+
+
+def test_generated_documents_match_their_sources() -> None:
+    """PDF/DOCX 必须由**当前**的 Markdown 源生成。
+
+    为什么按内容哈希而不是 mtime：干净克隆 / CI 检出 / `git checkout` 都会重写
+    mtime，按时间判断既会误报也会漏报。生成器在产出时把源文件 sha256 写进
+    `<dir>/.generated.json`，这里只比哈希。
+
+    真实事故（2026-09-21）：`技术报告.md` 改完 10 小时，`.docx`/`.pdf` 还是旧的，
+    按现状提交就会把内容陈旧的产物一起发出去 —— 而 PDF 是评审最先读的形态。
+    """
+    import sys as _sys
+
+    _sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from doc_stamp import sha256_of  # noqa: PLC0415
+
+    problems: list[str] = []
+    checked = 0
+    for stamp_path, hint in GENERATED_STAMPS:
+        if not stamp_path.is_file():
+            problems.append(f"缺少生成物溯源戳 {stamp_path.relative_to(REPO_ROOT)}"
+                            f"（先跑生成器；{hint}）")
+            continue
+        entries = _load_stamp(stamp_path)
+        if not entries:
+            problems.append(f"{stamp_path.relative_to(REPO_ROOT)} 里没有任何条目（重新跑生成器）")
+            continue
+        for name, info in entries:
+            source = stamp_path.parent / str(info.get("source") or "")
+            output = stamp_path.parent / name
+            if not source.is_file():
+                problems.append(f"{stamp_path.name}: 源文件不存在 {source.name}")
+                continue
+            if not output.is_file():
+                problems.append(f"{stamp_path.name}: 产物不存在 {name}")
+                continue
+            checked += 1
+            actual = sha256_of(source)
+            if actual != info.get("sha256"):
+                problems.append(
+                    f"{name} 与源 {source.name} 不同步（源已改但未重出产物）")
+    assert not problems, "生成物与源不一致：\n  - " + "\n  - ".join(problems)
+    assert checked >= 4, f"至少应校验 4 个产物（2 份文档 × docx/pdf），实际 {checked}"
+
+
+def test_report_figures_are_committed() -> None:
+    """技术报告的配图必须**入库**（审计 3.5）。
+
+    此前 13/13 张都指向被 gitignore 的 `var/` 运行产物：干净克隆上重跑生成器只会得到
+    13 个红色「［缺图］」占位符，而提交的 DOCX 里却有真图 —— 产物无法从仓库复现。
+    现在生成器缺图时**默认拒绝出文档**（见 `--allow-missing-figures`），本用例保证图片本身在仓库里。
+    """
+    script = (PROJECT_ROOT / "scripts" / "build_report_docx.py").read_text(encoding="utf-8")
+    block = re.search(r"FIGURE_MAP: list\[Figure\] = \[(.*?)\n\]", script, re.S)
+    assert block, "未找到 FIGURE_MAP（生成器的插图映射）"
+    paths = re.findall(r'Figure\([^)]*?"([^"]+\.png)"', block.group(1), re.S)
+    assert len(paths) >= 10, f"配图数量异常：{len(paths)}"
+    assert all("{" not in path for path in paths), \
+        f"配图路径不得用 f-string（克隆后无法解析）：{[p for p in paths if '{' in p]}"
+    missing = [path for path in paths if not (PROJECT_ROOT / path).is_file()]
+    assert missing == [], f"配图未入库（干净克隆无法复现 DOCX/PDF）：{missing}"
+
+
+def test_report_generator_refuses_to_build_without_figures() -> None:
+    """缺图时生成器必须**拒绝出文档**（否则会产出带红色占位符的「假成品」）。"""
+    pytest.importorskip("docx")            # python-docx 是生成器的开发工具依赖
+    import sys as _sys
+    scripts = str(PROJECT_ROOT / "scripts")
+    if scripts not in _sys.path:
+        _sys.path.insert(0, scripts)
+    import build_report_docx as builder
+
+    assert builder.missing_figure_files(PROJECT_ROOT) == [], "仓库内配图必须齐全"
+    fake = [builder.Figure(anchor=r"^1\.", after=1,
+                           path="docs/report-media/__definitely_missing__.png", caption="x")]
+    assert builder.missing_figure_files(PROJECT_ROOT, figures=fake) == \
+        ["docs/report-media/__definitely_missing__.png"]

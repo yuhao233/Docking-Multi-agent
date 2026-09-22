@@ -288,7 +288,9 @@ def test_wait_list_and_cancel(client: TestClient, monkeypatch: pytest.MonkeyPatc
 
 def test_legacy_endpoints_still_registered(client: TestClient) -> None:
     """标准面是**纯增量**：既有端点一个都不能少（前端与外部调用者不受影响）。"""
-    paths = {r.path for r in client.app.routes}  # type: ignore[attr-defined]
+    # 第 2 波把 app.routes 拆成懒加载的 _IncludedRouter（没有 .path 属性），
+    # 因此按 OpenAPI 的实际路径断言「端点仍然注册」。
+    paths = set(client.get("/openapi.json").json()["paths"])
     for legacy in ("/api/agent/stream", "/api/runs", "/api/settings",
                    "/api/uploads", "/api/uploads/inspect", "/health"):
         assert legacy in paths, legacy
@@ -330,3 +332,20 @@ def test_standard_surface_is_tagged_and_documented(client: TestClient) -> None:
         assert tag in (op.get("tags") or []), f"{method.upper()} {path} 缺少 tag {tag}"
         assert op.get("summary"), f"{method.upper()} {path} 缺少 summary"
         assert op.get("deprecated") is not True
+
+
+def test_offline_intake_run_drops_its_store_blackboard_view(client: TestClient) -> None:
+    """运行结束后必须丢弃该 run 的 store 黑板视图（审计 §2.1：长驻服务里 `_store_boards` 会泄漏）。
+
+    走**离线** intake（`use_llm: False`）：不调模型、不做对接，因此 CI 的快跑也能看护这条不变量。
+    """
+    from docking_agent.runtime.blackboard import _store_boards
+
+    out = client.post("/runs/wait", json={
+        "assistant_id": "intake",
+        "input": {"message": "乙醇:CCO", "use_llm": False},
+    }).json()
+    run_id = str(out.get("business_run_id") or out.get("run_id") or "")
+    assert run_id, out
+    leftovers = [key for key in _store_boards if key[1] == run_id]
+    assert not leftovers, f"运行 {run_id} 结束后黑板视图仍在缓存：{leftovers}"

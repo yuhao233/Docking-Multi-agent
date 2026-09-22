@@ -31,7 +31,11 @@ _PILOT_ZH = {"ok": "完成（真实试跑）", "failed": "失败 → 已退回�
 _LIGAND_SOURCE_ZH = {"text": "文本输入", "file": "上传文件", "message": "对话消息中的分子",
                      "mentioned": "对话中提及的分子", "library": "示例分子库",
                      "tool": "工具整理", "prior": "上一轮对话遗留"}
-_RECEPTOR_SOURCE_ZH = {"user": "用户指定 / 上传", "default": "系统默认受体"}
+_RECEPTOR_SOURCE_ZH = {"user": "用户指定 / 上传",
+                       # 产品底线：系统**没有**默认受体（这里写「系统默认受体」曾与提示词自相矛盾）
+                       "default": "未指定（系统无默认受体）",
+                       # 点名了但解析不了 / 上传的文件用不了：报告要写清「待用户确认」
+                       "unresolved": "不可用（待用户确认）"}
 _SITE_SOURCE_ZH = {"user": "用户显式指定", "tool": "口袋预测工具 / 实验位点推断"}
 
 # 正文里禁止出现的裸地址（图片相对路径不受影响）
@@ -97,10 +101,51 @@ def _demote_headings(text: str) -> str:
 
 
 #: 「结论/建议」类小节标题关键词（命中即保留）
-_CONCLUSION_KEYS = ("结论", "建议", "推荐", "优化", "取舍", "风险", "小结", "总结", "优先")
+_CONCLUSION_KEYS = ("结论", "建议", "推荐", "优化", "取舍", "风险", "局限", "小结", "总结", "优先",
+                    "关键数值")
 #: 明确的「数据复读」小节关键词（命中即丢弃 —— 这些内容报告前面各节已经用真实表格写过）
 _DATA_DUMP_KEYS = ("参数", "配置摘要", "分子列表", "列表及排序", "排序", "属性评估", "可视化",
-                   "参考数据", "数据可用性", "产物", "方法与过程")
+                   "参考数据", "数据可用性", "产物", "方法与过程",
+                   # 对话式总结里的「需求理解 / 任务分配 / 实际执行」= 报告第 1–2 节，
+                   # 「报告与产物」= 第 9 节：都不该在结论节再出现一遍
+                   "需求理解", "任务分配", "实际执行", "执行过程", "报告与产物", "数据与产物")
+
+#: 加粗编号小标题（`**3. 关键数值与结论**`）：对话式回复里用它分节，需要当成标题切块
+_BOLD_HEADING_RE = re.compile(r"^\*\*\s*\d+[.、)]\s*[^*]{2,60}\*\*")
+
+
+#: 过程性/元话行（协调 Agent 的回复里常见，但对报告读者没有信息量）
+_PROCESS_META_RE = re.compile(
+    r"^(已完成全部流程|以下是简短总结|以下是.*总结|明细见报告产物|详见报告产物|"
+    r"以上为简短总结|（?decision=|本次报告由)")
+
+#: 句子级的元话（整句删除）
+_PROCESS_META_SENT_RE = re.compile(
+    r"(明细(均|都)?见报告产物|完整原文见\s*`?agent_report\.md|"
+    r"以下是简短总结|已完成全部流程（decision=[^）)]*）?|"
+    r"数据与参数见第\s*1[–-]7\s*节|不在此重复)")
+
+
+def _strip_process_meta(text: str) -> str:
+    """去掉结论文本里的**过程性说明**（「以下是简短总结」「明细见报告产物」…）。
+
+    为什么：这些句子对读者没有信息量，出现在正式报告的第 8 节会显得口语化；
+    事实与判断一律保留（只删「怎么说」的元话，不删「说了什么」）。
+    """
+    out: List[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if stripped and _PROCESS_META_RE.match(stripped):
+            continue
+        line = _PROCESS_META_SENT_RE.sub("", line)
+        out.append(line)
+    # 只做**不会误伤正文**的清理：空括号、删句后相邻的重复分隔符、多余空行
+    # （绝不整体改写标点 —— 中文正文里「，。；」都是有效内容）
+    cleaned = "\n".join(out)
+    cleaned = re.sub(r"（\s*）", "", cleaned)
+    cleaned = re.sub(r"([，,；;])\s*([，,；;。])", r"\2", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def extract_agent_conclusions(narrative: str) -> str:
@@ -126,7 +171,7 @@ def extract_agent_conclusions(narrative: str) -> str:
     for line in text.splitlines():
         if line.lstrip().startswith("```"):
             in_code = not in_code         # 代码围栏内的 # 行不是标题，也不能把围栏切坏
-        if not in_code and re.match(r"^#{1,6}\s", line):
+        if not in_code and (re.match(r"^#{1,6}\s", line) or _BOLD_HEADING_RE.match(line.strip())):
             if current_title is not None or current_body:
                 blocks.append((current_title, "\n".join(current_body).strip()))
             current_title, current_body = line, []
@@ -140,8 +185,14 @@ def extract_agent_conclusions(narrative: str) -> str:
     kept: List[str] = []
     for title, body in blocks:
         if title is None:
-            continue                   # 标题前的零散前言不作为结论
-        plain = re.sub(r"^#+\s*", "", title).strip()
+            # 标题前的前言：只留下有实质内容的第一段，丢掉「以下是简短总结/明细见报告产物」这类
+            # 过程性说明（报告本身已经写明数据在哪一节）。
+            body = _strip_process_meta(body)
+            if body:
+                kept.append(body)
+            continue
+        plain = re.sub(r"^#+\s*", "", title).strip().strip("*").strip()
+        plain = re.sub(r"^\d+[.、)]\s*", "", plain)      # `**3. 关键数值与结论**` → 关键数值与结论
         if any(k in plain for k in _DATA_DUMP_KEYS) and not any(k in plain for k in _CONCLUSION_KEYS):
             # 数据复读小节整体丢弃，但如果里面有「一句话结论」这类显式结论段落，
             # 把它摘出来（那是 Agent 的判断，不是数据复读）。
@@ -152,8 +203,9 @@ def extract_agent_conclusions(narrative: str) -> str:
                 kept.append(summary.strip())
             continue
         if any(k in plain for k in _CONCLUSION_KEYS):
+            body = _strip_process_meta(body)
             kept.append((title + ("\n\n" + body if body else "")).strip())
-    return "\n\n".join(kept).strip()
+    return _strip_process_meta("\n\n".join(kept).strip())
 
 
 def _artifact_size(artifacts: Optional[List[Dict[str, Any]]], name: str) -> str:
@@ -173,6 +225,8 @@ def protonation_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     counts: Dict[str, int] = {}
     applied: List[Dict[str, Any]] = []
     rule_counts: Dict[str, int] = {}
+    engine_counts: Dict[str, int] = {}
+    engine_versions: Dict[str, str] = {}
     ph_values: Dict[float, int] = {}
     observed = charged = 0
     for row in (rows or []):
@@ -189,6 +243,15 @@ def protonation_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         policy = str(info.get("policy") or "")
         if policy:
             counts[policy] = counts.get(policy, 0) + 1
+        # 专业 pKa 引擎溯源（Dimorphite-DL 等）：报告要能说清「用的是什么引擎 + 哪个版本」
+        engine = str(info.get("engine") or "")
+        if engine:
+            engine_counts[engine] = engine_counts.get(engine, 0) + 1
+            if info.get("engine_version"):
+                engine_versions[engine] = str(info["engine_version"])
+        fallback = str(info.get("engine_fallback_reason") or "")
+        if fallback:
+            engine_counts["内置规则表（回退）"] = engine_counts.get("内置规则表（回退）", 0) + 1
         before = info.get("charge_before")
         if isinstance(before, (int, float)) and before:
             charged += 1
@@ -206,7 +269,8 @@ def protonation_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     policy = max(counts.items(), key=lambda kv: kv[1])[0] if counts else ""
     ph = max(ph_values.items(), key=lambda kv: kv[1])[0] if ph_values else None
     return {"policy": policy, "ph": ph, "observed": observed, "charged": charged,
-            "applied": applied, "counts": counts, "rule_counts": rule_counts}
+            "applied": applied, "counts": counts, "rule_counts": rule_counts,
+            "engine_counts": engine_counts, "engine_versions": engine_versions}
 
 
 def _seed_info(result: Dict[str, Any]) -> Tuple[str, str]:
@@ -265,7 +329,12 @@ def _p2rank_version() -> str:
 
 
 def tool_versions() -> List[List[str]]:
-    """本次运行实际用到的工具与版本；取不到写「未知」，不省略行。"""
+    """本次运行实际用到的工具与版本；取不到写「未知」，不省略行。
+
+    注意：**配体质子化引擎不在这里**（`dimorphite-dl` 是可选安装）。
+    它属于「本次运行实际用了什么」，由 `ligand_facts.protonation.engine` 逐分子溯源，
+    在报告 §1.3 的「质子化态策略」行里呈现 —— 这样同一份快照在不同机器上渲染一致。
+    """
     return [
         ["vina", _module_version("vina", known="1.2.7")],
         ["rdkit", _module_version("rdkit")],
@@ -387,10 +456,6 @@ def param_plan_lines(result: Dict[str, Any], caption: str, table_caption: str) -
     if not plan:
         return []
     L: List[str] = [caption, ""]
-    L.append("> 原则：参数是**运行级 / 漏斗阶段级**的 —— 同一阶段（pass）内所有分子的 "
-             "`exhaustiveness` 完全一致，绝不逐分子变化；否则参数效应会污染排序"
-             "（实测仅换盒子大小就能差 1.34 kcal/mol，采样强度的影响更大）。")
-    L.append("")
     if plan.get("two_stage"):
         funnel = (f"两阶段（粗筛 exhaustiveness={plan.get('coarse_exhaustiveness')} 全库 / "
                   f"精算 exhaustiveness={plan.get('exhaustiveness')} 前 "
@@ -424,7 +489,7 @@ def param_plan_lines(result: Dict[str, Any], caption: str, table_caption: str) -
     L.append("")
     decisions = [str(d) for d in (plan.get("decisions") or []) if str(d).strip()]
     if decisions:
-        L.append("**决策理由链**（每个取值都对应一条可读理由）：")
+        L.append("**决策理由链**：")
         L.append("")
         for i, decision in enumerate(decisions, 1):
             L.append(f"{i}. {decision}")
@@ -433,7 +498,4 @@ def param_plan_lines(result: Dict[str, Any], caption: str, table_caption: str) -
     if warnings:
         L.append("**规划提示**：" + "；".join(warnings))
         L.append("")
-    L.append("> 排序 CSV 的 `exhaustiveness` / `seed` / `seed_policy` 三列即上述参数的逐行留痕；"
-             "同一阶段内这些值完全一致，因此分数可直接在同一阶段内比较。")
-    L.append("")
     return L

@@ -56,3 +56,17 @@ def test_core_does_not_import_upward(layer: str) -> None:
                     if alias.name.startswith(f"docking_agent.{layer}"):
                         offenders.append(f"{path.name}:{node.lineno} → {alias.name}")
     assert not offenders, f"core/ 反向依赖 {layer}/：{offenders}"
+
+
+def test_engine_test_file_list_has_no_rot() -> None:
+    """`conftest.ENGINE_TEST_FILES`（CI 跳过的引擎相关文件）不得指向不存在的文件。
+
+    这份名单是 CI 与「本机全量」之间的唯一开关；文件被改名/删除后若忘了同步，
+    名单会静默失效 —— 要么 CI 漏跑，要么名单形同虚设却仍然全绿。
+    """
+    from conftest import ENGINE_TEST_FILES  # type: ignore[import-not-found]
+
+    tests_dir = Path(__file__).resolve().parent
+    missing = sorted(n for n in ENGINE_TEST_FILES if not (tests_dir / n).is_file())
+    assert missing == [], f"ENGINE_TEST_FILES 里有不存在的文件：{missing}"
+    assert len(ENGINE_TEST_FILES) >= 10, "名单过短，疑似被误删"

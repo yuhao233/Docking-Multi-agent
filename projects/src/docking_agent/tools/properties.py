@@ -8,14 +8,38 @@ from typing import Any, Dict, List
 
 from langchain.tools import tool
 
-from docking_agent.agents import tool_io
-from docking_agent.agents.blackboard import board_molecules_json, get_blackboard
+from docking_agent.runtime import tool_io
+from docking_agent.runtime.blackboard import board_molecules_json
 from docking_agent.core import compute_properties
-from docking_agent.runs import current_run
-from docking_agent.runtime.context import AgentContext, active_blackboard, active_request, active_run, new_context, request_context
+from docking_agent.runtime.context import AgentContext, active_blackboard, active_run
 from langchain.tools import ToolRuntime
 
 logger = logging.getLogger(__name__)
+
+
+#: 逐分子属性里**聚合/展示**需要的字段（报告 §4 表与排序榜都只用这些）
+_PROPERTY_DATA_FIELDS = ("smiles", "protonated_smiles", "formula", "molecular_weight", "logP", "tpsa",
+                         "hbd", "hba", "rotatable_bonds", "heavy_atoms", "aromatic_rings",
+                         "lipinski_violations", "drug_likeness_pass", "error")
+
+
+def _agent_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """给 Agent 的属性行：数据字段 + 压成聚合口径的质子化溯源。
+
+    完整溯源（`method`/`note`/`variants`/`variant_rule`/`engine_window`/`rules`）留在产物
+    `properties_tool.json` 里 —— 逐分子把散文搬进上下文既贵又容易让模型照着复述。
+    """
+    from docking_agent.core.protonation import compact_protonation
+
+    out = {k: row[k] for k in _PROPERTY_DATA_FIELDS if k in row and row[k] is not None}
+    for key in ("id", "source_file", "row", "name"):
+        if row.get(key) not in (None, ""):
+            out[key] = row[key]
+    full = compact_protonation(row.get("protonation"))
+    if full:
+        # 属性行不需要逐分子重复引擎/电荷口径（那是对接行的聚合字段；报告 §4 只用数值列）
+        out["protonation"] = {k: full[k] for k in ("policy", "applied") if k in full}
+    return out
 
 
 @tool
@@ -40,7 +64,6 @@ def molecular_property_assessment(molecules_json: str = "", molecules_file: str 
     rotatable_bonds、heavy_atoms、aromatic_rings、formula、lipinski_violations、drug_likeness_pass、
     protonation（策略溯源）。
     """
-    ctx = active_request(runtime) or new_context(method="molecular_property_assessment")
     try:
         # 横向协作：文件优先（大库按文件交接）→ JSON → 共享黑板 → 本次运行请求的分子库文件
         if (molecules_file or "").strip():
@@ -73,12 +96,13 @@ def molecular_property_assessment(molecules_json: str = "", molecules_file: str 
         # 大库：完整明细落盘，只把摘要 + 前 N 条回传给模型（避免上下文被分子数撑爆）
         tool_io.record("properties", results, run=active_run(runtime))
         limit = tool_io.summary_limit()
+        view = [_agent_row(r) for r in results]      # 给模型/子 Agent 的视图（产物已全量落盘）
         if len(results) > limit:
             ok = [r for r in results if not r.get("error")]
             payload = {
                 "status": "ok",
                 "assessment_total": len(results),
-                "assessment": tool_io.top_rows(results, limit=limit),
+                "assessment": tool_io.top_rows(view, limit=limit),
                 "detail_omitted": True,
                 "summary": {
                     "computed": len(ok),
@@ -92,7 +116,7 @@ def molecular_property_assessment(molecules_json: str = "", molecules_file: str 
                 "notice": tool_io.big_payload_notice("理化性质", len(results), limit),
             }
             return json.dumps(payload, ensure_ascii=False)
-        return json.dumps({"status": "ok", "assessment": results}, ensure_ascii=False)
+        return json.dumps({"status": "ok", "assessment": view}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
@@ -110,7 +134,6 @@ def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "
     返回 JSON：{"status":"ok","count":去重后数量,"duplicates_removed":n,"invalid":[...],
     "molecules":[{"id","name","smiles"}...]}
     """
-    ctx = active_request(runtime) or new_context(method="normalize_molecule_library")  # noqa: F841
     try:
         from rdkit import Chem
 
@@ -166,7 +189,7 @@ def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
     触发 `json.decoder.JSONDecodeError` 并把「分子库规范化失败」写进日志。
     这里统一交给归一化层：能解析就解析，留空就用黑板，绝不因脏输入中断流程。
     """
-    from docking_agent.agents.blackboard import board_molecules_json
+    from docking_agent.runtime.blackboard import board_molecules_json
 
     if isinstance(molecules_json, list):
         return molecules_json
@@ -186,7 +209,7 @@ def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
                     return rows
             except Exception as e:  # noqa: BLE001 - 读不到就继续按文本/黑板兜底
                 logger.debug("按文件读取分子库失败（%s）：%s", text, e)
-        from docking_agent.tools.dispatch import looks_like_molecule_path
+        from docking_agent.tools.molecule_paths import looks_like_molecule_path
 
         if looks_like_molecule_path(text):
             from docking_agent.core import read_molecule_file
@@ -211,7 +234,7 @@ def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
     request_file = str(((getattr(run, "data", None) or {}).get("request") or {}).get("molecule_file") or "")
     if request_file:
         try:
-            from docking_agent.tools.dispatch import resolve_molecule_file
+            from docking_agent.tools.molecule_paths import resolve_molecule_file
             from docking_agent.core import read_molecule_file_normalized
 
             resolved, _attempts, candidates = resolve_molecule_file(request_file)

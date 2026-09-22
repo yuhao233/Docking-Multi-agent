@@ -362,8 +362,10 @@ RUNTIME_SPECS: Tuple[Spec, ...] = (
          env="STREAM_TOOL_RESULT_CHARS", minimum=200, default=2000),
     Spec("runtime.run_timeout_seconds", "单次运行超时（秒）", "runtime", "int",
          env="RUN_TIMEOUT_SECONDS", minimum=30, default=900),
+    # 默认值必须与 `config.DEFAULT_RECURSION_LIMIT` 一致（settings 只依赖 envs.py，
+    # 不反向导入 config → 这里写字面量，由 tests/test_recursion_limit.py 看护两者不发散）
     Spec("runtime.recursion_limit", "图递归上限", "runtime", "int",
-         env="RECURSION_LIMIT", minimum=10, maximum=500, default=60),
+         env="RECURSION_LIMIT", minimum=10, maximum=500, default=120),
     Spec("runtime.log_level", "日志级别", "runtime", "enum",
          env="LOG_LEVEL", choices=("DEBUG", "INFO", "WARNING", "ERROR"), default="INFO"),
     Spec("runtime.checkpoint_backend", "会话检查点后端", "runtime", "enum",
@@ -694,7 +696,7 @@ def apply_runtime_env() -> List[str]:
     - 部署保护项：环境变量已显式设置时保持环境变量优先；
     - 被清除的项：恢复到注入前的基线值（而不是残留旧值）。
     """
-    from docking_agent.config import load_env
+    from docking_agent.envs import load_env
 
     load_env()
     data = load_local_settings()
@@ -730,7 +732,7 @@ def injected_env_keys() -> List[str]:
 
 def runtime_effective(spec: Spec) -> Any:
     """运行类字段的当前生效值（环境变量优先规则与 apply_runtime_env 一致）。"""
-    from docking_agent.config import env
+    from docking_agent.envs import env
 
     data = load_local_settings()
     value = get_dotted(data, spec.path)
@@ -746,7 +748,7 @@ def runtime_effective(spec: Spec) -> Any:
 
 def runtime_source(spec: Spec) -> str:
     """该运行类字段生效值的来源（区分「界面设置」与「.env / 外部环境变量」）。"""
-    from docking_agent.config import env
+    from docking_agent.envs import env
 
     data = load_local_settings()
     if spec.env_priority and spec.env and env(spec.env) not in (None, ""):
@@ -761,7 +763,7 @@ def runtime_source(spec: Spec) -> str:
 
 
 def settings_meta() -> Dict[str, Any]:
-    from docking_agent.config import load_env
+    from docking_agent.envs import load_env
     from docking_agent.paths import project_root as _root
 
     load_env()

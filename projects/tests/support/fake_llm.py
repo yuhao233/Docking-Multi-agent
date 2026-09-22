@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -62,61 +61,53 @@ def step(name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # 从分发指令里解析子 Agent 工具入参（模拟真实模型「照指令传参」）
 # --------------------------------------------------------------------------- #
-def _search(pattern: str, text: str) -> str:
-    match = re.search(pattern, text, re.S)
-    return match.group(1).strip() if match else ""
+def agent_params_marker() -> str:
+    """参数块标记 —— 直接取**生产代码里的常量**（契约单一来源，避免两处漂移）。"""
+    from docking_agent.agents.dispatch import AGENT_PARAMS_MARKER  # noqa: PLC0415
+
+    return AGENT_PARAMS_MARKER
 
 
+def parse_agent_params(text: str) -> Dict[str, Any]:
+    r"""从分发指令末尾的 `任务参数(JSON)：{...}` 里取出子 Agent 的工具入参。
+
+    **这是唯一的参数契约**（`tools/dispatch.AGENT_PARAMS_MARKER`）：JSON 的键就是工具参数名。
+    旧实现用正则反解散文（`（molecules_json）：(.*?)；`、`exhaustiveness=(\d+), n_poses=(\d+)`、
+    `site_center=\[([^\]]+)\]` …）—— 协调层一旦改标点/措辞，测试就静默失配（或解析出空参数），
+    而真实模型"照指令传参"也会跟着错。现在两边读同一份结构化数据。
+    """
+    raw_text = str(text or "")
+    marker = agent_params_marker()
+    idx = raw_text.rfind(marker)
+    if idx < 0:
+        return {}
+    raw = raw_text[idx + len(marker):].strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw.splitlines()[0].strip())
+    except (json.JSONDecodeError, IndexError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # JSON 里没有的键 = 未指定（派发侧已经剔除了空值）
+    return {k: v for k, v in data.items() if v is not None}
+
+
+#: 兼容入口：两个解析器现在等价（参数只有 JSON 一种形态）
 def parse_docking_instruction(text: str) -> Dict[str, Any]:
-    """从 `run_docking` 下发给 Docking 子 Agent 的指令里解析出工具入参。"""
-    args: Dict[str, Any] = {}
-    molecules_json = _search(r"（molecules_json）：(.*?)；", text)
-    params = re.search(r"对接参数 exhaustiveness=(\d+), n_poses=(\d+), engine=(\w+)", text)
-    molecule_file = _search(r"molecule_file=\*\*(.+?)\*\*", text)
-    receptor_file = _search(r"receptor_file=(.+?)（", text)
-    receptor_sources = _search(r"receptor_sources=(.+?)（", text)
-    control = _search(r"（SMILES=(.+?)）", text)
-    top_from_previous = _search(r"top_from_previous=(\d+)", text)
-    center = _search(r"site_center=\[([^\]]+)\]", text)
-    size = _search(r"site_size=\[([^\]]+)\]", text)
-    if molecules_json:
-        args["molecules_json"] = molecules_json
-    if params:
-        args["exhaustiveness"] = int(params.group(1))
-        args["n_poses"] = int(params.group(2))
-        args["engine"] = params.group(3)
-    if molecule_file:
-        args["molecule_file"] = molecule_file
-    if receptor_file:
-        args["receptor_file"] = receptor_file
-    elif receptor_sources:
-        args["receptor_sources"] = receptor_sources
-    if control:
-        args["positive_control_smiles"] = control
-    if top_from_previous:
-        args["top_from_previous"] = int(top_from_previous)
-    if center:
-        args["site_center"] = [float(x) for x in center.replace(" ", "").split(",") if x]
-    if size:
-        args["site_size"] = [float(x) for x in size.replace(" ", "").split(",") if x]
-    return args
+    return parse_agent_params(text)
 
 
 def parse_binding_instruction(text: str) -> Dict[str, Any]:
-    """从 `run_binding_mode_analysis` 下发的指令里解析出工具入参。"""
-    args: Dict[str, Any] = {}
-    molecule_file = _search(r"molecules_file=\*\*(.+?)\*\*", text)
-    if molecule_file and not molecule_file.startswith("（"):
-        args["molecules_file"] = molecule_file
-    control = _search(r"阳性对照 (\S+) 的结合模式", text)
-    if control:
-        args["positive_control_smiles"] = control
-    return args
+    return parse_agent_params(text)
 
 
 _INSTRUCTION_PARSERS: Dict[str, Callable[[str], Dict[str, Any]]] = {
     "molecular_docking": parse_docking_instruction,
+    "molecular_property_assessment": parse_agent_params,   # 只吃 molecules_file
     "binding_mode_analysis": parse_binding_instruction,
+    "predict_binding_pockets": parse_agent_params,
 }
 
 

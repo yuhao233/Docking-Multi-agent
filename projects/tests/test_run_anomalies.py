@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -117,8 +118,8 @@ def _write_sdf(path: Path, count: int = 5) -> Path:
 
 def test_import_seeds_shared_blackboard(tmp_path: Path) -> None:
     """导入成功必须写进共享黑板（否则「留空即用黑板」的承诺是空话）。"""
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
-    from docking_agent.tools.dispatch import import_molecule_library
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
+    from docking_agent.agents.dispatch import import_molecule_library
 
     path = _write_sdf(tmp_path / "lib.sdf", 5)
     board = Blackboard(run_id="t-board")
@@ -136,8 +137,8 @@ def test_import_seeds_shared_blackboard(tmp_path: Path) -> None:
 
 def test_property_stage_sees_library_after_import(tmp_path: Path) -> None:
     """端到端契约：导入 → 子 Agent 留空调用 normalize → 拿到**全部**分子（异常 2 的修复）。"""
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
-    from docking_agent.tools.dispatch import import_molecule_library
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
+    from docking_agent.agents.dispatch import import_molecule_library
     from docking_agent.tools.properties import normalize_molecule_library
 
     path = _write_sdf(tmp_path / "lib.sdf", 5)
@@ -157,7 +158,7 @@ def test_property_stage_sees_library_after_import(tmp_path: Path) -> None:
 def test_normalize_payload_is_bounded_for_large_library(tmp_path: Path,
                                                         monkeypatch: pytest.MonkeyPatch) -> None:
     """大库：完整清单留在黑板，只把前 N 条回给子 Agent（否则上下文会被撑爆）。"""
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.tools.properties import normalize_molecule_library
 
     monkeypatch.setenv("AGENT_TOOL_TOP_N", "2")
@@ -208,7 +209,7 @@ def test_property_stage_falls_back_to_run_request_when_board_empty(tmp_path: Pat
     真实缺陷路径：协调 Agent 可以直接把文件交给 run_docking（跳过 import），
     此时若没人发布到黑板，属性评估读到 0 条，147 条库只有 20 条被评估甚至全空。
     """
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools.properties import normalize_molecule_library
 
@@ -229,7 +230,7 @@ def test_property_stage_falls_back_to_run_request_when_board_empty(tmp_path: Pat
 def test_docking_publishes_resolved_library_to_blackboard(monkeypatch: pytest.MonkeyPatch,
                                                           tmp_path: Path) -> None:
     """谁解析到分子谁就发布：molecular_docking 从文件解析后必须写黑板。"""
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools import docking as TD
 
@@ -253,8 +254,8 @@ def test_docking_publishes_resolved_library_to_blackboard(monkeypatch: pytest.Mo
 # --------------------------------------------------------------------------- #
 def test_molecular_property_assessment_reads_molecules_file(tmp_path: Path) -> None:
     """molecules_file 指向运行产物 JSON 也能读（不依赖黑板、不把清单搬进上下文）。"""
-    from docking_agent.agents import tool_io
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime import tool_io
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools.properties import molecular_property_assessment
 
@@ -276,7 +277,7 @@ def test_molecular_property_assessment_reads_molecules_file(tmp_path: Path) -> N
 
 def test_check_binding_consistency_reads_docking_file(tmp_path: Path) -> None:
     """对接明细按文件交接：check_binding_consistency(docking_file=…) 应读到文件里的行。"""
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools.binding import check_binding_consistency
 
@@ -300,8 +301,8 @@ def test_check_binding_consistency_reads_docking_file(tmp_path: Path) -> None:
 
 def test_artifact_refs_exposes_absolute_paths_for_handoff(tmp_path: Path) -> None:
     """artifact_refs 必须给出可直接传参的绝对路径（文件交接的发现入口）。"""
-    from docking_agent.agents import tool_io
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime import tool_io
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
 
     run = _run_probe(tmp_path, "")

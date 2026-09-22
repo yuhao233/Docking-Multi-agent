@@ -23,6 +23,8 @@ import threading
 import os
 import logging
 import re
+import shutil
+import time
 import zipfile
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -30,9 +32,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from docking_agent import run_context as _run_context
 from docking_agent.config import env_int
 from docking_agent.paths import runs_dir
-from docking_agent.reporting.store import content_type_for, safe_name
+from docking_agent.reporting.store import content_type_for
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +48,57 @@ _RANKING_CACHE_MAX = 4
 # 当前正在执行的运行（多 Agent 模式下由 API 层注入，工具据此把中间数据写入运行目录）
 current_run: ContextVar[Optional["Run"]] = ContextVar("current_run", default=None)
 
+# 注册给下层：`core/` 读「当前运行」只走 run_context，不再 import 本模块（审计 V2）
+_run_context.set_run_provider(lambda: current_run.get())
+
 
 def new_run_id() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + datetime.now().strftime("%f")[:4]
+
+
+#: 运行 / 线程标识的合法字符集（首字符必须是字母或数字，其余允许 `._-`）。
+#: 它同时是**单层路径片段**，所以必须严格：未校验时 `run_id="../x"` 会让
+#: `root / run_id` 逃出运行目录 —— 真实漏洞：`POST /run` 的 `x-run-id` 头可在工作区
+#: 任意位置建目录并写入攻击者可控内容；`POST /threads` 的 `thread_id` 可覆盖任意 `*.json`。
+RUN_COMPONENT_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def safe_run_component(value: Any, *, field: str = "run_id") -> str:
+    """校验并返回可安全用作**单层路径片段**的标识符；不合法直接抛 `ValueError`。
+
+    三道门：① 非空；② 字符集白名单（拒绝 `/`、`\\`、`..` 与控制字符）；
+    ③ 解析后必须仍在 `root` 之下（`ensure_inside`）—— 最后一道是防未来有人放宽
+    字符集时静默回归的兜底，不是主要防线。
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise ValueError(f"{field} 不能为空")
+    if not RUN_COMPONENT_SAFE.match(text):
+        raise ValueError(f"{field} 含非法字符：{text!r}（只允许字母/数字/._-，首字符须为字母或数字）")
+    return text
+
+
+def ensure_inside(root: Path, candidate: Path, *, field: str) -> Path:
+    """断言 `candidate` 解析后位于 `root` 之内，返回解析后的路径；否则抛 `ValueError`。"""
+    base = Path(root).resolve()
+    try:
+        resolved = Path(candidate).resolve()
+        resolved.relative_to(base)
+    except ValueError as e:
+        raise ValueError(f"{field} 解析后不在 {base} 之下：{candidate}") from e
+    return resolved
+
+
+def _dir_size(path: Path) -> int:
+    """目录内容总字节数（清理报告用；单文件不可读按 0 计，不因权限问题中断清理）。"""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+    return total
 
 
 # 下载文件名里只允许 ASCII 安全字符：中文受体名/空格/斜杠一律降级为下划线，
@@ -139,9 +190,10 @@ class Run:
     """单次运行的中间数据容器。"""
 
     def __init__(self, root: Path, run_id: str, kind: str, request: Dict[str, Any]):
-        self.id = run_id
+        # 标识符同时是路径片段：先过白名单，再断言解析后仍在 root 之内。
+        self.id = safe_run_component(run_id)
         self.kind = kind
-        self.dir = root / run_id
+        self.dir = ensure_inside(root, Path(root) / self.id, field="run_id")
         self.dir.mkdir(parents=True, exist_ok=True)
         self._artifacts: Dict[str, Artifact] = {}
         self.logs: List[str] = []
@@ -293,7 +345,9 @@ class RunStore:
         self._index_lock = threading.Lock()
 
     def new(self, kind: str, request: Dict[str, Any], run_id: Optional[str] = None) -> Run:
-        rid = run_id or new_run_id()
+        # 外部传入的 run_id（如兼容入口 `POST /run` 的 `x-run-id` 头）必须先过白名单；
+        # 不合法直接抛 ValueError，由 API 层转成 400 —— 绝不落到 `root / run_id` 上。
+        rid = safe_run_component(run_id) if str(run_id or "").strip() else new_run_id()
         while (self.root / rid).exists():
             rid = new_run_id()
         return Run(self.root, rid, kind, request)
@@ -436,6 +490,71 @@ class RunStore:
                 break
         return items
 
+    # --------------------------------------------------------------------- #
+    # 保留策略：运行目录不能无限增长（审计：3 882 个目录 / 2.0 GB，且启动扫描全部目录）
+    # --------------------------------------------------------------------- #
+    def prune(self, *, keep_last: int = 200, max_age_days: float = 30.0,
+              dry_run: bool = True) -> Dict[str, Any]:
+        """清理过旧的运行目录，返回报告（**默认只报告不删除**）。
+
+        删除条件（**两条都满足才删**，保守，避免误删刚产生的运行）：
+          1. 按目录 mtime 倒序排名 ≥ `keep_last`（不属于最近 N 个）；
+          2. `max_age_days > 0` 且目录年龄 > `max_age_days`。
+        另外 `status == "running"` 的运行**永不删除**（进程内可能正在跑）。
+
+        目录 mtime 取目录自身与其 `run.json` 的较大者：两者都会被写入更新。
+        """
+        report: Dict[str, Any] = {"dry_run": bool(dry_run), "keep_last": int(keep_last),
+                                  "max_age_days": float(max_age_days), "candidates": [],
+                                  "deleted": [], "freed_bytes": 0, "errors": []}
+        if not self.root.is_dir():
+            return report
+        now = time.time()
+        entries: List[Any] = []
+        for d in self.root.iterdir():
+            if not d.is_dir():
+                continue
+            try:
+                mtime = d.stat().st_mtime
+                meta_path = d / RUN_META
+                if meta_path.is_file():
+                    mtime = max(mtime, meta_path.stat().st_mtime)
+            except OSError:
+                continue
+            entries.append((mtime, d))
+        entries.sort(key=lambda item: item[0], reverse=True)
+
+        for rank, (mtime, d) in enumerate(entries):
+            if rank < max(0, int(keep_last)):
+                continue
+            age_days = (now - mtime) / 86400.0
+            if max_age_days > 0 and age_days <= max_age_days:
+                continue
+            meta = self.meta(d.name) or {}
+            if str(meta.get("status") or "") == "running":
+                continue
+            size = _dir_size(d)
+            report["candidates"].append({"run_id": d.name, "age_days": round(age_days, 1),
+                                         "size_bytes": size})
+            if dry_run:
+                report["freed_bytes"] += size
+                continue
+            try:
+                shutil.rmtree(d)
+            except OSError as exc:
+                report["errors"].append(f"{d.name}: {exc}")
+                logger.warning("清理运行目录失败（%s）：%s", d.name, exc)
+                continue
+            report["deleted"].append(d.name)
+            report["freed_bytes"] += size
+            logger.info("已清理旧运行目录：%s（%.1f 天前，%.1f MB）",
+                        d.name, age_days, size / (1024 * 1024))
+        if not dry_run and report["deleted"]:
+            # 目录变化后索引必须重建（签名含目录数与 mtime，这里显式失效更稳）
+            self._index_cache = None
+            self._index_signature = None
+        return report
+
     def reconcile_interrupted(self) -> List[str]:
         """把残留的 `running` 运行标记为 `interrupted`，返回被收尾的 run_id 列表。
 
@@ -536,6 +655,8 @@ class RunStore:
             "notes": (result_json.get("notes") or [])[:40],
             "task_spec": result_json.get("task_spec", {}),
             "param_plan": result_json.get("param_plan", {}),
+            # 受体溯源（数据库 / accession / 物种 / PDB 号 / 方法与分辨率）：界面与报告都要能独立追溯
+            "receptor_provenance": result_json.get("receptor_provenance", {}),
             "data_sources": result_json.get("data_sources", {}),
             "inline_limit": inline_limit,
         }

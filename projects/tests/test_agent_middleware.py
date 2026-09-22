@@ -16,7 +16,7 @@ from langchain.agents.middleware import (ModelCallLimitMiddleware, ModelRetryMid
                                          SummarizationMiddleware, ToolCallLimitMiddleware)
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.graph import MessagesState
 
 from docking_agent.agents.middleware import (DEFAULT_MODEL_CALL_LIMIT, DEFAULT_RETRY_MAX,
                                              DEFAULT_SUMMARY_KEEP, DEFAULT_SUMMARY_TRIGGER,
@@ -38,9 +38,10 @@ def _by_type(mw: List[Any], cls: type) -> Any:
 
 def test_default_middleware_set_and_thresholds() -> None:
     mw = build_agent_middleware(_fake(), role="coordinator")
+    # 第一件是「工具调用配对」自愈（模型调用前补齐悬空 tool_calls，否则 400）
     assert [type(m).__name__ for m in mw] == [
-        "ModelRetryMiddleware", "ModelCallLimitMiddleware", "ToolCallLimitMiddleware",
-        "SummarizationMiddleware"], [type(m).__name__ for m in mw]
+        "ToolCallPairingMiddleware", "ModelRetryMiddleware", "ModelCallLimitMiddleware",
+        "ToolCallLimitMiddleware", "SummarizationMiddleware"], [type(m).__name__ for m in mw]
 
     retry = _by_type(mw, ModelRetryMiddleware)
     assert retry.max_retries == DEFAULT_RETRY_MAX and retry.on_failure == "continue"
@@ -77,11 +78,13 @@ def test_middleware_thresholds_are_env_configurable(monkeypatch: pytest.MonkeyPa
 
 
 def test_middleware_can_be_fully_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """四件套都能关掉；**工具调用配对自愈关不掉** —— 它防的是模型端 400（正确性，不是预算）。"""
     monkeypatch.setenv("AGENT_RETRY_MAX", "0")
     monkeypatch.setenv("AGENT_MODEL_CALL_LIMIT", "0")
     monkeypatch.setenv("AGENT_TOOL_CALL_LIMIT", "0")
     monkeypatch.setenv("AGENT_SUMMARY_ENABLED", "off")
-    assert build_agent_middleware(_fake(), role="probe") == []
+    assert [type(m).__name__ for m in build_agent_middleware(_fake(), role="probe")] == [
+        "ToolCallPairingMiddleware"]
 
 
 def test_summary_trigger_is_corrected_when_not_greater_than_keep(
@@ -109,8 +112,11 @@ def test_coordinator_passes_middleware_to_create_agent(monkeypatch: pytest.Monke
     coordinator.build_agent(None)
 
     names = [type(m).__name__ for m in seen["middleware"]]
-    assert names == ["ModelRetryMiddleware", "ModelCallLimitMiddleware", "ToolCallLimitMiddleware",
-                     "SummarizationMiddleware"], names
+    # 协调 Agent 比子 Agent 多一个**条件系统提示词**中间件（按运行事实抽掉用不到的纪律段；
+    # 见 `agents/prompt_blocks.py`）——它排在最后（最内层，改的是最终下发的系统消息）。
+    assert names == ["ToolCallPairingMiddleware", "ModelRetryMiddleware", "ModelCallLimitMiddleware",
+                     "ToolCallLimitMiddleware", "SummarizationMiddleware",
+                     "conditional_discipline"], names
     assert seen["name"] == "coordinator"
 
 
@@ -134,8 +140,8 @@ def test_worker_agents_pass_middleware_to_create_agent(monkeypatch: pytest.Monke
     assert [c["name"] for c in captured] == ["property", "pocket", "docking", "binding"]
     for c in captured:
         assert [type(m).__name__ for m in c["middleware"]] == [
-            "ModelRetryMiddleware", "ModelCallLimitMiddleware", "ToolCallLimitMiddleware",
-            "SummarizationMiddleware"], c["name"]
+            "ToolCallPairingMiddleware", "ModelRetryMiddleware", "ModelCallLimitMiddleware",
+            "ToolCallLimitMiddleware", "SummarizationMiddleware"], c["name"]
 
 
 def test_summarization_is_inert_on_short_conversations() -> None:

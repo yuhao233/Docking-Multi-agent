@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import csv
 import gzip
 import io
 import json
@@ -20,8 +19,6 @@ import logging
 import os
 import re
 import zipfile
-from datetime import datetime, time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from rdkit import Chem
@@ -42,7 +39,6 @@ from docking_agent.core.normalize_io import (
     _header_kind,
     _inchi_from_fields,
     _inchikeys_in,
-    _looks_like_inchikey,
     _materialize,
     _mol_name,
     _read_bytes,
@@ -56,7 +52,6 @@ from docking_agent.core.receptors import (
     RECEPTOR_NON_STRUCTURE_EXTS,
     read_receptor_file,
 )
-from docking_agent.paths import cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +62,24 @@ __all__ = [
     "normalize_receptor_source",
     "record_input_normalization",
 ]
+
+
+#: 「第 N 行解析不出分子」提示里**必须隐去**的内容：疑似密钥/凭据的赋值行。
+#: 为什么需要：这条提示会经 API 与报告展示给用户；用户误把 `.env` 之类交给解析器时，
+#: 逐行回显原文等于把 API Key 打印出来（真实漏洞）。提示本身仍要有用 —— 只隐去
+#: 疑似凭据行，其余照旧回显一小段。
+_SECRETY_LINE = re.compile(
+    r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|bearer|private[_-]?key)")
+
+
+def _line_hint(line: str, limit: int = 40) -> str:
+    """解析失败行的可展示提示：疑似凭据行只报「已隐去」，其余回显前 `limit` 个字符。"""
+    text = (line or "").strip()
+    if not text:
+        return "（空行）"
+    if _SECRETY_LINE.search(text):
+        return "（疑似凭据/密钥行，内容已隐去）"
+    return repr(text[:limit])
 
 
 # --------------------------------------------------------------------------- #
@@ -371,7 +384,7 @@ def _parse_smiles_text(text: str, source_file: str,
         items = parse_smiles_text(raw, default_name_prefix=sentinel)
         if not items:
             skipped.append({"line": lineno,
-                            "reason": f"第 {lineno} 行无法解析出分子：{stripped[:60]!r}"})
+                            "reason": f"第 {lineno} 行无法解析出分子：{_line_hint(stripped)}"})
             continue
         for item in items:
             ordinal += 1
@@ -722,9 +735,9 @@ def record_input_normalization(normalization: Dict[str, Any], *, run: Any = None
     同一个 `(kind, source_file)` 重复登记时按最新覆盖，避免同一文件出现多条。
     没有运行上下文（CLI/单测）时静默返回 None。
     """
-    from docking_agent.runs import current_run
+    from docking_agent import run_context
 
-    target = run if run is not None else current_run.get()
+    target = run if run is not None else run_context.active_run_or_none()
     if target is None:
         return None
     entry = dict(normalization or {})

@@ -25,8 +25,11 @@ from docking_agent.runtime.context import (AgentContext, Context, active_run,
                                           current_agent_context)
 from docking_agent.runtime.llm import build_chat_llm
 
-from docking_agent.agents.blackboard import shared_store
+from docking_agent.runtime.blackboard import shared_store
 from docking_agent.agents.middleware import build_agent_middleware
+from docking_agent.config import DEFAULT_RECURSION_LIMIT, env_int
+from docking_agent.runtime.limits import (base_limit, escalate, is_recursion_error,
+                                          log_escalation)
 from docking_agent.agents.reports import (is_structured_rejection, report_model,
                                           uses_structured_output)
 from docking_agent.agents.prompts import BINDING_SP, DOCKING_SP, POCKET_SP, PROPERTY_SP
@@ -35,7 +38,7 @@ from docking_agent.tools.binding import (
     check_binding_consistency,
     positive_control_similarity,
 )
-from docking_agent.tools.docking import available_receptors, molecular_docking
+from docking_agent.tools.docking import molecular_docking
 from docking_agent.tools.online import fetch_protein_structure
 from docking_agent.tools.pockets import (
     compare_pocket_with_experiment,
@@ -116,9 +119,9 @@ _WORKER_SPECS: Dict[str, Any] = {
                  lambda: [normalize_molecule_library, molecular_property_assessment]),
     "pocket": (lambda: POCKET_SP,
                lambda: [predict_binding_pockets, compare_pocket_with_experiment,
-                        set_docking_site, list_pocket_engines, available_receptors]),
+                        set_docking_site, list_pocket_engines]),
     "docking": (lambda: DOCKING_SP,
-                lambda: [available_receptors, molecular_docking, fetch_protein_structure]),
+                lambda: [molecular_docking, fetch_protein_structure]),
     "binding": (lambda: BINDING_SP,
                 lambda: [binding_mode_analysis, positive_control_similarity,
                          check_binding_consistency]),
@@ -251,40 +254,75 @@ def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
         raise RuntimeError("sub-agent 未初始化，请先调用 init_workers(ctx)")
     call_thread = f"{thread_id}-{id(agent)}-{uuid.uuid4().hex[:8]}"
     payload = {"messages": [HumanMessage(content=content)]}
-    config = {"configurable": {"thread_id": call_thread}}
+    # **必须显式给 recursion_limit**：不给就是 LangGraph 的默认值（25），子 Agent 多调几次工具
+    # 就会抛 `GRAPH_RECURSION_LIMIT`（真实故障）。与协调 Agent 用同一个环境变量，便于统一调。
+    config = {"configurable": {"thread_id": call_thread},
+              "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT)}
     # 该角色的结构化输出此前已被供应商拒绝过 → 直接用文本契约图，不再重复付一次 400 的代价
     if isinstance(agent, object) and id(agent) in _worker_text_fallbacks:
         agent = _worker_text_fallbacks[id(agent)]
+
+    # 角色名要先取好：`_invoke` 里的日志要它，而 except 分支后面还会自己查一次
+    worker_role = _agent_roles.get(id(agent), "") or "worker"
+
+    def _invoke(agent_obj: Any) -> Any:
+        """调用子 Agent；**跑满步数自动放宽并继续**，到顶返回 None（不抛给上层）。
+
+        与协调 Agent 同一套预算策略（`runtime/limits.py`）：步数是执行细节，不该变成
+        用户可见的报错。到顶时返回 None，由上层如实上报「达到步数上限」。
+        """
+        limit = base_limit()
+        data: Any = payload
+        while True:
+            try:
+                return agent_obj.invoke(data,
+                                        config={**config, "recursion_limit": limit},
+                                        # 双读期：把当前运行上下文作为**权威来源**传入
+                                        context=current_agent_context())
+            except Exception as exc:  # noqa: BLE001 - 只有步数上限在这里被吸收
+                if not is_recursion_error(exc):
+                    raise
+                escalated = escalate(limit)
+                log_escalation(active_run(), limit, escalated)
+                if escalated is None:
+                    logger.warning("%s 子 Agent 达到步数上限（%s），用现有结果继续", worker_role, limit)
+                    return None
+                limit = escalated
+                data = None                    # 从 checkpoint 继续，不重放任务描述
+
     try:
-        result = agent.invoke(payload, config=config,
-                              # 双读期：把当前运行上下文作为**权威来源**传入
-                              context=current_agent_context())
+        result = _invoke(agent)
+        if result is None:
+            return json.dumps({"status": "agent_step_limit", "role": worker_role,
+                               "message": "子 Agent 达到步数上限（系统已自动放宽到上限仍未结束）："
+                                          "请用已有结果继续，或缩小本次任务的规模（例如分批对接）。"},
+                              ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - 只拦「供应商不支持结构化输出」这一类
-        role = _agent_roles.get(id(agent), "")
-        if not is_structured_rejection(exc) or not role:
+        exc_role = _agent_roles.get(id(agent), "")
+        if not is_structured_rejection(exc) or not exc_role:
             raise
-        fallback = _text_fallback_agent(agent, role)
+        fallback = _text_fallback_agent(agent, exc_role)
         if fallback is None:
             raise
         reason = str(getattr(exc, "message", "") or exc)
         logger.warning("%s 子 Agent：供应商拒绝结构化输出（%s），已降级为文本 JSON 契约"
-                       "（AGENT_STRUCTURED_OUTPUT=off 可彻底关闭结构化输出）", role, reason)
+                       "（AGENT_STRUCTURED_OUTPUT=off 可彻底关闭结构化输出）", exc_role, reason)
         # 记住这次探测结果：后续进程构建期直接跳过强制 tool_choice，不再重复付 400 的代价
         try:
             from docking_agent.agents.capabilities import (  # noqa: PLC0415
                 mark_forced_tool_choice_unsupported)
-            mark_forced_tool_choice_unsupported(role, reason)
+            mark_forced_tool_choice_unsupported(exc_role, reason)
         except Exception:  # noqa: BLE001 - 记忆失败不影响本次调用
             logger.debug("能力记忆写入失败（忽略）", exc_info=True)
         # 如实写进运行记录：说明本次为何未用强制结构化输出（含"已记录、后续不再重试"）
         run = active_run()
         if run is not None and hasattr(run, "log"):
             try:
-                run.log(f"{role} 子 Agent：本模型不支持强制结构化输出（已记录该能力，"
+                run.log(f"{exc_role} 子 Agent：本模型不支持强制结构化输出（已记录该能力，"
                         f"后续运行不再重试），改用文本 JSON 契约，结果仍经必需字段校验")
             except Exception:  # noqa: BLE001 - 记录失败不影响本次调用
                 logger.debug("降级说明写入运行记录失败（忽略）", exc_info=True)
-        result = fallback.invoke(payload, config=config, context=current_agent_context())
+        result = _invoke(fallback)
     # 结构化输出优先（P2）：框架已用 pydantic 校验过，直接序列化成 JSON 字符串返回，
     # 协调 Agent / persistence 侧的输入契约保持不变（仍是 JSON 原文）
     structured = result.get("structured_response") if isinstance(result, dict) else None

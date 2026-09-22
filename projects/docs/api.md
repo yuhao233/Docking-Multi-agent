@@ -41,9 +41,16 @@
 各角色持有独立 LLM 实例，可用环境变量 `LLM_<字段>_<角色>` 或
 `config/agent_llm_config.json` 的 `roles` 段分别指定模型（见 §11）。
 
-### `GET /api/receptors` —— 受体与「已知结合位点」
+### `GET /api/receptors` —— 注册表预置受体与「已知结合位点」（**内部/诊断**）
+
+> 这是**内部/诊断端点**（响应带 `"internal": true`）：注册表预置受体 `thrombin`/`trypsin`
+> **只用于内部测试，不是用户可选来源**，网页界面**不再调用**它。用户只能通过 PDB 编号 /
+> UniProt accession / 基因或蛋白名称 / 上传结构文件指定受体；**系统没有默认受体**，
+> 未指定时不会回退到这里的任何条目。
+
 ```json
 {
+  "internal": true,
   "default": "thrombin",
   "aliases": {"1dwc": "thrombin", "1ptu": "trypsin"},
   "receptors": [
@@ -80,6 +87,29 @@
 
 ---
 
+### 静态页面路由（v0.28）
+
+| 路由 | 内容 |
+| --- | --- |
+| `GET /` | **默认首页 = 简易模式**（`web/simple.html`） |
+| `GET /advanced` | 高级模式（`web/index.html`） |
+| `GET /simple` | 简易模式别名（兼容既有链接/书签），与 `/` 同一份页面 |
+
+两套界面是**同一份后端契约的两个视图**：
+
+| | `/`（简易模式，默认） | `/advanced`（高级模式） |
+| --- | --- | --- |
+| 内容 | 对话 + 结果（前 5 名、关键指标、报告/CSV/整包链接、最近运行下拉） | 参数表单、历史检索、报告全文、中间数据、设置页 |
+| 参数 | **无任何参数控件**：请求固定 `mode="chat"` + `advanced=false`，其余交给受理层默认值与自动规划 | 表单/高级设置可显式指定 |
+| 运行与产物 | 与高级模式**同一套**端点：`POST /threads/{tid}/runs/stream`、`GET /api/runs/{id}`、`/report.pdf`、`/export.csv`、`/download.zip` | 同左 |
+
+两页顶栏互切：简易模式 →「高级模式」指向 `/advanced`；高级模式 →「简易模式」指向 `/`。
+
+后端只增加这一条静态路由（与 `GET /` 共用 `_serve_page()`）；**没有新增任何私有接口**，
+两套界面是同一份后端契约的两个视图。契约细节由 `scripts/check_web.py` 第 9 节守护
+（无参数控件、标准协议、背景动效可关闭、无孤儿 id），真实浏览器行为由
+`scripts/browser_check.py` 的简易模式用例守护。
+
 ## 2. 执行（SSE 流式）
 
 SSE 统一报文：`event: message\ndata: {JSON}\n\n`；最后一条一定是 `type=done` 或 `type=error`。
@@ -109,7 +139,7 @@ curl -s "localhost:5000/api/runs?q=阿司匹林&status=ok&since=2026-09-01&offse
 | 参数 | 说明 |
 | --- | --- |
 | `q` | 关键词，匹配 run_id、受体、状态、任务描述与**排序表里的分子名/ID**；空格分隔多个词表示 AND |
-| `status` | `ok` / `no_op` / `error` |
+| `status` | `ok` / `needs_user_input`（停下等你点选候选）/ `no_op`（受理层未受理、零工具调用）/ `error` / `running` / `cancelled` / `interrupted` |
 | `kind` | `agent` / `studio`（历史记录里可能有旧值） |
 | `receptor` | 受体名模糊匹配 |
 | `since` / `until` | `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`；只给日期时含当天 |
@@ -201,6 +231,7 @@ curl -s "localhost:5000/api/runs?q=阿司匹林&status=ok&since=2026-09-01&offse
 事件序列：
 ```json
 {"type":"start","run_id":"..."}
+{"type":"thinking","content":"推理增量（模型思维链：界面收进可折叠的「思考」块，不进正文）"}
 {"type":"token","content":"增量文本"}
 {"type":"tool_call","name":"run_docking"}
 {"type":"tool_result","name":"run_docking","content":"（截断后的工具返回）"}
@@ -219,6 +250,13 @@ curl -s "localhost:5000/api/runs?q=阿司匹林&status=ok&since=2026-09-01&offse
   checkpointer 因此能命中上一轮的消息历史；受理层还会从历史里**确定性继承**上一轮已给出的
   分子（`core.ligands.extract_smiles`）与受体（`_mentioned_receptor`）。于是
   「系统问 → 用户答」不会再另起一段对话，也不会把同一个问题原样再问一遍。
+  - **只认用户自己写的正文**：继承受体前先用 `intake.user_only_text()` 剥掉受理层渲染的
+    「任务规约」机器块与前端拼的「引用文件」清单 —— 否则那些机器措辞里的
+    「先请用户指定受体」会被当成「用户点名的受体」。
+  - **用户没点名受体时，绝不扫助手/工具回复**：只有上一轮用户确实点名过受体，才允许从
+    助手回复里补齐「已解析结果」（accession / PDB）。否则助手提问里的示例编号（如 `3ZBF`）
+    会被继承成用户指定的受体 —— 用户什么都没说，系统却拿别人的靶点开跑
+    （真实缺陷，2026-09-21 实测复现并修复）。
 - **留空 = 每次独立**：`thread_id` 回落到本次运行的 `run_id`，与修复前行为完全一致（向后兼容）。
 - 可观测：`GET /api/runs/{id}` 的 `run` 对象带上 `conversation_id`（调用方传入值）与
   `thread_id`（实际使用的 thread，留空时等于 `run_id`）；SSE `start` 事件同样带这两个字段。
@@ -379,7 +417,7 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 - 原生 JS（无构建步骤），入口 `web/app.js`，样式 `web/styles.css`。
 - 中文界面，配色专业（深色顶栏 + 浅色内容区），响应式（窄屏单列）。
 - 关键交互：
-  1. 任务配置表单（受体下拉并显示已知位点、位点可编辑、配体来源三种：文本框/文件路径/示例库、阳性对照、引擎、exhaustiveness、模式切换）。
+  1. 任务配置表单（**受体来源输入框**：填写 PDB 编号 / UniProt accession / 受体名称，或上传受体文件；表单从不预填注册表受体，留空且未上传时前端校验直接拦截。位点可编辑、配体来源三种：文本框/文件路径/示例库、阳性对照、引擎、exhaustiveness、模式切换）。
   2. 执行区：阶段进度、实时逐分子结果表、Agent 文本流。
   3. 结果总览：可排序的排序表 + 图表 + 阳性对照对比。
   4. 分子详情：每个分子一张卡片，含 RDKit 二维结构图、理化性质表、对接能量、与阳性对照相似度、位姿下载。
@@ -418,30 +456,38 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 | 模式 | 语义 |
 | --- | --- |
 | `manual` | 表单参数**权威**；`message`（目标描述）**可留空**，服务端会补全完整任务描述并跑完整流程 |
-| `chat` + `advanced=false` | 使用**系统默认参数**（受体默认位点、`exhaustiveness=16`、`n_poses=1`、`engine=vina`、`protonation=ph@7.4`；**默认不使用示例库**，仅当用户明确要求时才用），指令中已指定的以指令为准。界面上的「运行参数」条**常驻在对话框上方**（不在折叠里）：**只有改动过的字段**才按 `advanced=true` 作为默认值下发；未改动就是本行的系统默认/自动（打开过折叠又关掉不会注入任何参数） |
+| `chat` + `advanced=false` | 使用**系统默认参数**（位点由口袋工具确定、`exhaustiveness=16`、`n_poses=1`、`engine=vina`、`protonation=ph@7.4`；**默认不使用示例库**，仅当用户明确要求时才用），指令中已指定的以指令为准。界面上的「运行参数」条**常驻在对话框上方**（不在折叠里）：**只有改动过的字段**才按 `advanced=true` 作为默认值下发；未改动就是本行的系统默认/自动（打开过折叠又关掉不会注入任何参数） |
 | `chat` + `advanced=true`（动过运行参数） | 使用**被改动过的那些参数**作为默认值，指令中已指定的以指令为准；未改动的字段仍然缺省 |
 
 - **阳性对照为可选项**：`positive_control` **留空即跳过**对照分子对接与结合模式比较
   （`result.positive_control` 为 `{}`、`result.binding` 为空、相似度字段为 `null`，并在 `run.notes` 说明）；
   传 `skip_positive_control=true` 可显式跳过（即使提供了对照）。界面默认不预填阳性对照。
 
-#### 7.1.1 未指定受体时：默认受体是**假设**，不是用户意图
+#### 7.1.1 未指定受体时：先提问、零计算（系统没有默认受体）
 
 `chat` 折叠模式下，受理层若没从指令/表单识别到受体，会把 `task_spec.receptor.source` 标为
-`"default"`，渲染给主管 Agent 的指令用**弱表述**（「指令未指定；`thrombin` 只是系统默认」），
-并要求调用 `run_pocket_analysis` / `run_docking` 时把 `receptor_sources` 与 `receptor_file` **留空**。
+`"default"`（**高级设置里预填的值同样按 `default` 处理 —— 任何预填值都算「未指定」**），
+并把 `decision` 判为 `ask`：给主管 Agent 的指令明确要求「**不要对接、不要回退任何默认受体、不要臆造结构**」，
+只向用户提问。`run_pocket_analysis` / `run_docking` 还有代码级护栏：只要
+`receptor.source == "default"`，在调用任何引擎**之前**就返回
+`{"status":"needs_user_input","missing":["receptor"], ...}`，且**不提供任何预置受体候选**。
 
-- 主管 Agent 即便习惯性显式传入默认受体名（`thrombin`/`1DWC`），`molecular_docking` 也会把它
-  还原为空（`_drop_unspecified_default_receptor`），交由 `resolve_receptor_specs` 走空值回退，
-  于是 `docking.notes` 里必有「未指定受体，已默认使用 凝血酶(thrombin, 1DWC)…」；
-- `resolve_receptor_specs` 对 `None` / `""` / 纯空白 / 字面量 `"default"` 一律按「未指定」回退默认并写 note；
-- 用户在指令里明确提到受体（`trypsin`/`1PTU`、PDB 号、文件路径）或表单显式选择时，
+- **预置受体（`thrombin`/`trypsin`）只用于内部测试，不是用户可选来源**：提问时不再提供
+  「改用系统默认受体」这个选项，只给三条真出路 —— ① PDB 编号或 UniProt accession；
+  ② 受体的基因/蛋白名（中英文，系统在线检索）；③ 上传受体结构文件（`.pdb/.cif/.pdbqt`）；
+- `resolve_receptor_specs` 对**空的**受体参数直接 `raise ValueError`（「未指定受体：计算对象不明确，
+  不能默认使用任何受体」）——**没有**空值回退；工具层把该错误转成上面的 `needs_user_input` 提问；
+- 用户提供了**结构文件**但该文件无法作为受体制备时（文件不存在、内容不是结构），解析链**内部**仍会回退到
+  注册表预置凝血酶，并在 `notes` 写明原因与「这不是你指定的受体」——这是解析链内部的兜底，
+  **不是系统默认受体**，与「未指定受体」是两回事；
+- 用户在指令里明确提到受体（PDB 号、UniProt accession、受体名称、文件路径）或表单显式填写时，
   `source="user"`，**原样使用**，绝不被护栏改写；
-- 最终回复与报告必须写明「未指定受体，已使用系统默认 …」，把它当作**假设**而不是用户要求。
+- 最终回复与报告在受体解析成功时写明 accession / 物种 / 结构来源；**未指定受体时不产出任何对接结果**，
+  只提问。
 
 ### 7.2 完整性保证
 
-只要**输入合法且可对接**（能解析出至少一个分子），主管 Agent 会按任务规约把流程走完（见 §10.3）。
+只要**输入合法且可对接**（受体已指定，且能解析出至少一个分子），主管 Agent 会按任务规约把流程走完（见 §10.3）。
 若多 Agent 未跑完（例如模型提前收尾），服务端**只记录、不接管控制**：不会自动补齐缺失环节，也不会写「系统自动补齐」。
 `run.status` 仍为 `ok`，`run.completeness` 只如实说明本次实际完成了什么（信息展示，不驱动行为）：
 `{"docking":"agent|partial|missing|auto","docked":N,"total":M,"ranking":"ok|missing","report":"ok|missing","positive_control":"ok|skipped"}`（无分子时为 `not_applicable`）。
@@ -530,7 +576,7 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 
 | 规则 | 公式（阈值均来自 `AUTO_PARAM_*`，见 `.env.example`） |
 | --- | --- |
-| 基准强度 | `screening` → `AUTO_PARAM_BASE_SCREENING`(12)；`binding_only`/姿态分析 → `AUTO_PARAM_BASE_BINDING`(16)；`properties_only` 不规划 |
+| 基准强度 | `screening` → `AUTO_PARAM_BASE_SCREENING`(16)；`binding_only`/姿态分析 → `AUTO_PARAM_BASE_BINDING`(16)；`properties_only` 不规划 |
 | 柔性系数 | `f_rot = clamp(P90(库内可旋转键)/5, 0.75, 2.5)`（2D 描述符；大库抽样最重的 500 个） |
 | 盒体积系数 | `f_box = clamp((V_box/22³)^(1/3), 1.0, 2.0)`（保持单位体积采样密度） |
 | 搜索强度 | `exhaustiveness = clamp(round(base × f_rot × f_box), 2, 32)` |
@@ -550,6 +596,22 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 （`intake._planned_params_advice`），主管据此用 `run_docking(top_from_previous=...)` 走同一口径。
 
 `GET /api/runs/{id}` 的 `result.param_plan` 与报告「参数自动规划」一节给出完整参数与理由链。
+
+#### 「未指定」是有哨兵的（v0.27）
+
+`run_docking` / `molecular_docking` 的 `exhaustiveness` 默认值是 **0 = 未指定**，不是 16：
+
+| 传入 | 行为 |
+| --- | --- |
+| 留空 / `0` | 用本次运行的**自动规划值**（`result.param_plan.exhaustiveness`） |
+| 显式 `>0` | 以调用方为准（`param_plan.source=user` 时不改写），并在指令里注明「非规划值」 |
+| 无规划值 | 保持未指定，由执行层按设置页默认（`DEFAULT_EXHAUSTIVENESS=16`）执行 |
+
+为什么必须这样：`exhaustiveness=16` 的默认值无法区分「用户显式设了 16」与「没人给值」，
+而自动规划算的是 `clamp(round(base × 柔性系数 × 盒体积系数), 2, 32)`（常为 20–32）。
+两者撞车时不会报错，只会**静默退回 16**（采样强度偏低、分数偏低，报告里看不出来）。
+现在实际用到的强度会写进该次对接的 `notes`（`搜索强度：exhaustiveness=N（来源：…）`），
+缺失时明确说「本次没有搜索强度规划值」。回归见 `tests/test_param_resolution.py`。
 
 ---
 
@@ -683,18 +745,22 @@ POST /api/uploads/inspect      Content-Type: application/json
 ### 9.2 运行参数新增 `receptor_file`
 
 `/threads/{tid}/runs/stream` 与 `/api/agent/stream` 均支持 `receptor_file`：
-**优先于 `receptor`**（上传的受体文件 > 注册表受体）。若上传时给定了 `box_center`，
+**优先于 `receptor`**（上传的受体文件 > `receptor` 文本字段）。若上传时给定了 `box_center`，
 建议同时按 `site_center`/`site_size` 传回，或在界面中自动填入。
 
 对话模式（`mode=chat`）下 `receptor_file` / `molecule_file` 是**附件派生字段**：
 `advanced=false`（高级设置未展开）时前端仍会带上它们（附件是明确意图），
-其余参数字段则一律不带。`receptor` 的 schema 默认值是 `"thrombin"`，**不代表用户指定**；
-「用户到底指没指定受体」以服务端受理层 `task_spec.receptor.source` 为准
-（`user` / `named` / `default` / `unresolved`），运行日志与结果 `notes` 都按它如实展示。
+其余参数字段则一律不带。`receptor` 的 schema 默认值是 `None`（空 = **未指定**），
+**没有** `"thrombin"` 之类的默认值；「用户到底指没指定受体」以服务端受理层
+`task_spec.receptor.source` 为准（`user` / `named` / `default` / `unresolved`），
+运行日志与结果 `notes` 都按它如实展示。`source == "default"`（含高级设置预填的值）会被判为
+「未指定」并在任何引擎调用前返回 `needs_user_input`，不再回退到注册表受体。
 
 `receptor` / `receptor_sources` 里的**结构文件路径**同样接受 `.pdb/.ent/.pdb1/.cif/.mmcif`
-与 `.pdbqt`；无法作为受体结构使用时（文件不存在、内容不是结构）会**回退默认凝血酶**，
-并在 `notes` 里写明原因与「这不是你指定的受体」——绝不静默回退。
+与 `.pdbqt`；**用户提供的**结构文件无法作为受体使用时（文件不存在、内容不是结构），解析链内部
+仍会回退到注册表预置凝血酶，并在 `notes` 里写明原因与「这不是你指定的受体」——绝不静默回退。
+这只是解析链内部的兜底，**不是系统默认受体**；受体**根本没给**时不会走到这条路，而是直接
+`raise ValueError` → `needs_user_input` → 请用户指定。
 
 ### 9.3 固定报告格式
 
@@ -721,15 +787,33 @@ POST /api/uploads/inspect      Content-Type: application/json
 ## 9. 数据与产物
 ```
 
+**文案口径（v0.28 起）**：报告是交付文档，不是过程日志。正文不写「本节是…」「以下是简短总结 / 明细见报告」
+这类过程性元话，也不写「真实计算、未编造数据」这类自我声明（溯源在第 9 节产物表与 `result.json`）；
+同一件事只在最相关的一节写一次（质子化口径只在 1.3 一句话 + 第 6 节方法学；同阶段参数一致只在 1.3；
+盒子一致性只在 1.2 + 有 `large` 组时的第 2 节提示）；第 8 节的协调 Agent 文本会先剥掉
+「需求理解 / 任务分配 / 实际执行 / 报告与产物」等复读小节与过程性句子，只保留**结论 / 建议 / 风险**类内容；
+运行笔记按签名去重（同一受体准备重跑导致的重复条目不再重复列出）、每条压成一句话、最多 6 条。
+实测同一运行：17.9k 字符 → 11.7k 字符（−35%），事实与溯源未删 —— 被精简掉的「实际执行」小节里
+原本夹带的**受体溯源**因此改为由报告自己给出：`fetch_protein_structure` 把 `provenance`（数据库 /
+UniProt accession / 物种 / PDB 号 / 实验方法与分辨率）记为运行事实，随 `result.json` 的
+`receptor_provenance` 落盘，报告 §1.2 渲染成「受体来源：UniProt `Q9SJQ6`（…）；结构 RCSB PDB `7YHP`（EM，3.1 A）」。
+
 - **质子化态策略**（运行级，界面基础参数区可见 / `docking.protonation` / `LIGAND_PROTONATION`）：
   `ph`（**默认**，按目标 pH 重新分配质子化态，配套 `docking.protonation_ph` /
   `LIGAND_PROTONATION_PH`，默认 7.4）/ `neutralize`（只中和带净电荷的分子）/
   `keep`（保持输入形式）；排序 CSV 带 `protonation_policy` / `charge_input` / `charge_used` 列，
   原始 SMILES 始终保留。
-- **pH 处理口径**：先中和到中性形式，再按**内置官能团 pKa 规则表**（`core/protonation.PKA_RULES`，
-  版本 `PKA_TABLE_VERSION`）把羧酸/胺/脒/胍/咪唑/吡啶/四氮唑/磷酸/磺酸/硫醇/酚加到目标 pH 的状态；
-  逐分子记录命中的规则与判定式（如 `pH 7.4 > pKa 4.5`）。**这是规则近似，不是 pKa 预测**：
-  需要微观态分布时请用专业工具生成质子化态后以 SDF 提供并选择 `keep`。
+- **pH 处理口径**：`ph` 策略**优先用专业 pKa 引擎**（`LIGAND_PKA_ENGINE=auto` 默认；
+  Dimorphite-DL，见 `core/ligand_pka.py`），逐步：
+  ① 引擎按目标 pH（`LIGAND_PKA_WINDOW` 控制窗口，默认 ±0.5）枚举可电离官能团的微观态；
+  ② 窗口内多微观态时按「|净电荷| 最小 → 带电原子最少 → 字典序」选定**一个**形式对接；
+  ③ 逐分子把 `engine` / `engine_version` / `variants` / `variant_rule` 写进
+  `docking.json` 的 `ligand_facts.protonation`，报告 §1.3 显示引擎与版本。
+  找不到引擎时**回退内置官能团 pKa 规则表**（`core/protonation.PKA_RULES`，版本
+  `PKA_TABLE_VERSION`，命中规则与判定式如 `pH 7.4 > pKa 4.5` 同样逐分子记录），
+  `ph`/`engine_fallback_reason` 会如实说明这是**规则近似，不是 pKa 预测**。
+  `LIGAND_PKA_ENGINE=rules` 可强制走规则表（复现旧口径 / 离线兜底）；
+  需要逐态布居或指定其它微观态时，请以 SDF 提供已准备形式并选择 `keep`。
 - **工作台布局约定**：基础参数区放「新手也容易调」的关键项（受体 / 引擎 / 搜索强度 / 位姿数 /
   质子化态策略 + 目标 pH / 阳性对照 / 最大分子数）；「更多参数」只放需要专业知识的项
   （结合位点盒坐标 / 口袋引擎 / 位姿保存 / 上传受体）。`scripts/check_web.py` 看护这一分层。
@@ -788,7 +872,8 @@ SDF 优先取 `_Name`，其次 `ID/Name/Title/编号`，无名称则 `MOL<i>`；
 返回空清单 + `notes` 提示转 CSV（不报错）。名称-only 库走在线解析链，失败时列出候选让用户选择。
 
 **受体侧**：`.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt` + gzip/zip；内容不像结构时抛可操作的 `ValueError`
-（说明「看起来是什么、缺什么、怎么办」），**不静默回退默认受体**。
+（说明「看起来是什么、缺什么、怎么办」），**不静默回退默认受体**（预置受体只用于内部测试，
+系统没有默认受体）。
 
 **溯源落盘**：每次归一化都并入运行产物 `input_normalization.json`（前端「中间数据」可下载）：
 
@@ -837,15 +922,19 @@ SDF 优先取 `_Name`，其次 `ID/Name/Title/编号`，无名称则 `MOL<i>`；
 | 子 Agent | 工具 | 输出契约 |
 | --- | --- | --- |
 | 分子属性评估 | `normalize_molecule_library`、`molecular_property_assessment` | 一个 JSON，含 `assessment`，可带 `agent_note` |
-| 口袋分析 | `predict_binding_pockets`、`compare_pocket_with_experiment`、`set_docking_site`、`list_pocket_engines`、`available_receptors` | 一个 JSON，含 `pockets` / `selected` / `validation`，可带 `agent_note` |
-| Docking 执行 | `available_receptors`、`molecular_docking`、`fetch_protein_structure` | 一个 JSON，含 `receptors`，可带 `agent_note` |
+| 口袋分析 | `predict_binding_pockets`、`compare_pocket_with_experiment`、`set_docking_site`、`list_pocket_engines` | 一个 JSON，含 `pockets` / `selected` / `validation`，可带 `agent_note` |
+| Docking 执行 | `molecular_docking`、`fetch_protein_structure` | 一个 JSON，含 `receptors`，可带 `agent_note` |
 | 结合模式检测 | `binding_mode_analysis`、`positive_control_similarity`、`check_binding_consistency` | 一个 JSON，含 `results` 与可选 `consistency` |
+
+> `available_receptors`（原属口袋/Docking 子 Agent）已**删除**；注册表清单只由协调层的
+> `list_known_receptors` 提供，而它是**内部/诊断**工具、**没有任何 Agent 绑定**（协调 Agent
+> 工具面 13 → 12 就是移除了它）。预置受体只用于内部测试，不是用户可选来源。
 
 `molecular_docking` 的关键参数（完整说明见工具 docstring）：
 
 | 参数 | 作用 |
 | --- | --- |
-| `receptor_file` / `receptor_sources` | 上传受体文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt）或预置/多个受体（蛋白质库，全组合对接） |
+| `receptor_file` / `receptor_sources` | 上传受体文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt）或多个受体（蛋白质库，全组合对接）。**未指定受体时本工具在调用任何引擎之前直接返回 `{"status":"needs_user_input","missing":["receptor"]}`**（预置受体只用于内部测试，绝不回退） |
 | `molecule_file` / `molecules_json` | 小分子库文件或直接 JSON；`top_from_previous=N` 表示从共享黑板取上一轮最好的 N 个精算 |
 | `keep_hetatm` | 逗号分隔的**要保留的非水杂原子残基名**（如 `HEM,ZN,NAD`）。默认空 = 标准流程剔除杂原子，但被剔除的残基会逐条计数返回 `dropped_hetatm` 并在 `notes` 中提示 |
 
@@ -886,6 +975,128 @@ C 方案（v0.12 起）每个对接结果行还带 `box_group`（`main`/`large`�
 `stage` 取值：`import` / `properties` / `pocket` / `docking` / `binding` / `report` / `done`
 （`stage=verify` 已随独立复核流程一并移除）。前端按 stage→节点映射推进运行图，
 并用事件里的 `ts` 计算每段的真实时长（见 §15）。
+
+### 10.4a 界面点选「代表结构」的续跑契约（v0.28）
+
+多组分 / 配位聚合物（如代森锰锌，PubChem 里是 Mn²⁺/Zn²⁺ + EBDC 片段）无法自动确定
+「用哪种化学形式对接」，系统会下发 4 个可点选项（原始多组分 / 金属-EBDC 单体 / 最大有机片段 / 不使用）。
+点选后前端必须把这次决定作为**请求字段**续跑（不能只把选项文案当普通消息发回去）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `molecule_choice` | 所选代表结构的 SMILES（直接作为本次分子库） |
+| `molecule_choice_decision` | 取法：`raw-mixture` / `metal-monomer` / `organic-fragment` / `custom`（写进报告追溯） |
+| `molecule_choice_label` | 选项展示名（写进运行笔记与报告） |
+
+受理层见到 `molecule_choice` 即把它当**用户已决定的配体来源**（`ligands.source="choice"`）：
+不再按名称重新查询、不再询问代表结构；指令里会写明「**用户在界面选定**的化学形式：…，
+不要再询问代表结构」，报告「关键假设」一节同步留痕。与 `positive_control` /
+`positive_control_decision` 一样，这三个字段属于**明确的用户决定**，`advanced=false` 也必须下发。
+
+真实缺陷（用户反馈「我选择了，但没有正常工作」）：
+
+1. 点选只把 `choice.prompt` 当普通消息发回 → 后端按名称重新查询又是多组分 → **再问一次**；
+2. 追问的消息里通常只有分子（没有受体），而受体继承原先只在上一轮用户写出**带「酶/蛋白/受体」
+   后缀**的名字时才启用 —— 「把拟南芥ROS1和代森锰锌对接」这种**基因符号**写法不被识别，
+   于是上一轮已解析的 `Q9SJQ6 / 7YHP` 被丢掉 → 受理层判 `ask`（只问受体，什么都不跑）。
+
+修复后：`molecule_choice*` 走请求字段（确定性）；受体继承额外识别基因符号式点名
+（`ROS1` / `EGFR` / `TP53`…，带非受体缩写停用表），优先继承上一轮已解析出的 accession/PDB。
+两条都有回归：`tests/test_intake.py`（点选即 `decision=run`、仅有基因符号也能继承、
+ADMET/PDB 之类缩写不得被当成受体）与 `scripts/browser_check.py`（真浏览器点选后，
+续跑请求必须带 `molecule_choice*` 且仍在同一会话）。
+
+#### 候选选择的生命周期：**一个问题只问一次、只显示一份**（v0.33）
+
+真实反馈（2026-09-22）：「配体选择出现了两次，一个很快很短，另一个慢、会说受体解析完成，
+并且会覆盖之前的输出；点了先出现的那个选项，后面的选项就出不来了。」四条不变式：
+
+| 层 | 不变式 | 实现 |
+| --- | --- | --- |
+| 服务端（单次运行） | 同一问题（同 `kind` + 同选项 id 序列）**只发布第一次**：重复发布不改写已下发的候选、不重复记日志，也不再发 SSE | `tools/choices.py::publish_choices`；`clear_choices(kind)` 会撤销该类的幂等标记，保证「先问 → 已答 → 又问」仍能下发 |
+| 服务端（运行状态） | 停下来等用户点选 **不是 `no_op`**：工具确实跑过（例如受体已解析），状态记为 `needs_user_input`，`no_report_reason` 写「等待在界面上选择」 | `agents/persistence.py` + `api/routers/agent.py` |
+| 客户端（显示） | 候选**按 `kind` 分组**：分子 / 受体 / 阳性对照各是一问，后到的问题不得覆盖先到的（同一气泡内可并存多组） | `web/app.js` `clearChoices(kind)` / `showChoices` / `renderChatHistory`（`data-choice-group`） |
+| 客户端（时机） | 收到 `choices` **只缓冲、不立刻渲染**：本轮模型输出结束（`done`/流结束）后才挂出按钮 —— 模型还在输出时点选会与进行中的运行抢跑，那次选择可能取不到 | `web/app.js` `handleChoicesEvent` → `flushDeferredChoices()`（`setRunning(false)`）；`web/simple.js` `state.deferredChoices` → `flushDeferredChoices()`（流结束的 `finally`，先解除 busy 再渲染） |
+| 客户端（点选） | 运行中候选按钮**点不动**；程序路径被调用时给出明确提示且**不清空**按钮；载入运行记录时按 `run.choices` 补挂候选 | `web/app.js` `applyChoice` / `setRunning`；`web/simple.js` `applyChoice` / `setBusy` / `loadRun` |
+
+回归：`tests/test_choices_lifecycle.py`（5 项：首次为准、清空后可再问、清一类不动另一类、
+等选择状态、对照组仍是 `no_op`）与 `scripts/browser_check.py` 的「候选选择交互」一节
+（两问共存、回答其一不清另一、运行中点不动且不先清空）。
+
+### 10.4b 受体不可用时**绝不计算**（v0.28，用户裁决）
+
+产品底线：计算对象不可用 / 不明确时零计算，且**不得**改用任何预置受体（预置受体只用于内部测试）。
+v0.28 之前有两处静默兜底，只在小字笔记里说明就继续跑完：
+
+| 情形 | 旧行为（已删除） | 新行为 |
+| --- | --- | --- |
+| 上传的受体文件准备失败（不存在 / 内容不是结构 / 缺化学模板） | 回退 凝血酶(thrombin, 1DWC) 继续对接 | `core.receptors.ReceptorInputError`（`reason=prepare_failed`）→ 工具返回 `needs_user_input` + 三选一 |
+| 受体名既不是 PDB 号 / UniProt / 基因蛋白名，也不是可读结构文件 | 同上（笔记写「未识别受体，已回退默认」） | 同上（`reason=unrecognized`，选项为 PDB 号 / 名称 / 上传文件） |
+
+统一处理链路：`tools/choices.py::receptor_input_problem()` / `receptor_input_guard()`：
+
+1. 回给模型与用户的是 `{"status":"needs_user_input","missing":["receptor"],"reason":…,"options":[…],
+   "message":"<原因> + 三选一"}`；
+2. 同时把本次运行的 `task_spec.receptor.source` 写成 `unresolved`（`resolution.status="input_invalid"`），
+   于是 `run_docking` 的护栏在**代码层**拦住后续调用（不靠模型自觉）；
+3. **任何引擎都不会被启动**（回归 `tests/test_receptor_ext_upload.py` 会断言零引擎调用、
+   且不可用输入不产出任何受体 spec —— 注册表里的预置受体一个都不许出现）。
+
+「校验文件」端点（`POST /api/uploads/inspect`）本来就对准备失败返回 **400 + 脱敏后的原因**，
+行为不变。
+
+### 10.5 对话回复的形态与条件纪律段（v0.27）
+
+**对话回复只给简短总结**（用户看到的主产出是报告产物，不是聊天里的长文）：
+
+1. 对本次需求的理解与任务分配（1–2 句）；
+2. 实际执行了什么：受体与来源、位点来源、关键参数、跳过/失败的步骤及原因；
+3. 关键数值与结论：推荐分子**最多前 3 名**（按 `rank` 顺序原样引用数值）与筛选依据；
+4. 风险与局限（数据缺失、失败步骤、被丢弃的辅因子、实际参与对接的化学形式等）；
+5. 报告与数据产物的**真实**下载链接。
+
+早期提示词里另有一份「7 节聊天报告」清单，与产物报告的 §0–§9 骨架是两套编号，
+容易让模型把整份报告复述进对话（用户反馈过「同一批内容出现两次」），现已删除。
+
+**Agent 之间的信息传递（v0.28）**：同一条信息服务两个受众 —— 工具产物（`*_tool.json`）
+保留**全量**明细（报告、排序、审计读它），回给模型的载荷只带**决策与转述**所需字段：
+
+| 受众 | 拿到的内容 |
+| --- | --- |
+| 报告/审计（产物文件） | 逐分子完整溯源：质子化 `method`/`variants`/`variant_rule`/`rules`、`box_atom_stats`、全部 `ligand_warnings`… |
+| 模型（工具返回值 / 子 Agent 回执） | 数据字段 + 压成聚合口径的质子化（`policy/applied/engine/engine_version/ph/charge_*`）、最多 2 条告警、参数块与产物路径 |
+
+实测 3 分子载荷：属性 −45%、对接 −49%、结合模式 −20%（`tests/test_agent_payloads.py` 逐条看护，
+且断言「视图更小、产物更全」）。子 Agent 的回执另有**契约级**约束：`reports.py` 的
+`agent_note` 由校验器压成「一句、≤80 字」，配合 `prompts.OUTPUT_ECONOMY`
+（只输出契约 JSON、不复述明细数值、明细按文件交接）。
+
+**条件纪律段**：系统提示词在**每次模型调用**上重发，「执行纪律」占全文 55%，
+但单次运行通常只用到其中几条。因此 `config/agent_llm_config.json` 的 `sp` 用
+`<!-- block:KEY -->` 标记出四个条件段（上传处理 / 受体纪律 3c / 两阶段漏斗 / 特殊体系），
+协调 Agent 的 `dynamic_prompt` 中间件按本次运行事实抽掉不相关的段：
+
+| 条件段 | 抽掉的条件 | 依据 |
+| --- | --- | --- |
+| `upload_files` | 确认没有上传 | `task_spec.ligands/receptor.file`、请求里的 `molecule_file`/`receptor_file` |
+| `receptor_discipline` | 受体已落实（`receptor.source` 非 `default`/`named`） | `task_spec.receptor.source` |
+| `funnel_two_stage` | 指令里已带自动规划建议，或库 < `AGENT_FUNNEL_MIN` | `result.param_plan` / `task_spec.ligands.count` |
+| `special_systems` | 已看过一份**干净**的对接结果 | `run.data["prompt_facts"]`（对接工具记账） |
+
+安全方向写死：**配置里没有标记 → 全文**、**事实未知 → 注入**、**组装异常 → 全文**
+（宁可多花 token，不可丢纪律）。实测：全文 10,015 字符 ≈ 6,327 tokens，
+常见小库运行 ≈ 5,763 字符 ≈ 3,778 tokens（省 ≈ 2,549 tokens **每次模型调用**）。
+
+提示词因此不再是常量，所以每次注入都记进 `result.prompt_blocks`：
+
+```json
+{"injected": [], "skipped": ["funnel_two_stage", "receptor_discipline", "special_systems",
+ "upload_files"], "full_chars": 10015, "used_chars": 5763,
+ "facts": {"has_upload": false, "receptor_pending": false, "library_size": 12, "has_plan": true,
+           "docking_seen": true, "hetero_atoms": false, "special_chemistry": false}}
+```
+
+回归见 `tests/test_prompt_blocks.py`（重点全在安全方向：不知道就注入、解析不出就退回全文）。
 
 ---
 
@@ -1014,6 +1225,22 @@ LLM_API_KEY_POCKET=
 
 服务默认只监听 `127.0.0.1`；`python -m docking_agent -m http --host 0.0.0.0` 可改为对外监听，
 但**本服务没有鉴权**（设置接口可改端点、连通性测试会携带当前密钥发请求），请勿暴露到不可信网络。
+
+### 安全边界（无鉴权前提下的默认防线）
+
+服务定位是**本机工具**，因此除了"默认只监听回环地址"之外，还内置了下面几道与监听地址无关的守卫：
+
+| 防线 | 行为 | 位置 |
+| --- | --- | --- |
+| **同源校验** | 写请求（`POST`/`PUT`/`PATCH`/`DELETE`）若带 `Origin` 且与 `Host` 不同源 → **403**；`Sec-Fetch-Site: cross-site` 同样 403。**缺 Origin**（curl / 测试 / 同源导航）放行 | `api/app.py` 的 `_security_boundary` 中间件 |
+| 反向代理白名单 | 浏览器看到公网 Origin、服务看到内网 Host 时，用 `DOCKING_ALLOWED_ORIGINS`（逗号分隔完整 Origin）声明允许来源 | 同上（`.env.example` 有登记） |
+| **CSP / 安全响应头** | 所有响应带 `Content-Security-Policy`（`script-src 'self'`，与"前端无内联脚本"一致）、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: same-origin` | 同一中间件 |
+| **标识符白名单** | `run_id` / `thread_id` / `conversation_id` 必须是单层安全片段（`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`），且解析后必须仍在运行/线程目录之下；不合法一律 **400** | `runs.py:safe_run_component` / `ensure_inside` |
+| **上传目录限定** | `POST /api/uploads/inspect` 只接受 `assets/uploads` 之下的路径（它的语义是"校验**已上传**文件"）；越界 **403**，且错误信息脱敏、不回显文件内容 | `api/app.py:api_upload_inspect` |
+| 脱敏 | 解析失败提示**不回显疑似凭据行**（`.env` 之类误传时不会打印密钥）；对外错误体统一走 `_redact` | `core/normalize.py:_line_hint`、`api/app.py:_redact` |
+| 端点指纹 | `GET /api/models` **不回显**上游 `base_url` | `api/app.py:_fetch_endpoint_models` |
+
+> 这些守卫只降低"误暴露"的代价，**不能替代鉴权**：一旦对外监听，仍必须自行加认证与网络限制。
 
 ---
 
@@ -1172,8 +1399,8 @@ accession/基因名/英文名。受理层**不做网络请求**（保持零模�
 
 | 指令 | `receptor.source` | 判定 |
 | --- | --- | --- |
-| 完全没提受体 | `default` | `run`：用系统默认受体，并在回复/报告里写明「未指定受体，已使用系统默认 …」 |
-| thrombin/trypsin/1DWC/PDB 号/UniProt accession/上传受体文件 | `user` | `run`：按用户指定的受体执行 |
+| 完全没提受体 | `default` | **`ask`，零计算**：只提问并给出三条出路（① PDB 编号或 UniProt accession；② 受体基因/蛋白名，中英文；③ 上传结构文件）。提问文案里**不给示例编号**：助手回复中的示例编号曾被下一轮误当成用户指定（`user_only_text` + 「用户未点名则不扫助手文本」两道门保证不会）。**系统没有默认受体**，不回退、不提供预置受体候选 |
+| PDB 号 / UniProt accession / 受体名称 / 上传受体文件 | `user` | `run`：按用户指定的受体执行 |
 | 点名了具体受体（如「植物去甲基化酶ROS1」「ROS1」「EGFR」）但非注册表/PDB/accession 形状 | `named` | `run`：**第一步自动在线解析**；解析成功即继续完整流程 |
 | 自动解析**真失败**（一个都没查到）或**歧义/低置信**（工具写回） | `unresolved` | 不计算：把候选列成 `choices` 让用户选，或列出已尝试检索请用户补 PDB ID/accession/文件 |
 
@@ -1188,11 +1415,20 @@ accession/基因名/英文名。受理层**不做网络请求**（保持零模�
 之后写回（`tools/choices.py::mark_receptor_unresolved`）：解析失败/歧义时把本条规约的
 `receptor.source` 改成 `unresolved`，并附上**真实的已尝试检索**与**候选清单**。
 
-分发层护栏（代码保证，不靠模型自觉）：`run_docking` 发现 `receptor.source == "unresolved"` 时，
-在调用任何对接引擎**之前**返回
-`{"status":"needs_user_input","receptor":"…","attempts":[...],"candidates":[...],"message":"…"}`，
-**不调用** `molecular_docking`/`dock_library` —— 即使主管 Agent 没照提示停下来问，也绝不可能
-用默认受体把结果算出来。
+分发层护栏（代码保证，不靠模型自觉）：`unresolved_receptor_message(run)` 会在**任何子 Agent / 引擎工作之前**
+拦下两种情形 ——
+
+- `receptor.source == "unresolved"`（点名解析失败）：返回
+  `{"status":"needs_user_input","receptor":"…","attempts":[...],"candidates":[...],"message":"…"}`；
+- `receptor.source == "default"`（根本没指定受体）：返回
+  `{"status":"needs_user_input","missing":["receptor"],"message":"…"}`，**不给任何预置受体候选**。
+
+`run_docking()` 与 `run_pocket_analysis()` 都会先调它，**不调用** `molecular_docking`/`dock_library`
+或口袋工具 —— 即使主管 Agent 没照提示停下来问，也绝不可能用默认受体把结果算出来。
+
+分子侧护栏：`run_property_assessment()` 在没有 `molecules_json`、没有分子产物、黑板也没有分子时，
+直接返回 `{"status":"needs_user_input","missing":["ligands"],"message":"…"}`，不凭空做性质评估
+（见 §14.3e）。
 
 ### 14.1c 受体自动解析链（`core/resolve.py` + `tools/online.py`）
 
@@ -1224,8 +1460,41 @@ accession/基因名/英文名。受理层**不做网络请求**（保持零模�
 **分子侧同理**：`fetch_molecule_record` 支持中文别名映射（代森猛锌/代森锰锌 → Mancozeb）；
 命中多组分/配位聚合物（如 PubChem CID 3034368 的 Zn/Mn-EBDC）时**不臆造单一结构**，
 返回原始 SMILES、`is_mixture`、`components`、`representative_smiles`（最大有机片段）与
-`mixture_note`，并给出 `choices`（原始多组分 / Mn-EBDC 单体 / Zn-EBDC 单体 / 最大有机片段）
-让用户确认代表结构的取法。
+`mixture_note`，并**经结构化选择通道**下发 4 个可点选项（原始多组分 / Mn-EBDC 单体 /
+Zn-EBDC 单体 / 最大有机片段）让用户确认代表结构的取法。
+
+此时工具的**模型侧**返回是：
+
+```json
+{"status": "needs_user_input",
+ "message": "…代表结构的取法必须由用户确认，本工具**没有**导入任何分子（不替用户选择）。"
+            "选项已通过界面下发给用户（可直接点选）。**不要在回复里重复列出选项内容、"
+            "SMILES、候选清单或参数**；只用一两句话说明并请用户在界面上点选。",
+ "choices_published": {"kind": "molecule", "count": 4}}
+```
+
+即：**选项明细只走界面**（`run.data.choices` → SSE `choices` 事件 → 前端按钮），
+不再回流给模型 —— 否则主管 Agent 会把四个 SMILES 再抄成一张 A/B/C/D 表格，
+用户会在同一轮里看到同一问题两次（真实反馈）。共晶配体阳性对照的询问同样如此。
+
+#### 共晶配体 → 阳性对照的询问（v0.28 修复「问了但从不触发」）
+
+规划行为：受体结构自带共晶配体、且用户没给阳性对照时，**在调用任何对接引擎之前**返回
+`needs_user_input` 并下发两个选项（`positive_control:<chain:resid:resname>` 与
+`positive_control:none`）；判定**一次运行只做一次**（`run.data.cocrystal_check_done`），
+避免"跑完又问一次"。
+
+真实缺陷（用户实测）：这条询问**从来不触发**，运行日志写着
+`检测到共晶配体 5CM，但在 （无可读结构） 中都解不出 SMILES，因此未询问`。三个原因叠加：
+
+| 原因 | 位置 | 修法 |
+| --- | --- | --- |
+| 受体已被口袋 Agent 准备成 `<base>_<hash>_ph7.4.pdbqt`，只带出残基名，**没带原始 PDB 路径** —— 去配体的 PDBQT 里根本没有配体原子 | `core/receptors.py::_pdbqt_spec` | sidecar 记录 `source_pdb`（原始结构绝对路径），spec 与预览块一路带下去 |
+| 旧 sidecar 只存 `"cocrystal_ligand": "5CM"` 字符串，缺 `chain:resid:resname` 的 `key`，而 `cocrystal_ligand_smiles()` 按 key 取原子 | 同上 | 读 sidecar 时若缺 `key`，回到 `origin_path` 用 `guess_cocrystal_ligand()` 补全；**新** sidecar 直接存完整配体 dict |
+| 从标签里找 4 位 PDB 号的 `\b([0-9][A-Za-z0-9]{3})\b` 在 `7YHP_<hash>_ph7.4` 上匹配不到（`_` 是词字符，没有词边界） | `tools/choices.py::_ligand_candidate_paths` | 改用前后不接字母数字的断言，并同时查 `assets/cache` 与 `assets/receptor/cache`；候选只保留**真实存在**的文件 |
+
+回归：`tests/test_cocrystal_control_offer.py`（旧/新 sidecar、无原始结构时不询问、
+PDB 号提取容忍哈希后缀），以及引擎组里既有的上传/口袋/报告用例。
 
 ### 14.2 任务规约（`task_spec`）
 
@@ -1235,13 +1504,13 @@ accession/基因名/英文名。受理层**不做网络请求**（保持零模�
   "goal": "用户目标（或系统默认任务）",
   "authority": "manual|chat|chat+advanced",
   "decision": "run|ask|reject",
-  "receptor": {"name": "thrombin", "file": "", "source": "user|default|named|unresolved"},
+  "receptor": {"name": "", "file": "", "source": "user|default|named|unresolved"},
   "site": {"center": [], "size": [], "source": "user|tool"},
   "ligands": {"source": "text|file|mentioned|library", "count": 1, "text": "...", "file": ""},
   "positive_control": {"smiles": "", "provided_by": "user|none|skipped"},
   "params": {"engine": "vina", "exhaustiveness": 6, "n_poses": 1, "pocket_engine": "auto",
              "save_poses": true, "max_ligands": 0, "skip_positive_control": false},
-  "missing": [], "questions": [], "assumptions": ["未指定受体 → 使用默认受体 thrombin"],
+  "missing": [], "questions": [], "assumptions": [],
   "out_of_scope": false, "raw_request": "用户原文", "current_message": "本轮指令",
   "prior_turn_count": 0, "multi_turn_answer": false,
   "needs_llm": true, "source": "rules|rules+llm", "llm_status": "ok|invalid_json|error:...",
@@ -1257,14 +1526,18 @@ SSE `choices` 事件与 `GET /api/runs/{id}` 的 `run.choices` 给出结构化�
 - **`decision`**：`run`=必须完整跑完（不得中途询问）；`ask`=只说明缺什么并提问、不调工具；
   `reject`=超出系统能力、不调工具；`receptor.source=="named"` 是 `run` 的**唯一例外**：
   必须先自动解析，只有解析不确定时才可让用户选（见 §14.1b）；
-- **`missing` 不是阻断**：系统对受体/阳性对照/参数有默认值、位点由口袋工具确定；
-  分子缺失不再自动用示例库（见 §14.3e），改为向用户索取；
-  `ask` 成立有两种情形：① 受理模型明确置 `needs_user_input=true` 且用户未给出任何可识别分子来源；
-  ② **自动解析真失败（`receptor.source=="unresolved"`）**（见 §14.1b，多轮也不豁免）；
+- **`missing` 是给提问/报告用的记录，不是判定本身**：判定由受理层的 `_can_ask` 做，
+  `decision=run` 要求**受体与分子库都已指定**。`ask` 成立有三种情形：
+  ① 用户**没指定受体**（`receptor.source=="default"`，含高级设置预填值；系统**没有默认受体**）；
+  ② **受体自动解析真失败/歧义（`receptor.source=="unresolved"`）**（见 §14.1b，多轮也不豁免）；
+  ③ **没有任何可识别的分子来源**且用户未明确同意用示例库（`missing` 含 `"ligands"`）。
+  `missing` 因此会确定性地含 `"receptor"`（未指定受体时）或 `"ligands"`（没有分子来源时）；
+  受理模型置的 `needs_user_input` **不会**覆盖一个已完整指定的规约；
 - **`receptor.source`**：`user`（指令/表单显式指定，原样使用）、`default`（受理层未识别到受体，
-  只是系统/高级设置默认值）、`named`（点名了但待在线解析 → 仍 `run`，第一步自动解析）与
-  `unresolved`（自动解析真失败/歧义 → 不计算，列 `choices`/已尝试检索让用户决定）语义不同；
-  `default` 必须弱表述并让工具走空值回退（见 §7.1.1），报告与回复要写明「未指定受体，已使用系统默认」；
+  含高级设置预填值 —— **任何预填值都算未指定**）、`named`（点名了但待在线解析 → 仍 `run`，
+  第一步自动解析）与 `unresolved`（自动解析真失败/歧义 → 不计算，列 `choices`/已尝试检索让用户决定）
+  语义不同；`default` 与 `unresolved` 都会在任何引擎调用前被护栏转成 `needs_user_input`，
+  **不再弱表述、不再走空值回退**（见 §7.1.1）；
 - **模型只能补白名单字段**（`task_type`/`goal`/`mentioned_molecules`/`mentioned_receptor`/
   `needs_user_input`/`missing`/`questions`/`assumptions`/`out_of_scope`/`confidence`）；
   `params`/`site`/`positive_control`/`decision` 等受限字段一律忽略并记入 `llm_notes`；
@@ -1301,23 +1574,32 @@ SSE `choices` 事件与 `GET /api/runs/{id}` 的 `run.choices` 给出结构化�
   `run_docking(molecules_file=…)`（`molecule_file` 的别名）—— 全部可留空回退黑板；
 - 读取统一走归一化层：产物 JSON（`[{…}]` 或 `{"molecules":[…]}`）与用户上传的
   SDF/CSV/SMI/MOL2 同一入口（`core.ligands.read_molecules_any()`）；
-- 子 Agent 提示词与协调 Agent 提示词都写明了这条纪律（`agents/prompts.py::DATA_HANDOFF_RULE`）。
+- 子 Agent 提示词与协调 Agent 提示词都写明了这条纪律，且**只点名该角色真的拥有、且真的接受文件参数的工具**：`agents/prompts.py` 的 `DATA_HANDOFF_{COORDINATOR,PROPERTY,DOCKING,BINDING}` 按角色分别拼装
+  （口袋 Agent 的工具不接收文件参数，故不拼该块；`run_property_assessment` 没有 `molecules_file` 参数——
+  它自己把本次运行的产物路径交给子 Agent，协调层**留空调用**即可）。这条约定由
+  `tests/test_agent_conventions.py::test_prompt_tool_calls_only_mention_real_parameters` 用工具真实
+  `args_schema` 兜住（另有负向用例验证守卫本身有效）。
 
 ### 14.3e 默认不使用示例受体/示例分子库（v0.18，产品要求）
 
-内置示例分子库与注册表里的预置受体**只在明确调用时使用**：
+内置示例分子库**只在用户明确要求时使用**；注册表里的预置受体则**只用于内部测试，
+不是用户可选来源**（`available_receptors` 已删除，协调 Agent 也不再绑定 `list_known_receptors`）：
 
 | 场景 | 行为 |
 | --- | --- |
 | 用户上传/给出了分子 | 用用户的分子（`ligands.source` = `file`/`message`/`text`） |
-| 用户**什么分子都没给** | **不使用**示例库：指令里明确写「不要擅自使用内置示例库…请向用户索取候选分子库」，`import_molecule_library` 返回 `no_molecules` → 由受理层/协调 Agent 向用户要分子 |
+| 用户**什么分子都没给** | **不使用**示例库：`decision=ask`、零计算，请用户给分子来源（`missing` 含 `"ligands"`）；`run_property_assessment` 在无 `molecules_json`、无分子产物、黑板无分子时同样返回 `needs_user_input` |
 | 用户**明确**说「用示例库」 | 受理层确定性识别（`intake.user_requested_example_library`）→ 指令里给出 `allow_example_fallback=true`，才加载示例库 |
 | 参数模式表单里选中「示例库」来源 | 界面显式传 `allow_example_fallback=true`（用户自己的选择） |
 
 服务端默认值同步收紧：`AgentRequest.allow_example_fallback` 的默认值是
 **False**（此前是 True，导致 API/CLI 调用方在没给分子时被静默换成别人的分子）。
-协调 Agent 提示词里也删掉了「缺省用 thrombin/1DWC」这类默认受体点名，改为
-**受体缺省时以工具返回的 notes/结果块为准，不得自行假定受体名**。
+
+受体侧进一步收紧（本版）：**系统没有默认受体**，`thrombin`/`trypsin` 等注册表条目
+**只用于内部测试**，不再出现在任何 Agent 的工具面与提示词里，也不再是用户可选来源
+（`GET /api/receptors` 降级为内部/诊断端点，网页界面不再调用）。受体未指定
+（`receptor.source == "default"`）时只提问、零计算；用户要用注册表里的蛋白时，
+把它当基因/蛋白名写出来（走在线解析）或直接上传结构文件。
 
 ### 14.3c 附件清单不是名称来源（v0.16，真实缺陷修复）
 
@@ -1468,12 +1750,16 @@ SSE `choices` 事件与 `GET /api/runs/{id}` 的 `run.choices` 给出结构化�
     "gpu": {"ok": true, "tool": "nvidia-smi", "devices": ["GPU 0: NVIDIA GeForce RTX 5090"]}
   },
   "p2rank": {"ok": true, "detail": "/path/prank", "hint": ""},
-  "pdb2pqr": {"ok": false, "detail": "", "hint": "设置 PDB2PQR_BIN 指向可用的 pdb2pqr"}
+  "pdb2pqr": {"ok": false, "detail": "", "hint": "设置 PDB2PQR_BIN 指向可用的 pdb2pqr"},
+  "pka": {"ok": true, "detail": "dimorphite-dl 2.0.2", "hint": ""}
 }
 ```
 
 `engine.state` 取值：`not_configured`（未提供，用内置 CPU Vina）、`ready`、`no_gpu`、
 `invalid`（路径/权限问题）、`probe_failed`、`unrecognized`（无法识别引擎类型）。
+
+`pka` 是**配体质子化的专业 pKa 引擎**（Dimorphite-DL）：`ok=false` 时配体 pH 处理会回退
+内置规则表，`hint` 给出 `--no-deps` 安装命令（其元数据把 `rdkit` 钉在 `<2026`，直接安装会降级 RDKit）。
 除 `not_configured` 与 `ready` 之外的状态都会让对接任务**拒绝启动**并返回 `hint` 中的补齐方法。
 
 ## 标准 Agent Protocol 面（兼容子集，阶段 1）
@@ -1511,7 +1797,7 @@ event: metadata          data: {"run_id": "run_<uuid>", "attempt": 1, "thread_id
                                 "assistant_id": "...", "graph_id": "..."}
 event: messages/partial  data: [{"type": "AIMessageChunk", "content": "增量文本", "id": "..."}]
 event: updates           data: {"<节点名>": {...}}
-event: custom            data: {...}     # 领域事件：stage / molecules / progress / choices / tool_call / tool_result
+event: custom            data: {...}     # 领域事件：stage / molecules / progress / choices / thinking / tool_call / tool_result
 event: messages/complete data: [{"type": "AIMessage", "content": "最终文本", ...}]
 event: values            data: {...}     # 最终状态（含业务 run id）
 event: end               data: null
@@ -1562,6 +1848,45 @@ event: error             data: {"error": "<code>", "message": "...", "where": {.
 `values` → `done`；`error` / `end` 各自处理），因此渲染、折叠、取消、结果载入与历史
 行为与改造前**完全一致**。取消先试标准端点 `POST /threads/{tid}/runs/{rid}/cancel`，
 失败再退回 `/api/runs/{run_id}/cancel`。
+
+### 思维链（`thinking`）：只作为折叠块下发，绝不进正文
+
+模型推理（DeepSeek `reasoning_content`、Responses 风格 `summary`、`<thinking>` 等标签、
+content blocks 里的 `thinking`/`reasoning` 块）在 `runtime/streaming.py` 里被
+`reasoning_of()` / `split_thinking()` **抽出来**，作为独立领域事件下发：
+
+```json
+{"type":"thinking","content":"先看口袋再定盒子…","node":"model"}
+```
+
+- 走 `custom` 帧（`api/agent_service.py` 的 `_DOMAIN_TYPES` 含 `thinking`），**不混进
+  `messages/partial`**：正文只保留结论，避免大段推理刷屏；
+- 两套界面都把它渲染成气泡**正文之前**的「思考」块，交互同市面主流：推理流式期间**展开可见**
+  （标题「思考中 · N 字」），**正文一开始到达就自动收起**成「思考 · N 字 · 用时 X 秒」，
+  任何时候点一下都能展开看推理全文；
+- 助手正文与报告块**不再默认折叠**：长回执全文直接显示（历史实现有 24 行 / 1800 字符阈值
+  与「展开全文」按钮，已按用户要求移除）；默认收起的只有推理块本身；
+- 助手正文**流式阶段也按 Markdown 渲染**（渲染器是 `web/markdown.js` 的单一实现，
+  两套界面共用；先转义再生成标签，链接/图片过方案白名单）。
+
+### 步数预算：跑满递归上限**自动放宽 → 主管 Agent 收尾**（v0.34）
+
+产品准则：系统尽可能自动处理，**只有影响对接本身的问题**才需要用户决定。「跑满步数」是执行细节，
+因此命中 `GRAPH_RECURSION_LIMIT` 时**不报错**：
+
+1. 自动放宽上限（`RECURSION_LIMIT` → ×2 → ×4，天花板 `RECURSION_LIMIT_MAX`，默认 480），
+   从 checkpoint 继续跑（`payload=None`，不重放用户消息）；协调 Agent 与子 Agent 同一套策略；
+2. 放宽到最后一档时，往图里注入一条 **SystemMessage** 收尾提示（要求用已有结果给结论、
+   不要再起长流程工具），让它用剩余步数收尾；
+3. 到顶仍继续 → 如实发一条领域事件并**正常结束**（用现有结果落盘、照常出报告）：
+
+```json
+{"type":"limit","limit":120,"next_limit":240,"message":"已达步数上限（120 步）：已自动放宽到 240 步继续，无需用户操作"}
+```
+
+`next_limit=0` 表示已到天花板、转为收尾。该事件走 `custom` 帧（`_DOMAIN_TYPES` 含 `limit`），
+前端只把它显示成状态文案，**不产生任何需要用户回答的问题**；同时写入运行日志便于复盘。
+子 Agent 若到顶，如实返回 `{"status":"agent_step_limit", ...}` 交主管 Agent 决策（不抛异常）。
 
 ### 哪些旧端点被标成废弃
 

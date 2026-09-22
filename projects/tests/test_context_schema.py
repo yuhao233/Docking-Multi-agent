@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -35,7 +37,7 @@ class _Runtime:
 # 1) 双读语义
 # --------------------------------------------------------------------------- #
 def test_active_helpers_prefer_runtime_over_contextvar() -> None:
-    from docking_agent.agents.blackboard import current_blackboard
+    from docking_agent.runtime.blackboard import current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.runtime.context import new_context, request_context
 
@@ -123,24 +125,29 @@ def test_context_reaches_tool_through_graph() -> None:
 
 
 def test_context_reaches_real_project_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """真实工具（molecular_property_assessment）也要从 runtime 里拿到上下文。"""
+    """真实工具必须把 `runtime` 透传给**上下文感知**的助手，而不是丢掉它。
+
+    历史：这里曾断言工具会调用 `active_request(runtime)` —— 但那行赋值的结果从未被读过
+    （2026-09-21 审计认定的死代码，已删除）。现在钉住真正被消费的入口：
+    按文件读分子时，工具必须把 runtime 透传给 `_coerce_molecule_list`。
+    """
     from docking_agent.tools import properties
 
     captured: Dict[str, Any] = {}
-    real_request = properties.active_request
 
-    def _fake_request(runtime: Any = None) -> Any:
-        captured["runtime_ctx"] = context_of(runtime)
-        return real_request(runtime)
+    def _fake_coerce(value: Any = "", runtime: Any = None) -> Any:
+        captured["value"] = value
+        captured["runtime"] = runtime
+        return [{"name": "乙醇", "smiles": "CCO"}]
 
-    monkeypatch.setattr(properties, "active_request", _fake_request)
-
+    monkeypatch.setattr(properties, "_coerce_molecule_list", _fake_coerce)
     marker_run = object()
-    properties.molecular_property_assessment.func(
-        molecules_json='[{"name":"乙醇","smiles":"CCO"}]',
-        runtime=_Runtime(AgentContext(run=marker_run)))
-    assert captured["runtime_ctx"] is not None, "工具没有把 runtime 传给 active_request"
-    assert captured["runtime_ctx"].run is marker_run
+    out = json.loads(properties.molecular_property_assessment.func(
+        molecules_file="lib.sdf", runtime=_Runtime(AgentContext(run=marker_run))))
+
+    assert captured.get("runtime") is not None, "工具没有把 runtime 透传给上下文感知的助手"
+    assert context_of(captured["runtime"]).run is marker_run
+    assert out["status"] == "ok"
 
 
 # --------------------------------------------------------------------------- #
@@ -204,7 +211,13 @@ def test_project_graph_callers_pass_context() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "src" / "docking_agent"
-    app = (root / "api" / "app.py").read_text(encoding="utf-8")
+    # 第 2 波把 api/app.py 拆成 routers/* + support.py + agent_flow.py，
+    # 因此扫**整个 api 包**（图调用点现在分布在 routers/agent.py 与 routers/legacy.py）。
+    api_dir = root / "api"
+    app = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted([api_dir / "app.py", api_dir / "support.py", api_dir / "agent_flow.py"]
+                        + list((api_dir / "routers").glob("*.py"))))
     cli = (root / "cli.py").read_text(encoding="utf-8")
     assert "context=current_agent_context()" in app
     assert "context=AgentContext(run=run)" in app, "兼容端点要显式传 run"

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata as md
+
+import pytest
 import tomllib
 from pathlib import Path
 
@@ -55,3 +57,42 @@ def test_console_script_entrypoint_is_importable() -> None:
         module = importlib.import_module(module_name)
         entry = getattr(module, attr, None)
         assert callable(entry), f"{name} → {target} 不可调用"
+
+
+def test_runtime_layout_guard_fails_loudly_on_wheel_install(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """wheel 安装（缺 `config/` / `web/` / `assets/`）必须**当场失败或响亮告警**。
+
+    本系统按**源码检出**运行：前端、受体注册表、示例资源都在仓库里，不在 wheel 内。
+    没有这道自检时，用户会看到「前端 404 / 找不到受体注册表」这类晦涩症状。
+    """
+    from docking_agent import paths
+
+    monkeypatch.setenv("DOCKING_WORKSPACE", str(tmp_path))
+    assert sorted(paths.missing_layout_dirs()) == ["assets", "config", "web"]
+    with pytest.raises(RuntimeError, match="布局不完整"):
+        paths.assert_runtime_layout(strict=True)
+    paths.assert_runtime_layout(strict=False)          # 非严格：只告警，不打断
+    for name in paths.LAYOUT_DIRS:
+        (tmp_path / name).mkdir()
+    assert paths.missing_layout_dirs() == []
+    paths.assert_runtime_layout(strict=True)           # 补齐后通过
+
+
+def test_runtime_layout_is_intentionally_outside_the_wheel() -> None:
+    """打包口径**明确为源码检出 / editable 安装**（审计 3.8 的方案 B）。
+
+    理由：`assets/cache`、`assets/uploads`、`config/local_settings.json`、`var/` 都是
+    **运行期写入**的目录，塞进 site-packages 属于错误设计；因此**不提供 force-include**，
+    而是在真正的服务入口（`cli -m http`）用 `strict=True` 当场失败，而不是等前端 404。
+    这条用例把「声明」和「执行」绑在一起：谁只加一半（例如加了 force-include 却仍按
+    文件系统路径读资源）都会在这里变红。
+    """
+    wheel = _pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert "force-include" not in wheel, (
+        "不要用 force-include 把运行期可写资源塞进 wheel；如需支持 wheel 安装，"
+        "必须同时把 paths.py 改成 importlib.resources 解析并处理可写目录")
+    cli = (PROJECT_DIR / "src" / "docking_agent" / "cli.py").read_text(encoding="utf-8")
+    assert "assert_runtime_layout(strict=True)" in cli, "HTTP 服务入口必须严格自检运行布局"
+    readme = (PROJECT_DIR / "README.md").read_text(encoding="utf-8")
+    assert "editable" in readme and "-e ." in readme, "README 必须写明只支持 editable 安装"

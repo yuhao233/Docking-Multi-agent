@@ -355,7 +355,7 @@ def test_run_store_roundtrip(tmp_path):
 
 
 def test_json_dump_no_molecules_result(tmp_path, monkeypatch) -> None:
-    from docking_agent.tools.dispatch import import_molecule_library
+    from docking_agent.agents.dispatch import import_molecule_library
 
     # 仅验证没有分子时的明确提示（不触发对接），且结果可 JSON 序列化
     result = json.loads(import_molecule_library.func(query_or_text=""))
@@ -428,7 +428,6 @@ def test_all_internal_imports_resolvable():
     """
     import ast
     import importlib
-    from pathlib import Path
 
     root = PROJECT_ROOT
     files = (list((root / "src" / "docking_agent").rglob("*.py"))
@@ -447,8 +446,17 @@ def test_all_internal_imports_resolvable():
                 problems.append(f"{f}:{node.lineno} 模块导入失败 {node.module}: {e}")
                 continue
             for alias in node.names:
-                if alias.name != "*" and not hasattr(mod, alias.name):
-                    problems.append(f"{f}:{node.lineno} {node.module} 没有 {alias.name!r}")
+                if alias.name == "*":
+                    continue
+                if hasattr(mod, alias.name):
+                    continue
+                # `from pkg import submodule`：子模块只有在**被导入过**之后才是 pkg 的属性。
+                # 惰性 facade（core/__init__.py 的 PEP 562）与函数内延迟导入都会让它暂时缺席，
+                # 因此这里直接尝试导入 `pkg.submodule` —— 能导入就说明引用可解析。
+                try:
+                    importlib.import_module(f"{node.module}.{alias.name}")
+                except Exception as e:  # noqa: BLE001
+                    problems.append(f"{f}:{node.lineno} {node.module} 没有 {alias.name!r}（{e}）")
     assert problems == [], "存在无法解析的内部导入：\n" + "\n".join(problems)
 
 
@@ -515,3 +523,12 @@ def test_parse_smiles_text_ignores_prose_but_keeps_embedded_molecules():
     assert {m["name"] for m in mols} == {"华法林", "布洛芬"}, mols
     # 纯散文（无 SMILES）不应抽出任何分子
     assert extract_smiles("帮我看看这个受体的成药性怎么样") == []
+
+
+def test_extract_smiles_accepts_chinese_enumeration_comma() -> None:
+    """中文顿号「、」是并列分子的常见写法，必须能被切开（否则会被误判成「没有分子」）。"""
+    from docking_agent.core.ligands import extract_smiles
+
+    mols = extract_smiles("帮我筛这两个分子 CCO、CCN，未指定受体")
+    assert [m["smiles"] for m in mols] == ["CCO", "CCN"], mols
+    assert len(extract_smiles("筛一下这两个 CCO、CCN、CCC")) == 3

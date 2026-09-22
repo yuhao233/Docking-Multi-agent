@@ -24,7 +24,7 @@ ensure_runtime_env()
 # 共享黑板（P0.3）
 # --------------------------------------------------------------------------- #
 def test_blackboard_is_thread_safe_and_dedupes():
-    from docking_agent.agents.blackboard import Blackboard
+    from docking_agent.runtime.blackboard import Blackboard
 
     board = Blackboard("R1")
     added = board.add_molecules([{"name": "乙醇", "smiles": "CCO"},
@@ -37,7 +37,7 @@ def test_blackboard_is_thread_safe_and_dedupes():
 
 def test_blackboard_enables_lateral_collaboration():
     """属性 Agent 写入 → 对接 Agent 读取 → 结合模式 Agent 交叉核验（横向协作链路）。"""
-    from docking_agent.agents.blackboard import Blackboard, board_molecules_json, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, board_molecules_json, current_blackboard
 
     board = Blackboard("R2")
     token = current_blackboard.set(board)
@@ -65,7 +65,7 @@ def test_blackboard_enables_lateral_collaboration():
 
 def test_cross_check_flags_inconsistencies():
     """check_binding_consistency 必须识别「强对接但骨架不像」「骨架像但对接弱」。"""
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.tools.binding import check_binding_consistency
 
     board = Blackboard("R3")
@@ -129,7 +129,7 @@ def test_json_extraction(raw, ok):
 
 def test_dispatch_retries_once_then_succeeds(monkeypatch):
     """首次返回垃圾 → 自动带纠正提示重试一次 → 拿到合法 JSON。"""
-    import docking_agent.tools.dispatch as dispatch
+    import docking_agent.agents.dispatch as dispatch
 
     replies = iter(["我不是 JSON", '{"status":"ok","assessment":[{"smiles":"CCO"}]}'])
     calls = []
@@ -146,7 +146,7 @@ def test_dispatch_retries_once_then_succeeds(monkeypatch):
 
 def test_dispatch_reports_invalid_output_after_retry(monkeypatch):
     """两次都失败 → 返回显式的 agent_output_invalid（而不是把垃圾丢给协调 Agent）。"""
-    import docking_agent.tools.dispatch as dispatch
+    import docking_agent.agents.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "invoke_worker", lambda *a, **k: "依然不是 JSON")
     out = json.loads(dispatch._invoke_checked(None, "msg", "docking", "docking"))
@@ -221,3 +221,36 @@ def test_sub_agents_use_role_specific_models(monkeypatch):
         assert models["binding"] == "base-model", "未单独配置的角色回落到全局模型"
     finally:
         w.reset_workers()
+
+
+# --------------------------------------------------------------------------- #
+# store 黑板视图的缓存生命周期（审计 §2.1：`_store_boards` 是真实的进程内泄漏）
+# --------------------------------------------------------------------------- #
+def test_store_blackboard_view_is_reused_and_forgettable() -> None:
+    """同一 (store, run) 复用同一个视图；运行结束可显式丢弃且幂等。"""
+    from docking_agent.runtime.blackboard import (forget_store_blackboard, shared_store,
+                                                  store_blackboard)
+
+    store = shared_store()
+    first = store_blackboard(store, "R-CACHE-1")
+    second = store_blackboard(store, "R-CACHE-1")
+    assert first is second, "同一 (store, run) 必须复用同一个黑板视图"
+    assert forget_store_blackboard("R-CACHE-1") == 1
+    assert forget_store_blackboard("R-CACHE-1") == 0, "重复丢弃必须幂等（0 条）"
+
+
+def test_store_blackboard_cache_is_bounded() -> None:
+    """即使某条路径漏了 forget，缓存也不会无限增长（FIFO 上限护栏）。"""
+    from docking_agent.runtime.blackboard import (_STORE_BOARDS_MAX, _store_boards,
+                                                  reset_store_blackboards, shared_store,
+                                                  store_blackboard)
+
+    store = shared_store()
+    reset_store_blackboards()
+    try:
+        for index in range(_STORE_BOARDS_MAX + 10):
+            store_blackboard(store, f"R-BOUND-{index}")
+        assert len(_store_boards) <= _STORE_BOARDS_MAX, "缓存必须被上限护栏截住"
+    finally:
+        reset_store_blackboards()
+    assert _store_boards == {}, "reset 后缓存必须为空"

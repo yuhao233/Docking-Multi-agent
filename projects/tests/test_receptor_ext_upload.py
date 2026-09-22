@@ -9,6 +9,11 @@
 
 本文件守住第 2 条，以及「上传端点与受体解析链共用同一份扩展名定义」。包含真实的
 meeko 现场准备与一次真实对接（1 个分子，exhaustiveness=1），耗时可控。
+
+**2026-09-22 行为变更（用户裁决）**：`.ent` 的支持早已补齐，但「准备失败 / 名字认不出就
+静默改用预置凝血酶继续跑」这条兜底被用户判为产品底线问题 —— 现在改为**硬错误**：
+`resolve_receptor_specs()` 抛 `ReceptorInputError`，工具层转成 `needs_user_input`
+（说清原因 + 给用户三选一），且**任何引擎都不会被启动**。本文件相应改为守住新行为。
 """
 from __future__ import annotations
 
@@ -111,47 +116,72 @@ def test_receptor_ext_set_is_case_insensitive() -> None:
 
 def test_ligand_extensions_are_not_guessed_as_receptor(tmp_path) -> None:
     """已知的非结构后缀（小分子库等）不得被猜成受体结构（按未识别处理）。"""
-    from docking_agent.core.receptors import is_structure_source, resolve_receptor_specs
+    from docking_agent.core.receptors import (ReceptorInputError, is_structure_source,
+                                              resolve_receptor_specs)
 
     sdf = tmp_path / "ligands.sdf"
     sdf.write_text("CCO\n", encoding="utf-8")
     assert is_structure_source(str(sdf)) is False
 
-    specs, notes = resolve_receptor_specs([str(sdf)])
-    assert specs[0].get("user_provided") is None, "小分子文件不得被当作受体准备"
-    assert any("未识别受体" in n for n in notes), notes
+    with pytest.raises(ReceptorInputError) as excinfo:
+        resolve_receptor_specs([str(sdf)])
+    assert excinfo.value.reason == "unrecognized"
+    assert "无法识别" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------- #
-# ② 不存在的 / 不可用的结构文件 → 回退默认，但 note 必须写明原因
+# ② 不存在的 / 不可用的结构文件 → **硬错误**（不再回退预置受体）
+#
+# 用户裁决（2026-09-22）：旧行为「回退 凝血酶(thrombin) 继续跑完并出报告」是产品底线问题 ——
+# 用户会拿到一份以凝血酶为受体的答非所问报告。现在必须报错、说清原因、把选择权交回用户。
 # --------------------------------------------------------------------------- #
-def test_missing_structure_file_falls_back_with_reason(tmp_path) -> None:
-    from docking_agent.core.receptors import resolve_receptor_specs
+def test_missing_structure_file_raises_with_reason(tmp_path) -> None:
+    from docking_agent.core.receptors import ReceptorInputError, resolve_receptor_specs
 
     missing = tmp_path / "definitely_missing.ent"
-    specs, notes = resolve_receptor_specs([str(missing)])
+    with pytest.raises(ReceptorInputError) as excinfo:
+        resolve_receptor_specs([str(missing)])
 
-    assert specs[0].get("key") == "thrombin" and not specs[0].get("user_provided")
-    joined = " ".join(notes)
-    assert "无法作为受体结构使用" in joined, joined
-    assert "不存在" in joined, f"note 要写清原因：{joined}"
-    assert "这不是你指定的受体" in joined, f"必须明说回退的不是用户指定的受体：{joined}"
+    err = excinfo.value
+    assert err.reason == "prepare_failed"
+    text = str(err)
+    assert "definitely_missing.ent" in text, text
+    assert "不执行任何计算" in text, text
+    # 必须给用户可选项（换文件 / 用编号或名称解析 / 修正后重试）
+    assert err.payload.get("options") == ["replace_file", "resolve_by_name", "fix_and_retry"]
+    assert "不要调用" not in text, "工具层才追加「不要重试」，异常本身只讲事实与出路"
 
 
-def test_unusable_structure_file_falls_back_with_reason(tmp_path) -> None:
-    """内容不是结构（只有一行文字）的 .ent：回退默认 + note 写明准备失败原因。"""
-    from docking_agent.core.receptors import resolve_receptor_specs
+def test_unusable_structure_file_raises_with_reason(tmp_path) -> None:
+    """内容不是结构（只有一行文字）的 .ent：同样硬错误，且原因要能读到。"""
+    from docking_agent.core.receptors import ReceptorInputError, resolve_receptor_specs
 
     broken = tmp_path / "broken.ent"
     broken.write_text("this file is not a protein structure\n", encoding="utf-8")
-    specs, notes = resolve_receptor_specs([str(broken)])
+    with pytest.raises(ReceptorInputError) as excinfo:
+        resolve_receptor_specs([str(broken)])
+    assert excinfo.value.reason == "prepare_failed"
+    assert "broken.ent" in str(excinfo.value)
 
-    assert specs[0].get("key") == "thrombin" and not specs[0].get("user_provided")
-    joined = " ".join(notes)
-    assert "broken.ent" in joined, joined
-    assert "无法作为受体结构使用" in joined, joined
-    assert "准备失败" in joined or "无法" in joined, joined
-    assert "这不是你指定的受体" in joined, joined
+
+def test_prepare_failure_never_falls_back_to_a_preset_receptor(tmp_path) -> None:
+    """底线回归：任何情况下都**不得**再出现「改用预置受体」的 spec。"""
+    from docking_agent.core.receptors import (RECEPTOR_REGISTRY, ReceptorInputError,
+                                              resolve_receptor_specs)
+
+    broken = tmp_path / "broken.ent"
+    broken.write_text("not a structure\n", encoding="utf-8")
+    produced = []
+    for arg in ([str(broken)], ["totally-unknown-receptor-xyz"], [str(tmp_path / "nope.pdb")]):
+        try:
+            specs, _notes = resolve_receptor_specs(arg)
+            produced.extend(specs)
+        except ReceptorInputError:  # 允许静默：本用例断言的就是「必须抛错」，异常即期望结果
+            pass
+    assert produced == [], f"不可用的输入不得产出任何受体 spec：{produced}"
+    keys = {str(s.get("key") or "") for s in produced}
+    for preset in RECEPTOR_REGISTRY:
+        assert preset not in keys, f"不得回退预置受体 {preset}"
 
 
 # --------------------------------------------------------------------------- #

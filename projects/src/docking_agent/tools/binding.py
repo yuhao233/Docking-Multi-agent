@@ -16,10 +16,9 @@ from typing import Any, Dict, List
 
 from langchain.tools import tool
 
-from docking_agent.agents import tool_io
-from docking_agent.agents.blackboard import get_blackboard
+from docking_agent.runtime import tool_io
 from docking_agent.core import compute_binding_report
-from docking_agent.runtime.context import AgentContext, active_blackboard, active_request, active_run, new_context, request_context
+from docking_agent.runtime.context import AgentContext, active_blackboard, active_run
 from langchain.tools import ToolRuntime
 
 logger = logging.getLogger(__name__)
@@ -48,7 +47,7 @@ def _rows_from_docking_file(path: str) -> List[Dict[str, Any]]:
 
 def _analyze(molecules_json: str, positive_control_smiles: str,
              molecules_file: str = "", runtime: Any = None) -> dict:
-    from docking_agent.agents.blackboard import board_molecules_json
+    from docking_agent.runtime.blackboard import board_molecules_json
 
     # 文件优先：大库按文件交接（运行产物 JSON 或用户上传的分子库文件都行）
     if (molecules_file or "").strip():
@@ -103,7 +102,6 @@ def positive_control_similarity(molecules_json: str = "", positive_control_smile
     similarity_to_positive_control（Morgan Tanimoto，越接近 1 越相似）、
     maccs_tanimoto、combined_similarity、structural_consistency]}
     """
-    ctx = active_request(runtime) or new_context(method="positive_control_similarity")  # noqa: F841
     try:
         report = _analyze(molecules_json, positive_control_smiles, molecules_file, runtime=runtime)
         rows = [{k: r.get(k) for k in _SIMILARITY_FIELDS} for r in report["rows"]]
@@ -112,6 +110,25 @@ def positive_control_similarity(molecules_json: str = "", positive_control_smile
     except Exception as e:  # noqa: BLE001
         logger.exception("阳性对照相似度计算失败")
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+
+
+#: 对照分子属性里给 Agent 的字段（报告 §5.3 只用相似度/一致性/锚定匹配；其余是审计明细）
+_CONTROL_PROPERTY_FIELDS = ("smiles", "protonated_smiles", "formula", "molecular_weight", "logP",
+                            "tpsa", "hbd", "hba", "rotatable_bonds", "heavy_atoms",
+                            "aromatic_rings", "lipinski_violations", "drug_likeness_pass")
+
+
+def _compact_properties(props: Any) -> Any:
+    """压掉对照属性里的逐字段散文（完整内容仍在 `binding_tool.json` 产物里）。"""
+    if not isinstance(props, dict):
+        return props
+    from docking_agent.core.protonation import compact_protonation
+
+    out = {k: props[k] for k in _CONTROL_PROPERTY_FIELDS if props.get(k) is not None}
+    prot = compact_protonation(props.get("protonation"))
+    if prot:
+        out["protonation"] = {k: prot[k] for k in ("policy", "applied") if k in prot}
+    return out
 
 
 @tool
@@ -132,7 +149,6 @@ def binding_mode_analysis(molecules_json: str = "", positive_control_smiles: str
       anchor_match（是否与对照共享 S1 口袋锚定基团）、mw_delta / logp_delta / tpsa_delta、
       structural_consistency（high/medium/low）与 binding_mode_hint（结合模式判断）]}
     """
-    ctx = active_request(runtime) or new_context(method="binding_mode_analysis")  # noqa: F841
     try:
         report = _analyze(molecules_json, positive_control_smiles, molecules_file, runtime=runtime)
         rows = report["rows"]
@@ -164,7 +180,7 @@ def binding_mode_analysis(molecules_json: str = "", positive_control_smiles: str
         return json.dumps({
             "status": "ok",
             "positive_control": report["positive_control"],
-            "control_properties": report.get("control_properties"),
+            "control_properties": _compact_properties(report.get("control_properties")),
             "control_pharmacophore": report.get("control_pharmacophore"),
             "results": rows,
         }, ensure_ascii=False)
@@ -190,7 +206,6 @@ def check_binding_consistency(docking_file: str = "", runtime: ToolRuntime[Agent
     返回 JSON：{"status":"ok","total":n,"flags":{...计数...},"rows":[{name,smiles,affinity,
     similarity,anchor_match,verdict,hint}],"summary":"..."}
     """
-    ctx = active_request(runtime) or new_context(method="check_binding_consistency")  # noqa: F841
     board = active_blackboard(runtime)
     if board is None:
         return json.dumps({"status": "error",

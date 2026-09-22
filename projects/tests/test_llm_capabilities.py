@@ -31,7 +31,7 @@ def isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("DOCKING_WORKSPACE", str(tmp_path))
     monkeypatch.delenv("AGENT_STRUCTURED_OUTPUT", raising=False)
     monkeypatch.setattr(CAP, "role_setting", lambda role, field: "")
-    monkeypatch.setattr(CAP, "capability_key", lambda role: f"https://api.example|test-model|disabled")
+    monkeypatch.setattr(CAP, "capability_key", lambda role: "https://api.example|test-model|disabled")
     # conftest 会统一把状态文件指到会话临时目录；这里给本用例一个独立文件，便于断言落盘内容
     monkeypatch.setattr(CAP, "_state_file", lambda: tmp_path / CAP.STATE_FILE_NAME)
     return tmp_path

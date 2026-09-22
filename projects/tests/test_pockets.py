@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -236,7 +235,7 @@ def test_pdbqt_to_pdb_conversion_keeps_elements(tmp_path):
 # 黑板交接 + 工具链
 # --------------------------------------------------------------------------- #
 def test_blackboard_pinned_site_survives_set_receptor():
-    from docking_agent.agents.blackboard import Blackboard
+    from docking_agent.runtime.blackboard import Blackboard
 
     board = Blackboard("R")
     board.set_receptor({"key": "thrombin", "center": [31.5, 13.74, 24.36],
@@ -254,7 +253,7 @@ def test_blackboard_pinned_site_survives_set_receptor():
 
 @pytest.fixture()
 def board_ctx():
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
 
     board = Blackboard("TEST")
     token = current_blackboard.set(board)
@@ -283,8 +282,13 @@ def test_pocket_tools_predict_compare_commit(thrombin_spec, board_ctx, monkeypat
     cmp_result = json.loads(compare_pocket_with_experiment.invoke(
         {"pocket_rank": 1, "receptor_file": THROMBIN_PDBQT}))
     assert cmp_result["status"] == "ok"
-    assert cmp_result["verdict"] in ("consistent", "inconsistent", "no_reference")
-    assert cmp_result["distance_angstrom"] is not None
+    # verdict 必须是 validation 结论的**直接映射**（原先只断言"属于某个枚举"，恒真）
+    validation = cmp_result["validation"]
+    assert validation["status"] in ("consistent", "inconsistent", "no_reference"), validation
+    assert cmp_result["verdict"] == validation["status"], (cmp_result["verdict"], validation)
+    if validation["status"] != "no_reference":
+        assert isinstance(cmp_result["distance_angstrom"], (int, float)), cmp_result
+        assert cmp_result["reference"], "有参考位点时必须回传参考（否则无法核验一致性）"
 
     committed = json.loads(set_docking_site.invoke(
         {"pocket_rank": 1, "reason": "测试：采纳 top1 口袋"}))
@@ -315,28 +319,38 @@ def test_set_docking_site_rejects_unknown_rank(board_ctx):
 
 
 def test_predict_requires_receptor(board_ctx, monkeypatch):
+    """未指定受体 → 直接拦下提问，**不执行任何口袋分析**（预置受体仅内部测试用）。"""
+    from docking_agent.tools import pockets as T
+
+    monkeypatch.setattr(T, "_resolve_specs",
+                        lambda *a, **k: pytest.fail("未指定受体时不得进入受体解析/口袋计算"))
+    out = json.loads(T.predict_binding_pockets.invoke({}))
+    assert out["status"] == "needs_user_input"
+    assert out["missing"] == ["receptor"]
+    assert "未指定受体" in out["message"]
+
+
+def test_predict_reports_no_receptor_when_specs_come_back_empty(board_ctx, monkeypatch) -> None:
+    """对照：受体**已指定**但解析不出任何 spec 时，仍如实报 no_receptor（不是提问）。"""
     from docking_agent.tools import pockets as T
 
     monkeypatch.setattr(T, "_resolve_specs", lambda *a, **k: [])
-    out = json.loads(T.predict_binding_pockets.invoke({}))
+    out = json.loads(T.predict_binding_pockets.invoke({"receptor_file": THROMBIN_PDBQT}))
     assert out["status"] == "no_receptor"
 
 
-def test_predict_falls_back_to_default_receptor(board_ctx, monkeypatch):
-    """未指定受体时按系统默认受体处理（与 docking 工具一致），而不是报错。"""
+def test_predict_never_falls_back_to_default_receptor(board_ctx, monkeypatch) -> None:
+    """旧行为（未指定受体 → 按系统默认受体处理）已被用户明确删除：
+    现在只提问、零工具调用，绝不替用户挑靶点。"""
     from docking_agent.tools import pockets as T
 
     monkeypatch.setenv("POCKET_ENGINE", "geometric")
-    monkeypatch.setattr(T, "_default_receptor_from_run",
-                        lambda: {"receptor_file": "", "receptor_sources": ""})
-    monkeypatch.setattr(T, "_resolve_specs", lambda *a, **k: [
-        {"key": "thrombin", "pdbqt": THROMBIN_PDBQT, "pdb": THROMBIN_PDB,
-         "center": list(COCRYSTAL_CENTER), "size": [22.0, 22.0, 22.0],
-         "site": {"source": "共晶配体质心"}}])
+    monkeypatch.setattr(T, "_resolve_specs",
+                        lambda *a, **k: pytest.fail("未指定受体时不得解析出默认受体"))
     out = json.loads(T.predict_binding_pockets.invoke({}))
-    assert out["status"] == "ok"
-    assert out["receptors"][0]["receptor_key"] == "thrombin"
-    assert out["receptors"][0]["suggested"]["chosen_by"] == "experimental_site"
+    assert out["status"] == "needs_user_input"
+    assert "thrombin" not in out["message"] and "1DWC" not in out["message"]
+    assert not out.get("choices"), "预置受体不得作为用户可选来源下发"
 
 
 # --------------------------------------------------------------------------- #
@@ -527,7 +541,7 @@ def test_apo_receptor_site_is_low_trust_and_tool_takes_over(tmp_path):
 
 def test_persist_recovers_pockets_from_blackboard(tmp_path):
     """子 Agent 嵌套调用不进父图历史时，口袋结果必须能从共享黑板恢复。"""
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
 

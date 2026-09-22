@@ -3,12 +3,14 @@
 > **读者**：后续接手本项目的 AI 与人类开发者。
 > **用法**：动手改代码前先读 §2（架构）、§5（不变量）、§10（开发规范）；加功能看 §11（扩展指南）；
 > 改完必须走 §12（测试与门禁）；上线/排障看 §13（陷阱）与 §14（文档地图）。
-> **配套文档**：`README.md`（用户视角：怎么装、怎么用、每个功能怎么验证）、`docs/api.md`（接口与
-> 各子系统契约细节）。本文件是**开发者视角的总图**，不重复前两者的细节，只做索引与约束。
+> **文档分工**（本文件是**开发者视角的总图**，只做索引与约束，不重复其它文档的细节）：
+> `../../README.md`（仓库门面）· `../../docs/技术文档.md`（读者向概览）· `../README.md`（工程主文档：
+> 安装 / 配置 / 接口速查 / 门禁验收）· `api.md`（接口与各子系统契约细节）· `技术报告.md`（评审用完整
+> 技术报告，含实测数据）· `../CHANGELOG.md`（历史修复日志）。
 >
 > **本文档的来历**：2026-09-14 对全仓做了一次独立审计（架构梳理 + 死代码/重复实现 + 代码规范 +
 > 文档一致性 + 目标差距），本文档是那次审计的沉淀：§3 是模块地图、§5 是不变量、§10 是规范与门禁、
-> §15 是**审计得到的差距清单与推进顺序**。审计同时清理了死代码与重复实现（见 README §14 第 25/26 条）。
+> §15 是**审计得到的差距清单与推进顺序**。审计同时清理了死代码与重复实现（见 `../CHANGELOG.md` 第 25/26 条）。
 
 ---
 
@@ -16,8 +18,8 @@
 
 ### 1.1 目标（产品定义）
 
-> 一个小分子筛选系统：**多 Agent 协同**，自动完成「小分子库 × 受体」的对接、评估、准备、异常处理与
-> 报告总结；由**一个主管 Agent** 协调全部子 Agent 并调控整个流程，保证任务能跑完、跑对、可追溯。
+> 产品定义与读者向叙述见 `技术报告.md` §1 与 `../README.md` §2；本节只保留**开发者需要的
+> 能力 → 落点映射**（改代码时用来定位「这条能力在哪一层实现」）。
 
 拆成可验收的六条能力：
 
@@ -28,15 +30,18 @@
 | G3 | **自动评估** | 物化性质/类药性/结合模式与对照比较，全部来自工具真实计算 | `core/chemistry.py`、`tools/{properties,binding}.py` |
 | G4 | **自动异常处理** | 单分子失败不拖垮整批；失败有原因；特殊体系有事实披露与补救建议 | `runtime/errors.py`、`core/docking.py` 的 note/降级路径 |
 | G5 | **总结与报告** | 固定 9 章报告（第 3 章含推荐化合物排行） + 机器可读产物（CSV/JSON/图/位姿），数值可回溯到工具输出 | `reporting/`、`agents/persistence.py`、`runs.py` |
-| G6 | **主管协调** | 受理判定 run/ask/reject；分发、并行、漏斗、分片由主管决定；流程不中断 | `intake.py`、`agents/coordinator.py`、`tools/dispatch.py` |
+| G6 | **主管协调** | 受理判定 run/ask/reject；分发、并行、漏斗、分片由主管决定；流程不中断 | `intake.py`、`agents/coordinator.py`、`agents/dispatch.py` |
 
 ### 1.2 明确的非目标（避免过度工程）
 
 - **不做**分子生成/骨架跃迁/QSAR 建模：本系统是「筛选与评估」而非「设计」。
 - **不做**分布式集群调度：目标是**单机多进程**把 32 核吃满（见 §8），不引入 Redis/Celery/K8s。
 - **不做**自研对接引擎/打分函数：只做 AutoDock Vina / AutoDock4 的**编排与取证**。
-- **不做**多用户 SaaS：默认只听 `127.0.0.1`，无鉴权（见 README §15）。
+- **不做**多用户 SaaS：默认只听 `127.0.0.1`，无鉴权（见 `../README.md` §15）。
 - **不引入**向量库/RAG：任务输入是结构化的分子与受体，不需要语义检索。
+
+> 非目标的读者向表述与理由见 `技术报告.md` §1.2 与 `../../docs/技术文档.md` §1.2（本节只保留
+> 改代码时必须遵守的边界）。
 
 ### 1.3 Agent 面的定位（ADR-0001 摘要）
 
@@ -73,7 +78,7 @@
 │ intake.py                      用户指令+表单 → 结构化 task_spec（run/ask/reject）│
 ├── 编排层 ───────────────────────────────────────────────────────────────┤
 │ agents/coordinator.py          主管 Agent（LangGraph create_agent）        │
-│ tools/dispatch.py              发给子 Agent 的「分发工具」（子 Agent 调度面）│
+│ agents/dispatch.py              发给子 Agent 的「分发工具」（子 Agent 调度面）│
 ├── 角色层（4 个子 Agent，各自独立模型实例与 checkpointer）─────────────────┤
 │ agents/workers.py              property / pocket / docking / binding       │
 │ agents/prompts.py              子 Agent 系统提示词                        │
@@ -83,8 +88,8 @@
 ├── 核心计算层（纯函数/纯算法，不依赖 LLM）───────────────────────────────┤
 │ core/docking.py  receptors.py  ligands.py  pockets.py  chemistry.py  ranking.py│
 ├── 状态与持久化 ─────────────────────────────────────────────────────────┤
-│ agents/blackboard.py           运行内共享黑板（跨 Agent 横向协作，进程内）    │
-│ agents/tool_io.py              工具原始返回落盘 + 给模型的摘要视图            │
+│ runtime/blackboard.py           运行内共享黑板（跨 Agent 横向协作，进程内）    │
+│ runtime/tool_io.py              工具原始返回落盘 + 给模型的摘要视图            │
 │ agents/persistence.py          把工具产物合并成最终结果（唯一的落盘入口）      │
 │ runs.py                        运行目录、产物清单、分页/聚合、zip            │
 ├── 报告层 ───────────────────────────────────────────────────────────────┤
@@ -117,13 +122,13 @@ api/app.py  建 Run（runs.py：运行目录 + run.json）
 coordinator（主管 Agent，LangGraph）
   │  提示词里注入 task_spec 的只读摘要（intake.render_agent_message）
   │  主管在同一轮里可并发发出多个分发工具调用 → ToolNode 并发执行 → 实测并行
-  ├─ tools/dispatch.py: import_molecule_library / run_property_assessment /
+  ├─ agents/dispatch.py: import_molecule_library / run_property_assessment /
   │                     run_pocket_analysis / run_docking / run_binding_mode_analysis
   │       每个分发工具 = 调 invoke_worker(子 Agent) → 子 Agent 调自己的 @tool
   ▼
 @tool（tools/*.py）
   │  · 大结果：tool_io.record() 全量落盘 + 只回给模型 summary/top（见 §8.4）
-  │  · 横向协作：写 agents/blackboard.py（分子/性质/对接/口袋/位点）
+  │  · 横向协作：写 runtime/blackboard.py（分子/性质/对接/口袋/位点）
   ▼
 core/*（真实计算）
   │  RDKit 构象、meeko PDBQT、Vina 对接、P2Rank/几何法口袋、排序
@@ -156,9 +161,11 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 |---|---|---|
 | `cli.py` | 命令行入口：`--check` / `agent` / `runs` / `serve` / `receptors` | `main()` |
 | `intake.py` | **任务受理层**：指令+表单 → `task_spec`；确定性抽取分子；LLM 只补白名单字段 | `build_task_spec`、`refine_task_spec`、`render_agent_message`、`_finalize`、`_resolvable_ligands` |
-| `runs.py` | 运行目录/产物清单/`run.json`/分页排序/聚合/zip | `RunStore`、`Run`、`run_artifact_path` |
+| `runs.py` | 运行目录/产物清单/`run.json`/分页排序/聚合/zip/**保留策略（`prune`）** | `RunStore`、`Run`、`run_artifact_path` |
 | `settings.py` | 界面设置层（`config/local_settings.json`）：字段规格、优先级、掩码、运行时注入 | `SPECS`、`normalize_updates`、`apply_runtime_env`、`runtime_source` |
-| `config.py` | 环境变量与默认值（`env_int/env_bool/env_str`） | `env_int`、`ensure_runtime_env` |
+| `config.py` | 运行时环境 bootstrap；读取原语在 `envs.py`（`env`/`env_int`/`env_bool`/`env_float`） | `env_int`、`ensure_runtime_env`、`load_env` |
+| `envs.py` | 环境变量读取的唯一底层实现（从 config 拆出，避免 `config ↔ settings` 循环） | `env`、`env_bool`、`env_int`、`env_float`、`load_env` |
+| `run_context.py` | 「当前运行」只读获取点（`runs.py` 注册 provider，`core/` 不再 import 持久化层） | `set_run_provider`、`active_run_or_none`、`run_request_or_empty` |
 | `paths.py` | 路径解析（项目根、var/、cache、uploads、runs） | `project_root`、`workspace_dir`、`cache_dir`、`uploads_dir` |
 | `cancellation.py` | 协作式取消（线程 Event + 跨进程） | `cancel_flag`、`CancelledRun`、`is_cancelled` |
 | `logging_setup.py` | 日志初始化与格式 | `setup_logging` |
@@ -167,7 +174,7 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 
 | 文件 | 职责 | 关键接口 |
 |---|---|---|
-| `docking.py` | 引擎封装与批量调度：`DockingSession`（一次建图多次复用）、`dock_batch`（串/并行、LPT 调度、取消、化学体检）、`dock_library`（受体×配体位点/漏斗）、`plan_concurrency` | `DockingSession.dock`、`dock_batch`、`dock_library`、`plan_concurrency`、`save_poses_for` |
+| `docking.py` | 引擎封装与批量调度：`DockingSession`（一次建图多次复用）、`dock_batch`（串/并行、LPT 调度、取消、化学体检）、`dock_library`（受体×配体位点/漏斗）、`plan_concurrency` | `DockingSession.dock`、`dock_batch`、`dock_library`、`plan_concurrency` |
 | `normalize.py` + `normalize_io.py` | **统一输入归一化**（唯一入口，见 §9.0）：内容嗅探优先于扩展名、gzip/zip、编码/分隔符/中英文表头自动判定、逐行容错、按 canonical SMILES 去重并保留全部别名、InChI/InChIKey、标准记录 `{id,name,smiles,source_file,source_index,raw}` | `sniff_format`、`normalize_ligand_file`、`normalize_ligand_text`、`normalize_receptor_source`、`record_input_normalization` |
 | `receptors.py` | 受体准备：去水/杂原子溯源、`keep_hetatm`、altloc 重试、模板缺失逐个剔除、内容哈希缓存、共晶配体识别、位点盒推断、PDBQT spec | `prepare_user_receptor`、`resolve_receptor_specs`、`read_receptor_file`、`_pdbqt_spec`、`guess_cocrystal_ligand` |
 | `ligands.py` | 配体读取与准备：SDF/SMI/CSV/MOL2、`名称:SMILES` 与自由文本抽取、3D 构象(ETKDGv3+MMFF)+meeko、**化学体检** `describe_ligand` | `read_molecule_file`、`parse_smiles_text`、`extract_smiles`、`smiles_to_pdbqt`、`describe_ligand` |
@@ -184,10 +191,12 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 | `coordinator.py` | 主管 Agent 构建：绑定系统提示词、**12 个**分发/在线工具、滑动窗口记忆（`MAX_MESSAGES=40`）、图名 `coordinator` |
 | `reports.py` | 4 个子 Agent 的**结构化输出契约**（pydantic，`extra=allow`）；`workers` 用 `response_format=ToolStrategy(<Role>Report)` 强制模型调用结构化工具，取代「提示词要求吐 JSON + 服务端重试」 |
 | `workers.py` | 4 个子 Agent 构建：**每角色一个 LLM 实例 + 独立 `InMemorySaver`**、图名 = 角色名；`invoke_worker` 每次用**随机 thread** → 子 Agent 是**无状态执行器**（跨步骤信息只走运行产物与黑板，不走子 Agent 记忆） |
-| `prompts.py` | 系统提示词（协调兜底 `COORDINATOR_SP` + 属性/口袋/对接/结合模式，显式拼接 `DATA_HANDOFF_RULE`） |
+| `prompts.py` | 系统提示词（协调兜底 `COORDINATOR_SP` + 属性/口袋/对接/结合模式）。子 Agent 提示词 = **基础提示词 + 该角色自己的 `DATA_HANDOFF_*` 数据交接纪律 + `PARAMS_CONTRACT`** 显式拼接；交接块只点名该角色真的拥有且真接受文件参数的工具（口袋 Agent 不接收文件参数 → 不拼该块） |
+| `prompt_blocks.py` | **条件纪律段**：`sp` 里用 `<!-- block:KEY -->` 标记出「只在特定体系/规模下才用得上」的段落（上传处理 / 受体纪律 3c / 两阶段漏斗 / 特殊体系），协调 Agent 的 `dynamic_prompt` 中间件按本次运行事实**抽掉**不相关的段（省每次模型调用的固定开销），并把注入清单写进 `run.data["prompt_blocks"]`（随 `result.json` 落盘）。安全方向写死：**没有标记 → 全文**、**事实未知 → 注入**、**组装异常 → 全文** |
 | `blackboard.py` | 运行内共享黑板：`set_receptor/set_site/set_pockets/set_molecules/set_properties/set_docking/set_binding`，快照上限 50，`stats()` 供界面展示协作痕迹。**P2-c 起支持 LangGraph `store` 后端**（`(\\"blackboard\\", run_id)` 命名空间、按字段写、构造时 hydrate）：父图与 4 个子 Agent 共享同一 store，跨图/跨进程可见；CLI/单测仍可用进程内对象（`store=None`）。读取优先级 `runtime.context.blackboard → runtime.store → ContextVar` |
 | `tool_io.py` | 工具原始返回落盘（`*_tool.json`）+ 模型可见摘要（`summary_limit()`=`AGENT_TOOL_TOP_N`）+ 漏斗参数 |
-| `threads.py` | **对话线程自愈**：`dangling_tool_calls()` / `repair_messages()` / `repair_thread_state()` —— 中断（停止/失败）会在 checkpoint 留下「模型发了 tool_calls 但没有 ToolMessage」的非法历史，下一轮会被 OpenAI 以 400 拒绝；每轮开始前补**占位回执（事实说明：该调用被中断、没有结果）**并写回状态 |
+| `threads.py` | **工具调用序列自愈**：`dangling_tool_calls()` / `orphan_tool_call_ids()` / `pairing_updates()` / `repair_thread_state()` / `ToolCallPairingMiddleware` —— 中断（停止/失败/限额）会在 checkpoint 留下「模型发了 tool_calls 但没有 ToolMessage」的非法历史，下一轮会被模型端以 400 拒绝；修法是**同 id 原地改写那条 AIMessage**（去掉无回执的调用 + 追加事实说明），孤儿回执直接移除。**不能往中间插消息**：`add_messages` 只把新 id 追加到末尾，插进去的占位回执会落到最新一条人类消息之后，序列依旧非法（实测踩坑）。中间件挂 `before_model`，协调 Agent 与 4 个子 Agent（固定角色线程，取消后最容易留下悬空）共用 |
+| `limits.py` | **步数预算**：递归上限的自动放宽阶梯（`base_limit`/`escalate`/`limit_ceiling`）、收尾提示（`WRAP_UP_NOTE`，以 SystemMessage 注入，不进用户可见对话）与统一的 `limit` 事件。产品准则：跑满步数是执行细节，自动放宽并继续（120 → 240 → 480），到顶让主管 Agent 用已有结果收尾，**绝不把 `GraphRecursionError` 抛给用户**。协调 Agent（`runtime/streaming.py`）、子 Agent（`agents/workers.py`）与 legacy 端点（`api/routers/legacy.py`）共用 |
 | `persistence.py` | **唯一的结果合并/落盘入口**：`_merge_docking`（精度优先）、`_merge_pockets`、`_PROVENANCE_KEYS` 回填、写 `result.json`/`report.md`；**工具产物文件（只存最近一次调用）与消息历史（全部调用）必须合并**，否则分批对接/蛋白质库的早先受体块会静默丢失（`data_sources` 会标明 `tool_file+tool_message`） |
 
 ### 3.4 工具层（`tools/`，~1840 行）
@@ -197,14 +206,15 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 
 | 文件 | 工具 |
 |---|---|
-| `dispatch.py` | 主管用：`import_molecule_library`、`run_property_assessment`、`run_pocket_analysis`、`run_docking`、`run_binding_mode_analysis`、`list_known_receptors` |
-| `docking.py` | 子 Agent 用：`available_receptors`、`molecular_docking` |
+| `dispatch.py` | 主管用：`import_molecule_library`、`run_property_assessment`、`run_pocket_analysis`、`run_docking`、`run_binding_mode_analysis`；`list_known_receptors` 为**内部/诊断**工具，**无任何 Agent 绑定** |
+| `docking.py` | 子 Agent 用：`molecular_docking`（`available_receptors` 已删除） |
 | `pockets.py` | 子 Agent 用：`predict_binding_pockets`、`compare_pocket_with_experiment`、`set_docking_site`、`list_pocket_engines` |
 | `properties.py` | `normalize_molecule_library`、`molecular_property_assessment` |
 | `binding.py` | `binding_mode_analysis`、`positive_control_similarity`、`check_binding_consistency` |
 | `report.py` | `generate_screening_report`（触发 persistence 落盘 + 报告产物） |
 | `core/receptor_ph.py` | **受体质子化与配体同 pH**：pdb2pqr(PROPKA) → PQR → meeko PDBQT；逐残基留痕（HIS 状态 / 可滴定残基质子化计数 / 边界残基 / 剔除的不完整残基）；工具缺失或需保留有机辅因子时回退并如实记录 |
-| `core/protonation.py` | 运行级质子化态：`neutralize` / `ph`（内置 pKa 规则表 + 目标 pH）/ `keep`，逐分子溯源（策略解析优先级：显式 → 运行请求 → 环境变量 → 默认） |
+| `core/protonation.py` | 运行级质子化态：`neutralize` / `ph` / `keep`，逐分子溯源（策略解析优先级：显式 → 运行请求 → 环境变量 → 默认）；`ph` 优先调用 `core/ligand_pka.py` 的专业引擎 |
+| `core/ligand_pka.py` | **配体 pKa 引擎层**：`auto`（默认，装了 Dimorphite-DL 就用）/ `dimorphite` / `rules`；窗口内多微观态按「\|净电荷\| 最小 → 带电原子最少 → 字典序」取一个形式，全部候选与规则写进溯源；不可用时回退内置规则表并给出 `--no-deps` 安装提示（其元数据把 rdkit 钉在 <2026） |
 | `recommend.py` | 主管用：`recommend_compounds`（真实综合分排行）、`submit_recommendations`（逐分子推荐理由，按在榜名单核对） |
 | `pose.py` | 主管用：`analyze_pose_pocket`（口袋说明 + 每个推荐分子最优位姿的逐残基相互作用：氢键/盐桥/疏水/π/金属配位） |
 | `online.py` | `fetch_protein_structure`（RCSB/UniProt）、`fetch_molecule_record`（PubChem 等） |
@@ -219,6 +229,7 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 | `runtime/errors.py` | 错误分类（可重试/不可重试/用户可见措辞） | `ErrorClassifier` |
 | `runtime/checkpoints.py` | checkpointer（内存/SQLite） | `CHECKPOINT_BACKEND` |
 | `runtime/context.py` | 请求上下文（run、取消标志） | `new_context`、`request_context` |
+| `runtime/run_facts.py` | 运行级**小事实**记账（`run.data["prompt_facts"]`）：受体是否掉过杂原子、配体是否特殊化学、是否看过对接结果 → 供条件纪律段判断。**只记布尔**、负面信号粘住（`STICKY_TRUE`）；工具层与 Agent 层都能依赖（分层契约要求它落在 `runtime/`） | `docking_facts()`（纯函数）、`note/read` |
 | `api/app.py` | 全部 HTTP/SSE 接口（实测 33 条路由，其中 `/api/*` 23 条）与上传、设置、运行查询、产物下载 | 见 `docs/api.md` |
 | `api/schemas.py` | 请求体模型 | `AgentRequest`、`PipelineRequest` |
 
@@ -241,8 +252,8 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 | `intake` | 任务受理：把自然语言变成结构化规约；**不能给参数、不能编造分子** | 无（纯 LLM 补白名单字段） | `intake.INTAKE_SYSTEM_PROMPT` |
 | `coordinator` | 主管：计划、分发、串并行、漏斗、汇总、推荐排行与理由、口袋说明与姿态结合分析、出报告 | 12 个（见 §3.4 dispatch/online/report/recommend/pose） | `config/agent_llm_config.json` 的 `sp` |
 | `property` | 分子属性评估 | `normalize_molecule_library`、`molecular_property_assessment` | `agents/prompts.py` |
-| `pocket` | 口袋分析：预测 → 与实验位点比对 → 提交盒子 | `predict_binding_pockets`、`compare_pocket_with_experiment`、`set_docking_site`、`list_pocket_engines`、`available_receptors` | 同上 |
-| `docking` | 对接执行 | `available_receptors`、`molecular_docking`、`fetch_protein_structure` | 同上 |
+| `pocket` | 口袋分析：预测 → 与实验位点比对 → 提交盒子 | `predict_binding_pockets`、`compare_pocket_with_experiment`、`set_docking_site`、`list_pocket_engines` | 同上 |
+| `docking` | 对接执行 | `molecular_docking`、`fetch_protein_structure` | 同上 |
 | `binding` | 结合模式与对照比较 | `binding_mode_analysis`、`positive_control_similarity`、`check_binding_consistency` | 同上 |
 
 **为什么 intake 与 coordinator 分开**（历史决策，别退回）：早期把「受理」和「执行」写在一个提示词里，
@@ -281,7 +292,7 @@ coordinator ──(dispatch.@tool)──▶ invoke_worker(子 Agent, thread_id=�
 | 通道 | 承载什么 | 机制 |
 | --- | --- | --- |
 | **运行产物文件（首选）** | 大表：分子清单、性质明细、对接明细、口袋、结合模式 | `tool_io.record(name, payload)` 写 `<name>_tool.json` 并把**绝对路径**记进 `run.data["tool_files"]`；`tool_io.artifact_path(name)` / `artifact_refs()` 把它交给模型与子 Agent |
-| **共享黑板** | 小状态：受体、位点盒、阳性对照、计数、跨 Agent 标记 | `agents/blackboard.py`（ContextVar 注入，线程安全） |
+| **共享黑板** | 小状态：受体、位点盒、阳性对照、计数、跨 Agent 标记 | `runtime/blackboard.py`（ContextVar 注入，线程安全） |
 
 **工具侧的"文件参数"契约**（都可留空，留空才回退黑板）：
 
@@ -302,8 +313,8 @@ coordinator ──(dispatch.@tool)──▶ invoke_worker(子 Agent, thread_id=�
 | 抽象 | 位置 | 不变量 |
 |---|---|---|
 | **task_spec** | `intake.build_task_spec` → `run.data["task_spec"]` | 只读契约：编排层不得修改；`decision ∈ {run, ask, reject}`；`missing` 不构成阻断 |
-| **blackboard** | `agents/blackboard.py` | 进程内、单次运行隔离；`snapshot()` 上限 50；`set_receptor` 不覆盖已固定的位点（`_site_pinned`） |
-| **tool_io** | `agents/tool_io.py` | 工具原始返回**全量落盘**（`*_tool.json`），给模型的只是**视图**（`summary_limit`）；`AGENT_TOOL_TOP_N` 是视图大小，**不是输入上限** |
+| **blackboard** | `runtime/blackboard.py` | 进程内、单次运行隔离；`snapshot()` 上限 50；`set_receptor` 不覆盖已固定的位点（`_site_pinned`） |
+| **tool_io** | `runtime/tool_io.py` | 工具原始返回**全量落盘**（`*_tool.json`），给模型的只是**视图**（`summary_limit`）；`AGENT_TOOL_TOP_N` 是视图大小，**不是输入上限** |
 | **runs 产物** | `runs.py` | 任何数值都能在产物里找到出处；`result.json` 是落盘白名单；产物清单随运行增长要限流 |
 | **persistence** | `agents/persistence.py` | **唯一的合并/落盘入口**；同一工具多次调用按 `(name, smiles)` 去重、**精度优先**；`_PROVENANCE_KEYS` 用工具原始输出回填模型漏掉的字段 |
 | **绝对/相对路径** | `runs.py`、`reporting/artifacts.py` | 产物登记一律相对运行目录；对外 URL 由 `ARTIFACT_BASE_URL` 拼 |
@@ -390,7 +401,7 @@ UPLOAD_MAX_MB COZE_WORKSPACE_PATH DOCKING_WORKSPACE
 
 ## 8. 大规模对接的算法要点（性能与稳定性）
 
-### 8.1 两阶段漏斗（`agents/tool_io.py::funnel_settings`）
+### 8.1 两阶段漏斗（`runtime/tool_io.py::funnel_settings`）
 
 ```
 候选数 ≥ AGENT_FUNNEL_MIN(500)
@@ -588,7 +599,7 @@ export UV_CACHE_DIR=/home/biolab/Tools/docking-agent/.uv-cache MPLCONFIGDIR=$PWD
 .venv/bin/python scripts/lint_local.py                      # 新增问题必须为 0（存量见 --all）
 
 # 2) 单元与接口回归
-INTAKE_LLM=off .venv/bin/python -m pytest tests -q           # 当前 420 项（含文档一致性、盒子一致性、化学契约、源码结构、取消语义、机器自适应与两处实跑异常回归）
+INTAKE_LLM=off .venv/bin/python -m pytest tests -q           # 当前 643 项（含文档一致性、盒子一致性、化学契约、源码结构、取消语义、机器自适应与实跑异常回归）
 # 3) 真实链路取证
 INTAKE_LLM=off .venv/bin/python scripts/smoke_test.py        # Fake LLM 多 Agent + 真实 Vina（46 项）
 INTAKE_LLM=off .venv/bin/python scripts/verify_docking.py    # 对接真实性与反证控制（47 项）
@@ -612,7 +623,7 @@ node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先�
 | 新增/修改工具行为 | `tests/` 里对工具输出的断言（字段、真实数值范围、失败路径） |
 | 新增配置/环境变量 | `tests/test_settings.py`（优先级、掩码、只读）+ `.env.example` 登记 |
 | 修改提示词中的硬纪律 | `tests/test_intake.py` + `scripts/smoke_test.py`（Fake LLM 走的真实链路） |
-| 修 bug | 先写能复现的失败用例，再修（README §14 每条修复都有对应用例） |
+| 修 bug | 先写能复现的失败用例，再修（`../CHANGELOG.md` 每条修复都有对应用例） |
 | 改前端结构/DOM id | `scripts/check_web.py` + `snapshot_ids.py` + 需要时 `ui_e2e.js` |
 | 改并发/性能 | 有数据量、参数、机器信息的实测对比（§8.4） |
 | 改文档里的**事实性陈述** | `tests/test_docs_consistency.py`（角色名/环境变量/门禁脚本/承诺行为） |
@@ -623,9 +634,9 @@ node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先�
 
 1. 在 `tools/<域>.py` 用 `@tool` 定义；docstring 写清参数、返回结构、**失败时的 status**；
 2. 若属于某子 Agent：在 `agents/workers.py::init_workers` 的工具列表里挂上；
-   若是主管级：加进 `coordinator.build_agent` 的列表并在 `tools/dispatch.py` 里提供分发入口；
+   若是主管级：加进 `coordinator.build_agent` 的列表并在 `agents/dispatch.py` 里提供分发入口；
 3. 大结果先 `tool_io.record("<name>", payload)` 再回摘要（§8.3）；
-4. 需要跨 Agent 共享的信息写黑板（`agents/blackboard.py` 加 setter/getter）；
+4. 需要跨 Agent 共享的信息写黑板（`runtime/blackboard.py` 加 setter/getter）；
 5. 若结果要进最终产物：在 `agents/persistence.py` 的 `_PROVENANCE_KEYS` 或合并函数里登记；
 6. 补测试 + 更新 `docs/api.md` 的工具表 + 若影响提示词则同步 `config/agent_llm_config.json`。
 
@@ -633,7 +644,7 @@ node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先�
 
 1. `runtime/llm.py::ROLES` 与 `settings.py::ROLES/ROLE_LABEL/ROLE_FIELD_SPECS` 同步加角色（三处必须一致）；
 2. `agents/prompts.py` 加系统提示词；`agents/workers.py` 加 LLM 实例、checkpointer、`get_*_agent()`；
-3. `tools/dispatch.py` 加分发工具（含边界校验）；`coordinator.build_agent` 挂上；
+3. `agents/dispatch.py` 加分发工具（含边界校验）；`coordinator.build_agent` 挂上；
 4. 前端设置页会自动出现该角色的模型字段（schema 驱动，无需改前端）；
 5. 补测试：角色实例互不相同、调用计数、失败降级；更新本文档 §4 与 `docs/api.md` §10/§11。
 
@@ -659,7 +670,7 @@ node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先�
 | 脚本/用例集 | 项数 | 覆盖 | 何时跑 |
 |---|---|---|---|
 | `scripts/lint_local.py` | 增量 | 静态规范：静默 except、print、裸 getenv、future 注解、返回类型、超长文件 | 每次改动（秒级） |
-| `tests/`（pytest） | 420 | 核心算法、API、设置、受理、协作、口袋、**盒子一致性/库级下限/超限分组**、特殊化学、可复现性、文档一致性、**并发隔离**、**源码结构（重复定义/反向依赖）** | 每次改动 |
+| `tests/`（pytest） | 643 | 核心算法、API、设置、受理、协作、口袋、**盒子一致性/库级下限/超限分组**、特殊化学、可复现性、文档一致性、**并发隔离**、**源码结构（重复定义/反向依赖）** | 每次改动 |
 | `scripts/smoke_test.py` | 46 | Fake LLM 驱动**真实**多 Agent + 真实 Vina + 运行目录检查 | 每次改动（尤其动提示词/编排） |
 | `scripts/verify_docking.py` | 52 | 对接真实性取证：独立复算、参数敏感性、反证控制（平移盒子/换受体/非法输入） | 动 core/docking 必跑 |
 | `scripts/check_web.py` | 118 | 前端静态：语法、离线可跑、id 对应、设计令牌、布局健壮性 | 动前端必跑 |
@@ -757,12 +768,19 @@ README 必须指向本手册、承诺的门禁脚本必须存在、不得再承�
 |---|---|
 | **改完代码该跑哪些门禁** | 本文 §10.2 + `scripts/lint_local.py` |
 | **下一步该做什么（含优先级与验收标准）** | 本文 §15 |
-| 怎么安装、怎么用、界面每块是什么 | `README.md` §1–§10 |
-| 盒子怎么定的、P2Rank 怎么用、大库怎么打 | `README.md` §11 |
-| HTTP 接口/SSE 字段/多 Agent 协作/设置接口/受理层/特殊化学契约 | `docs/api.md` §1–§16 |
+| 这个项目是什么、一分钟怎么跑起来 | `../../README.md` |
+| 框架 / 运行原理 / 使用说明（读者向概览，含 PDF/Word） | `../../docs/技术文档.md` |
+| 怎么安装、怎么用、界面每块是什么 | `../README.md` §1–§10 |
+| 盒子怎么定的、P2Rank 怎么用、大库怎么打 | `../README.md` §11 |
+| HTTP 接口/SSE 字段/多 Agent 协作/设置接口/受理层/特殊化学契约 | `api.md` §1–§16 |
 | **代码架构、不变量、扩展步骤、门禁、陷阱、路线图** | **本文件** |
-| 历史修了什么、为什么这么修 | `README.md` §14 修复记录（逐条含证据与用例） |
-| 每个门禁脚本怎么跑、看什么 | 本文 §12 + `README.md` §13 |
+| 评审用完整技术报告（实测数据、来源引用、方法与局限） | `技术报告.md`（PDF/Word 同源） |
+| 历史修了什么、为什么这么修 | `../CHANGELOG.md`（逐条含证据与用例） |
+| 怎么贡献、改完跑哪些门禁 | `../../CONTRIBUTING.md` |
+| 安全模型、已知限制与漏洞报告方式 | `../../SECURITY.md` |
+| 关键架构决策的「为什么」 | `adr/README.md`（索引 + 模板） |
+| 每个门禁脚本怎么跑、看什么 | 本文 §12 + `../README.md` §13 |
+| 平台化部署（LangGraph Platform 镜像） | `../../langgraph-deploy/README.md` |
 
 ---
 
@@ -791,7 +809,7 @@ README 必须指向本手册、承诺的门禁脚本必须存在、不得再承�
 
 | # | 缺口 | 代码证据 | 影响 | 优先级 | 工作量 |
 |---|---|---|---|---|---|
-| 2.1 | 漏斗参数只在提示词（`funnel_advice` 已接入指令，但服务端不强制） | `agents/tool_io.py`、`config/agent_llm_config.json` 第 11 条 | LLM 不照做就可能一次性 exh=6 跑完万级库 | P1 | M |
+| 2.1 | 漏斗参数只在提示词（`funnel_advice` 已接入指令，但服务端不强制） | `runtime/tool_io.py`、`config/agent_llm_config.json` 第 11 条 | LLM 不照做就可能一次性 exh=6 跑完万级库 | P1 | M |
 | 2.2 | `pass="coarse"` 标记丢失（标在输入行，结果行是新构造的） | `tools/docking.py` vs `core/docking.py` | 轮次不可区分，只能靠 `affinity_coarse` 反推 | P2 | S |
 | 2.3 | `top_from_previous` 的兜底来源键名错误 → 兜底永久失效 | `tools/docking.py`（`tool_io.load("docking_rows")`） | 黑板为空时报 `no_previous` | P2 | S |
 | 2.4 | 单分子失败**不重试/不降级** | `core/docking.py` 失败分支 | 一个分子准备失败即失去该分子 | P1 | M |
@@ -813,11 +831,11 @@ README 必须指向本手册、承诺的门禁脚本必须存在、不得再承�
 
 | # | 缺口 | 代码证据 | 影响 | 优先级 | 工作量 |
 |---|---|---|---|---|---|
-| 4.1 | **取消不彻底**：`cancel_event` 未传入对接工具 | `api/app.py:521,575,928` | 点「停止」后 Vina 进程池继续吃满 CPU | **P0** | S |
-| 4.2 | **崩溃/断线无兜底**：无 reaper/resume/retention，`run.json` 永久 `running` | `runs.py:85,167`、`cancellation.py:19` | 前端断流后线程与进程池继续跑，且再也取消不了 | **P0** | M |
+| 4.1 | **取消不彻底**：`cancel_event` 未传入对接工具（✅ 已修复：`tools/docking.py` 把 `cancel_flag(run.id)` 传进 `dock_batch(cancel_event=…)`，状态落 `cancelled`） | `api/app.py:521,575,928` | 点「停止」后 Vina 进程池继续吃满 CPU | **P0** | S |
+| 4.2 | **崩溃/断线无兜底**：无 reaper/resume/retention，`run.json` 永久 `running`（⚠️ 部分修复：`reconcile_interrupted()` 会把残留 `running` 如实标成 `interrupted`；`RunStore.prune()` + `scripts/prune_runs.py` 提供保留策略。**reaper/resume 仍缺**） | `runs.py:85,167`、`cancellation.py:19` | 前端断流后线程与进程池继续跑，且再也取消不了 | **P0** | M |
 | 4.3 | **无端到端墙钟超时**：`RUN_TIMEOUT_SECONDS` 只用于 legacy `/run` | `api/app.py:53,855` | 卡死运行永久占资源 | P1 | S |
-| 4.4 | **失败清单不归因、不进报告**：逐分子 `error` 只在 JSON，CSV 只含成功行 | `reporting/report.py` 无 error/failed | 用户读到「全成功」的假象 | **P0** | S |
-| 4.5 | 分发层键校验把子 Agent 的合法 `{"status":"error"}` 改写成 `agent_output_invalid` | `tools/dispatch.py:29,61,91` | 根因被掩盖，误导排障 | P1 | S |
+| 4.4 | **失败清单不归因、不进报告**：逐分子 `error` 只在 JSON，CSV 只含成功行（✅ 已修复：报告固定第 7 节按原因分组列出失败/跳过，`ranking.csv` 含 `status`/`error` 列） | `reporting/report.py` 无 error/failed | 用户读到「全成功」的假象 | **P0** | S |
+| 4.5 | 分发层键校验把子 Agent 的合法 `{"status":"error"}` 改写成 `agent_output_invalid` | `agents/dispatch.py:29,61,91` | 根因被掩盖，误导排障 | P1 | S |
 | 4.6 | pockets 工具异常逃逸（`@tool` 抛异常，与其他工具契约不一致） | `tools/pockets.py:96,176` | 模型侧看到的是异常而非结构化错误 | P2 | S |
 | 4.7 | LLM 传输层与 `_http_post_json` 无重试/退避；无速率限制 | `runtime/llm.py:177`、`tools/online.py:95` | 端点抖动直接使运行失败 | P1 | S |
 | 4.8 | 无运行保留期/磁盘配额（孤儿进程目前靠人工 `scripts/kill_leftovers.sh`） | scripts | 长期无人值守部署必然积压 | P2 | M |
@@ -840,7 +858,7 @@ README 必须指向本手册、承诺的门禁脚本必须存在、不得再承�
 |---|---|---|---|---|---|
 | 6.1 | 计划不是显式产物（无 plan/DAG/step 记录） | `agents/coordinator.py` | 运行不可重放、不可断言「计划被遵守」 | P1 | M |
 | 6.2 | 预算与步数控制形同虚设（只有 `recursion_limit`，无 token/费用/墙钟预算） | `api/app.py:582` | 一次运行可能烧掉任意额度 | P1 | M |
-| 6.3 | 无动态重规划（失败后不换策略，只有提示词第 6 条「如实报告」） | `tools/dispatch.py:91` | 子 Agent 失败后主管可能仍宣告成功 | **P0** | M |
+| 6.3 | 无动态重规划（失败后不换策略，只有提示词第 6 条「如实报告」） | `agents/dispatch.py:91` | 子 Agent 失败后主管可能仍宣告成功 | **P0** | M |
 | 6.4 | 失败升级只到提示词；`_completeness` 明确「只作信息展示，不接管控制」 | `api/app.py:616` | **「保证项目正常工作」的兜底不存在** | **P0** | M |
 | 6.5 | 运行图/时间轴不落盘、无 token 计量（usage 硬编码 0） | `api/app.py:950,985` | 事后无法审计「哪一步慢/失败在哪次调用」 | P1 | M |
 | 6.6 | 前端未展示后端已有的 `task_spec`/`completeness`/`blackboard_stats` | `web/app.js` 零命中 | 已收集的可信度信息用户看不到 | P1 | S |
@@ -940,7 +958,7 @@ Vina 网格间距 0.375 Å，`box_fit_warning` 只在「配体跨度 + 10 Å 超
 
 | 项 | 存量 | 说明与计划 |
 |---|---|---|
-| 缺返回类型标注 | 251 | 集中在 `api/app.py`、`runs.py`、`blackboard.py`；**新代码一律要求**，存量按模块分批补（每次顺手改一个文件） |
+| 缺返回类型标注 | 224 | 集中在 `api/app.py`、`runs.py`、`blackboard.py`；**新代码一律要求**，存量按模块分批补（每次顺手改一个文件） |
 | 函数内 import 未注明原因 | 366 | 其中真正必要的是重依赖（rdkit/vina/meeko/matplotlib/scipy）与破环（2 处）；标准库延迟导入应上提模块顶部 |
 | 静默 `except: pass` | 0 | 已清零（合理解法标了 `# 允许静默：<原因>`） |
 | `print`（非 CLI） | 0 | 已清零 |

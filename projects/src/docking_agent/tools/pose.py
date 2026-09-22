@@ -16,15 +16,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from langchain.tools import tool
 
-from docking_agent.agents import tool_io
+from docking_agent.runtime import tool_io
 from docking_agent.core import POSITIVE_CONTROL_NAME
 from docking_agent.core import interactions as I
-from docking_agent.runs import current_run
-from docking_agent.runtime.context import AgentContext, active_blackboard, active_request, active_run, new_context, request_context
+from docking_agent.runtime.context import AgentContext, active_blackboard, active_run
 from langchain.tools import ToolRuntime
 
 logger = logging.getLogger(__name__)
@@ -62,7 +61,6 @@ def _flatten_rows(payload: Any) -> List[Dict[str, Any]]:
 
 def _receptor_blocks(runtime: Any = None) -> List[Dict[str, Any]]:
     """本次运行的受体块（含 pdbqt / 盒子 / 位点来源），文件优先、黑板兜底。"""
-    from docking_agent.agents.blackboard import get_blackboard
 
     payload = tool_io.load("docking", run=active_run(runtime))
     blocks = [b for b in ((payload or {}).get("receptors") or []) if isinstance(b, dict)]
@@ -161,7 +159,6 @@ def analyze_pose_pocket(top_n: int = 0, runtime: ToolRuntime[AgentContext] = Non
     不要编造工具没有给出的残基或相互作用；没有位姿（本次运行关闭了「保存位姿」）时如实说明
     「本次没有姿态–口袋分析」，并建议打开该选项后重跑。
     """
-    ctx = active_request(runtime) or new_context(method="analyze_pose_pocket")  # noqa: F841
     try:
         blocks = _receptor_blocks(runtime)
         if not blocks:

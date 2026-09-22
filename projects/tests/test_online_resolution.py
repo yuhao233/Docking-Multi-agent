@@ -70,7 +70,10 @@ def test_fetch_molecule_record_maps_chinese_alias_and_reports_mixture(monkeypatc
     monkeypatch.setattr(online, "_http_json", fake_http)
     out = json.loads(online.fetch_molecule_record.func("代森猛锌"))
 
-    assert out["status"] == "ok"
+    # 命中多组分结构 → 状态必须是 needs_user_input：记录查到了，但**没有**导入任何单分子，
+    # 必须等用户确认代表结构（旧的 `status=ok` + choices 会诱导模型直接拿某个片段去对接）。
+    assert out["status"] == "needs_user_input"
+    assert out["choices_published"]["count"] >= 3
     assert out["alias_used"] == "代森猛锌" and out["resolved_query"] == "Mancozeb"
     comp = out["compounds"][0]
     assert comp["cid"] == 3034368 and comp["formula"] == "C8H12MnN4S8Zn"
@@ -83,6 +86,13 @@ def test_fetch_molecule_record_maps_chinese_alias_and_reports_mixture(monkeypatc
 
 
 def test_mancozeb_choices_are_structured_and_parse_to_one_molecule(monkeypatch) -> None:
+    """选项本身（走界面）必须结构化、每个 prompt 都能确定性地解析出 1 个分子。
+
+    注意：选项明细**不再回流给模型**（见下一个用例），所以这里直接测 `mixture_choices()`
+    这个纯函数，而不是工具的 JSON 返回。
+    """
+    from docking_agent.tools.choices import mixture_choices
+
     def fake_http(url: str) -> Any:
         if "Mancozeb" in url:
             return PUBCHEM_PAYLOAD
@@ -90,7 +100,7 @@ def test_mancozeb_choices_are_structured_and_parse_to_one_molecule(monkeypatch) 
 
     monkeypatch.setattr(online, "_http_json", fake_http)
     out = json.loads(online.fetch_molecule_record.func("代森锰锌"))
-    choices = out["choices"]
+    choices = mixture_choices(out["compounds"][0], "代森锰锌")
     assert len(choices) >= 3
     assert all(c["kind"] == "molecule" for c in choices)
     assert {c["detail"]["mode"] for c in choices} >= {"raw-mixture", "metal-monomer",
@@ -100,6 +110,41 @@ def test_mancozeb_choices_are_structured_and_parse_to_one_molecule(monkeypatch) 
         mols = parse_smiles_text(choice["prompt"])
         assert len(mols) == 1, f"点选项必须能确定地解析出 1 个分子：{choice['label']} → {mols}"
         assert extract_smiles(choice["prompt"]), "intake 的确定性抽取也必须能拿到该分子"
+
+
+def test_mixture_tool_payload_hides_option_details_from_model(monkeypatch) -> None:
+    """真实反馈回归：同一批选项不能既进界面按钮、又被主管 Agent 抄成正文表格。
+
+    工具的**模型侧**返回只给「数量 + 原因 + 不要复述」的指令；选项明细只走
+    `run.data["choices"]` → SSE → 前端按钮。
+    """
+    def fake_http(url: str) -> Any:
+        if "Mancozeb" in url:
+            return PUBCHEM_PAYLOAD
+        raise online.OnlineError("PubChem 未找到对应记录（HTTP 404）")
+
+    monkeypatch.setattr(online, "_http_json", fake_http)
+    from docking_agent.runs import Run, current_run
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        run = Run(Path(td), "R-MIX", "agent", {"mode": "chat"})
+        token = current_run.set(run)
+        try:
+            out = json.loads(online.fetch_molecule_record.func("代森锰锌"))
+            # 模型侧：没有选项明细
+            assert "choices" not in out, "选项明细不得回流给模型（会被抄进正文）"
+            assert out["choices_published"]["count"] >= 3
+            assert "不要" in out["message"] and "界面" in out["message"]
+            blob = json.dumps(out, ensure_ascii=False)
+            assert "molecule:3034368:raw" not in blob, \
+                "模型侧载荷不得包含任何「可点选选项」的 id/明细"
+            # 界面侧：选项仍在运行数据里（前端按钮 + 点选后续跑）
+            published = run.data.get("choices") or []
+            assert len(published) >= 3
+            assert all(c["kind"] == "molecule" and c["prompt"] for c in published)
+        finally:
+            current_run.reset(token)
 
 
 def test_fetch_molecule_record_unknown_name_returns_actionable_error(monkeypatch) -> None:
@@ -146,6 +191,12 @@ def test_fetch_protein_structure_uses_rcsb_with_full_provenance(monkeypatch) -> 
     assert prov["uniprot_attempts"], "溯源里必须带 UniProt 已尝试检索"
     assert prov["score_reasons"], "溯源里必须带候选打分理由"
     assert not run.data.get("choices"), "解析成功必须清空陈旧 choices"
+    # 溯源必须随运行落盘（报告 §1.2 直接渲染）：否则结论节一精简就从报告里丢了
+    recorded = run.data.get("receptor_provenance") or {}
+    assert recorded.get("accession") == "Q9SJQ6" and recorded.get("pdb_id") == "7YHP"
+    assert recorded.get("organism") == "Arabidopsis thaliana"
+    assert recorded.get("structure_method") == "EM" and recorded.get("structure_resolution") == "3.1 A"
+    assert "structure_url" not in recorded, "URL 不进运行小状态（报告正文不出现裸链接）"
 
 
 def test_fetch_protein_structure_falls_back_to_alphafold(monkeypatch) -> None:

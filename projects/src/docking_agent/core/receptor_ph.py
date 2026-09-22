@@ -137,26 +137,76 @@ def hetatm_are_simple_ions(pdb_text: str) -> Tuple[bool, List[str]]:
     return (not unsupported), unsupported
 
 
-def normalize_pqr_for_meeko(pqr_text: str) -> Tuple[str, int]:
-    """把 pdb2pqr 的 PQR 规范化成 meeko 能解析的形式。
+#: PQR 残基键 token：可选链号 + 残基号 + 可选插入码（可能两两粘连，见 parse_pqr_atom_line）
+_PQR_RESID_RE = re.compile(r"^([A-Za-z]?)(-?\d+)([A-Za-z]?)$")
 
-    meeko 的 PQR 解析器要求 `... resName chain resSeq icode x y z charge radius` 是**独立字段**，
-    而 pdb2pqr 会把插入码贴在残基号上（`36A`）→ meeko 直接 `int('36A')` 崩。
-    做法：把它拆成两个字段。**不能丢掉插入码**（1DWC 里 36 与 36A 是不同残基，合并会造成
-    「同一 key 两个残基名」而报错），也不能并进原子名（原子名是定长字段，并进去会让模板失配）。
-    只处理 11 字段（带链）的行，HETATM 同理。
+
+def parse_pqr_atom_line(line: str) -> Optional[Dict[str, Any]]:
+    """解析一条 PQR 的 ATOM/HETATM 行，返回字段字典；不是原子行或无法解析时返回 None。
+
+    **为什么不能只按白空格切**：pdb2pqr 按 PDB 固定列写 PQR，白空格切分有两种粘连：
+      * 插入码贴在残基号上：`ILE H 36A` → 第 6 个 token 是 `36A`；
+      * **4 位残基号**把链号挤到没有空格：`GLU A1005` → 该行只有 10 个 token，
+        meeko 会把 `A1005` 当链号、把 x 坐标当残基号 → `int('128.990')` 崩
+        （真实缺陷：7YHP 的残基号到 1xxx，整条 pH 准备因此失败、静默回退标准流程）。
+    这里按「最后 5 个 token 一定是 x y z charge radius」反推残基键，不依赖列宽。
+    """
+    parts = line.split()
+    if len(parts) < 9 or parts[0] not in ("ATOM", "HETATM"):
+        return None
+    try:
+        x, y, z, charge, radius = (float(value) for value in parts[-5:])
+    except ValueError:
+        return None
+    match = _PQR_RESID_RE.match("".join(parts[4:-5]))
+    if not match:
+        return None
+    return {"record": parts[0], "serial": parts[1], "name": parts[2], "resname": parts[3],
+            "chain": match.group(1), "resnum": int(match.group(2)), "icode": match.group(3),
+            "x": x, "y": y, "z": z, "charge": charge, "radius": radius}
+
+
+def format_pqr_atom_line(atom: Dict[str, Any]) -> str:
+    """把 `parse_pqr_atom_line` 的结果写成 meeko 一定能解析的形态（链/残基号/插入码各自独立）。"""
+    parts = [str(atom["record"]), str(atom["serial"]), str(atom["name"]), str(atom["resname"])]
+    if atom.get("chain"):
+        parts.append(str(atom["chain"]))
+    parts.append(str(atom["resnum"]))
+    if atom.get("icode"):
+        parts.append(str(atom["icode"]))
+    parts += [f"{atom['x']:.3f}", f"{atom['y']:.3f}", f"{atom['z']:.3f}",
+              f"{atom['charge']:.4f}", f"{atom['radius']:.4f}"]
+    return " ".join(parts)
+
+
+def normalize_pqr_for_meeko(pqr_text: str) -> Tuple[str, int]:
+    """把 pdb2pqr 的 PQR 规范化成 meeko 能解析的形式，返回 (规范化文本, 改写行数)。
+
+    meeko 的 PQR 解析器要求 `serial name resName [chain] resSeq [icode] x y z charge radius`
+    是**独立字段**；pdb2pqr 的固定列写法在两种情况下会让白空格切分粘连（插入码、4 位残基号），
+    两种都由 `parse_pqr_atom_line` 统一拆开。**不能丢掉插入码**（1DWC 里 36 与 36A 是不同残基）。
+    非原子行（REMARK/TER/END…）原样保留。
     """
     split = 0
     out: List[str] = []
     for line in pqr_text.splitlines():
         if line.startswith(("ATOM", "HETATM")):
             parts = line.split()
-            if len(parts) == 11:
-                m = re.match(r"^(-?\d+)([A-Za-z]?)$", parts[5])
-                if m and m.group(2):
-                    parts[5:6] = [m.group(1), m.group(2)]
+            key_tokens = parts[4:-5] if len(parts) >= 9 else []
+            # 已经是规范形状（链与残基号各自独立）→ 原样保留，不做无谓的数值重排
+            canonical = ((len(key_tokens) == 1 and key_tokens[0].lstrip("-").isdigit())
+                         or (len(key_tokens) == 2 and len(key_tokens[0]) == 1
+                             and key_tokens[1].lstrip("-").isdigit()))
+            if canonical:
+                out.append(line)
+                continue
+            atom = parse_pqr_atom_line(line)
+            if atom is not None:
+                fixed = format_pqr_atom_line(atom)
+                if fixed != line:
                     split += 1
-                    line = " ".join(parts)
+                out.append(fixed)
+                continue
         out.append(line)
     return "\n".join(out) + "\n", split
 
@@ -205,15 +255,12 @@ def his_states_from_pqr(pqr_text: str) -> Dict[str, int]:
     for line in pqr_text.splitlines():
         if not line.startswith(("ATOM", "HETATM")):
             continue
-        parts = line.split()
-        if len(parts) < 6:
+        parsed = parse_pqr_atom_line(line)
+        if parsed is None or parsed.get("resname") != "HIS":
             continue
-        name, resname = parts[2], parts[3]
-        if resname != "HIS":
-            continue
-        token = parts[4]
-        chain, resnum = ("", token) if token.lstrip("-").isdigit() else (token, parts[5])
-        atoms.setdefault((chain, resnum), set()).add(name)
+        key = (str(parsed.get("chain") or ""),
+               f"{parsed.get('resnum')}{parsed.get('icode') or ''}")
+        atoms.setdefault(key, set()).add(str(parsed.get("name") or ""))
     counts = {"HID": 0, "HIE": 0, "HIP": 0, "未判定": 0}
     for names in atoms.values():
         has_d1, has_e2 = "HD1" in names, "HE2" in names

@@ -352,7 +352,6 @@ def test_pocket_agent_box_is_raised_by_library_floor() -> None:
 
 def test_user_specified_explicit_box_is_never_touched() -> None:
     """对照（不变量）：用户显式给的盒子（无 chosen_by）一律不抬高、不加库级下限。"""
-    hex_span = _span_max(HEX_GLY6["smiles"])
     user_site = {"center": [31.5, 13.74, 24.36], "size": [22.0, 22.0, 22.0],
                  "source": "用户指定"}
     out = _dock(SMALL + [HEX_GLY6], site=user_site)

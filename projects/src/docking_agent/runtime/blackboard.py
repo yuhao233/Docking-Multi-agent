@@ -14,6 +14,9 @@
     notes              协作备注（各 Agent 的修正与判断）
 
 实现为 ContextVar，由 API 层在每次运行时注入，工具函数用 `current_blackboard.get()` 取用。
+
+**模块位置**：本模块属 `runtime/` 层（跨 Agent 的运行级服务），原先在 `agents/` 下 ——
+那会让最被依赖的 `runtime.context` 反向 import `agents`（审计 V3）。
 """
 from __future__ import annotations
 
@@ -27,10 +30,49 @@ from rdkit import Chem
 logger = logging.getLogger(__name__)
 
 
+def canonical_key(smiles: str) -> str:
+    """分子身份键：SMILES → 规范形式（**同一个物质的任何写法都必须落成同一个键**）。
+
+    真实缺陷（2026-09-22 用户实测）：一次运行只给了 1 个分子，却对接出 2 行 ——
+    `add_molecules` 用**规范** SMILES 做键，而 `set_properties` / `set_docking` / `set_binding`
+    用**原始** SMILES 做键。同一物质（PubChem 原始写法 `S=C([S-])NCC…` 与用户点选的
+    `C(CNC(=S)[S-])…`，canonical/InChIKey 完全相同）因此各占一个键，黑板里出现两个「分子」，
+    对接与排行也就出现两行。
+    无法解析时退回原文（保持可追溯，不丢数据）。
+    """
+    text = str(smiles or "").strip()
+    if not text:
+        return ""
+    mol = Chem.MolFromSmiles(text)
+    if mol is None:
+        return text
+    try:
+        return Chem.MolToSmiles(mol) or text
+    except Exception:  # noqa: BLE001 - 特殊价态/金属：退回原文
+        return text
+
+
 #: 黑板在 store 里的命名空间前缀与字段键（**按字段存**：不同字段并发写不会互相覆盖）
 STORE_NS_PREFIX = "blackboard"
 _STORE_FIELDS = ("receptor", "site", "molecules", "properties", "docking", "binding",
                  "positive_control", "pockets", "pocket_engine", "site_pinned", "notes")
+
+
+def dedupe_molecules(molecules: List[Dict[str, Any]]) -> "tuple[List[Dict[str, Any]], int]":
+    """按**化学身份**去重（保持输入顺序）：返回 `(去重后的清单, 去掉的条数)`。
+
+    与 `Blackboard.add_molecules` 用同一个 `canonical_key`：同一物质的两种 SMILES 写法
+    （PubChem 原始写法 / 用户点选写法 / 大小写与原子顺序差异）只保留第一条。
+    """
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for m in molecules or []:
+        key = canonical_key(str((m or {}).get("smiles") or ""))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(m)
+    return out, len(list(molecules or [])) - len(out)
 
 
 class Blackboard:
@@ -195,7 +237,7 @@ class Blackboard:
                 if mol is None:
                     self.notes.append(f"跳过无法解析的 SMILES：{smiles[:40]}")
                     continue
-                canonical = Chem.MolToSmiles(mol)
+                canonical = canonical_key(smiles)
                 if canonical in self._molecules:
                     continue
                 entry = {"name": (m.get("name") or canonical), "smiles": canonical}
@@ -218,10 +260,12 @@ class Blackboard:
         with self._lock:
             for p in properties or []:
                 s = str((p or {}).get("smiles") or "")
-                if s:
-                    self._properties[s] = p
-                    if s not in self._molecules:
-                        self._molecules[s] = {"name": p.get("name") or s, "smiles": s}
+                if not s:
+                    continue
+                key = canonical_key(s)
+                self._properties[key] = p
+                if key not in self._molecules:
+                    self._molecules[key] = {"name": p.get("name") or s, "smiles": s}
             self._mirror("properties", self._properties)
             self._mirror("molecules", self._molecules)
 
@@ -231,6 +275,10 @@ class Blackboard:
 
     def get_property(self, smiles: str) -> Optional[Dict[str, Any]]:
         with self._lock:
+            key = canonical_key(smiles)
+            if key in self._properties:
+                return dict(self._properties[key])
+            # 兜底：调用方可能给的是原始写法而键是规范写法（或反之）
             return dict(self._properties[smiles]) if smiles in self._properties else None
 
     def set_docking(self, results: List[Dict[str, Any]], receptor: Optional[Dict[str, Any]] = None) -> None:
@@ -240,7 +288,7 @@ class Blackboard:
             for r in results or []:
                 s = str((r or {}).get("smiles") or "")
                 if s:
-                    self._docking[s] = r
+                    self._docking[canonical_key(s)] = r
             self._mirror("docking", self._docking)
 
     def docking(self) -> List[Dict[str, Any]]:
@@ -252,7 +300,7 @@ class Blackboard:
             for r in rows or []:
                 s = str((r or {}).get("smiles") or "")
                 if s:
-                    self._binding[s] = r
+                    self._binding[canonical_key(s)] = r
             self._mirror("binding", self._binding)
 
     def binding(self) -> List[Dict[str, Any]]:
@@ -305,6 +353,11 @@ def get_blackboard() -> Optional[Blackboard]:
 _shared_store: Any = None
 _store_boards: Dict[tuple, Blackboard] = {}
 
+#: 视图缓存上限（护栏）：正常运行会在每个 run 结束时 `forget_store_blackboard()`，
+#: 这里是兜底 —— 任何漏掉的路径（例如 CLI 直调 `active_blackboard()`）也不会让
+#: 缓存无限增长（FIFO 淘汰最旧视图）。
+_STORE_BOARDS_MAX = 32
+
 
 def shared_store() -> Any:
     """进程内共享的 `InMemoryStore`（图构建时传给 create_agent 的 `store=`）。
@@ -328,11 +381,28 @@ def store_blackboard(store: Any, run_id: str = "") -> Blackboard:
     if board is None:
         board = Blackboard(run_id, store=store)
         _store_boards[key] = board
+        while len(_store_boards) > _STORE_BOARDS_MAX:
+            _store_boards.pop(next(iter(_store_boards)))
     return board
 
 
+def forget_store_blackboard(run_id: str) -> int:
+    """运行结束时丢弃该 run 的 store 黑板视图，返回移除条数。
+
+    为什么必须显式丢弃：`_store_boards` 以 `(id(store), run_id)` 为键缓存视图，
+    视图持有该 run 的分子/性质/对接等运行级状态；服务长时间运行时每个 run 都会留下
+    一条，属于**真实的进程内泄漏**（审计 §2.1）。运行收尾处（API/标准面/兼容面）
+    都应调用本函数；`_STORE_BOARDS_MAX` 只是兜底护栏。
+    """
+    target = run_id or "default"
+    keys = [k for k in _store_boards if k[1] == target]
+    for key in keys:
+        _store_boards.pop(key, None)
+    return len(keys)
+
+
 def reset_store_blackboards() -> None:
-    """清空 store 视图缓存（测试/配置热更新用）。"""
+    """清空全部 store 视图缓存（测试 / 配置热更新用）。"""
     _store_boards.clear()
 
 

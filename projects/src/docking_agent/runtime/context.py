@@ -95,10 +95,10 @@ def active_blackboard(runtime: Any = None) -> Any:
     store = getattr(runtime, "store", None)
     run = ctx.run if ctx is not None else None
     if store is not None and run is not None:
-        from docking_agent.agents.blackboard import store_blackboard  # 延迟导入
+        from docking_agent.runtime.blackboard import store_blackboard  # 延迟导入
 
         return store_blackboard(store, getattr(run, "id", "") or "")
-    from docking_agent.agents.blackboard import current_blackboard  # 延迟导入
+    from docking_agent.runtime.blackboard import current_blackboard  # 延迟导入
 
     return current_blackboard.get()
 
@@ -113,7 +113,7 @@ def active_request(runtime: Any = None) -> Optional[Context]:
 
 def current_agent_context() -> AgentContext:
     """用当前进程内的 ContextVar 组装一个 `AgentContext`（图调用方在 invoke 时用）。"""
-    from docking_agent.agents.blackboard import current_blackboard  # 延迟导入
+    from docking_agent.runtime.blackboard import current_blackboard  # 延迟导入
     from docking_agent.runs import current_run  # 延迟导入
 
     return AgentContext(run=current_run.get(), blackboard=current_blackboard.get(),

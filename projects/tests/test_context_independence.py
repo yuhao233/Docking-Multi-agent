@@ -21,7 +21,7 @@ import pathlib
 import re
 from typing import Dict, List, Set
 
-from docking_agent.agents.blackboard import Blackboard
+from docking_agent.runtime.blackboard import Blackboard
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "docking_agent"
 
@@ -36,7 +36,7 @@ ALLOWED: Dict[str, Set[str]] = {
     "runtime/context.py": {"active_run", "active_blackboard", "active_request",
                            "current_agent_context"},
     # 黑板访问器本身（黑板是否迁进 graph state 是**待决策**项，见 README 记录 48）
-    "agents/blackboard.py": {"get_blackboard", "board_molecules_json"},
+    "runtime/blackboard.py": {"get_blackboard", "board_molecules_json"},
     # 日志前缀：纯展示用途，拿不到就省略前缀
     "logging_setup.py": {"filter"},
     # 运行请求回溯（质子化策略/库级下限）：显式参数优先 + ContextVar 兜底
@@ -127,7 +127,7 @@ def test_every_tool_uses_runtime_aware_accessors() -> None:
 
 def test_tool_io_dual_reads_with_explicit_run() -> None:
     """数据总线（tool_io）必须支持显式 `run=`；裸读只允许出现在 `else` 兜底里。"""
-    src = (SRC / "agents" / "tool_io.py").read_text(encoding="utf-8")
+    src = (SRC / "runtime" / "tool_io.py").read_text(encoding="utf-8")
     assert "run if run is not None else current_run.get()" in src, "tool_io 必须支持显式 run"
     assert not _raw_reads(src), f"tool_io 里仍有裸读：{_raw_reads(src)}"
 
@@ -137,7 +137,7 @@ def test_tool_io_dual_reads_with_explicit_run() -> None:
 # --------------------------------------------------------------------------- #
 def test_store_backed_blackboard_shares_state_across_views() -> None:
     """两个视图（模拟另一个进程/子图）通过同一 store 看到彼此写入 —— 这是接入 store 的意义。"""
-    from docking_agent.agents.blackboard import shared_store, store_blackboard
+    from docking_agent.runtime.blackboard import shared_store, store_blackboard
 
     store = shared_store()
     a = store_blackboard(store, "run-store-1")
@@ -153,7 +153,7 @@ def test_store_backed_blackboard_shares_state_across_views() -> None:
 
 
 def test_store_backed_blackboard_isolates_runs() -> None:
-    from docking_agent.agents.blackboard import shared_store, store_blackboard
+    from docking_agent.runtime.blackboard import shared_store, store_blackboard
 
     store = shared_store()
     verify = store_blackboard(store, "run-store-iso-A")
@@ -165,7 +165,7 @@ def test_store_backed_blackboard_isolates_runs() -> None:
 
 def test_store_writes_are_per_field() -> None:
     """按字段写：并发改不同字段不会互相覆盖（整档覆写会丢更新）。"""
-    from docking_agent.agents.blackboard import shared_store, store_blackboard
+    from docking_agent.runtime.blackboard import shared_store, store_blackboard
 
     store = shared_store()
     board = store_blackboard(store, "run-store-fields")
@@ -179,7 +179,7 @@ def test_active_blackboard_prefers_store_when_available() -> None:
     """runtime 提供 store + run 时，`active_blackboard` 必须给出 store 视图（规范后端）。"""
     from dataclasses import dataclass
 
-    from docking_agent.agents.blackboard import shared_store
+    from docking_agent.runtime.blackboard import shared_store
     from docking_agent.runtime.context import AgentContext, active_blackboard
 
     @dataclass

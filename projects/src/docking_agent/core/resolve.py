@@ -613,15 +613,18 @@ def candidate_structure_hint(cand: Dict[str, Any]) -> str:
     return f"RCSB {'/'.join(pdbs[:2])}" if pdbs else "AlphaFold 预测"
 
 
-def receptor_choices(candidates: Sequence[Dict[str, Any]], limit: int = 5,
-                     include_default: bool = True) -> List[Dict[str, Any]]:
+def receptor_choices(candidates: Sequence[Dict[str, Any]],
+                     limit: int = 5) -> List[Dict[str, Any]]:
     """把受体候选转成前端可点选的结构化选项。
 
     每项：``{id, kind, label, value, prompt, detail}``
       * ``label``  人看的中文标签（物种 · 蛋白名 · accession · 结构来源 · 打分）；
-      * ``value``  机器可用值（UniProt accession；默认受体为 ``thrombin``）；
+      * ``value``  机器可用值（UniProt accession）；
       * ``prompt`` 前端点击后原样发出的追问（同一 conversation_id 的下一轮）；
       * ``detail`` accession/物种/蛋白名/结构来源/打分理由，供 UI 展开与报告溯源。
+
+    **不提供「改用系统默认受体」选项**：预置受体只用于内部测试，系统也没有默认受体
+    （历史缺陷：这里曾无条件追加一个 `thrombin` 选项，与产品规则和代码守卫直接冲突）。
     """
     choices: List[Dict[str, Any]] = []
     for cand in list(candidates)[:limit]:
@@ -644,12 +647,5 @@ def receptor_choices(candidates: Sequence[Dict[str, Any]], limit: int = 5,
                        "score": brief.get("score"), "reasons": brief.get("reasons") or [],
                        "reviewed": brief.get("reviewed"), "genes": genes},
         })
-    if include_default:
-        choices.append({
-            "id": "receptor:default-thrombin", "kind": "receptor",
-            "label": "改用系统默认受体 凝血酶（thrombin, 1DWC）",
-            "value": "thrombin",
-            "prompt": "同意改用系统默认受体 凝血酶（thrombin, 1DWC）继续对接筛选",
-            "detail": {"note": "仅当上述候选都不合适时选择"},
-        })
+    return choices
     return choices

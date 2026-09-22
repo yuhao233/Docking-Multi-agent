@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,7 +91,23 @@ def _threads_dir() -> Path:
 
 
 def _thread_path(thread_id: str) -> Path:
-    return _threads_dir() / f"{thread_id}.json"
+    """线程文件路径 `var/threads/<thread_id>.json`。
+
+    `thread_id` 来自请求体/URL，会被当成**单层文件名**使用，因此必须过白名单 +
+    目录包含性断言：未校验时 `thread_id="../x"` 可写到 `var/threads/` 之外，
+    覆盖工作区里任意 `*.json`（真实漏洞，已实测）。
+    """
+    from docking_agent.runs import ensure_inside, safe_run_component  # noqa: PLC0415
+
+    try:
+        tid = safe_run_component(thread_id, field="thread_id")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    threads = _threads_dir()
+    try:
+        return ensure_inside(threads, threads / f"{tid}.json", field="thread_id")
+    except ValueError as e:  # pragma: no cover - 白名单已挡住，保留为兜底
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def create_thread(thread_id: str = "", metadata: Optional[Dict[str, Any]] = None,
@@ -194,7 +209,11 @@ def _message_dicts(messages: List[Any]) -> List[Dict[str, Any]]:
 
 #: 领域事件（网页端自定义契约）→ 标准面的 `custom` 通道
 _DOMAIN_TYPES = {"stage", "molecules", "progress", "choices", "cancelled", "tool_call",
-                 "tool_result", "update", "intake"}
+                 "tool_result", "update", "intake",
+                 # 步数预算：跑满递归上限时自动放宽/收尾的如实告知（不是错误）
+                 "limit",
+                 # 思考/推理增量：走 custom 通道（**不**进 messages/partial），前端折叠到「思考」气泡
+                 "thinking"}
 
 
 def _map_legacy_event(data: Dict[str, Any], *, state: Dict[str, Any]) -> List[str]:
@@ -308,12 +327,13 @@ def _agent_request(inp: Dict[str, Any], thread_id: str) -> AgentRequest:
 async def _run_simple_assistant(assistant: str, inp: Dict[str, Any], thread_id: str) -> Dict[str, Any]:
     """intake / 4 个子 Agent：一次性执行，返回文本与业务 run id。"""
     from docking_agent.runs import current_run, get_run_store
-    from docking_agent.runtime.context import (AgentContext, current_agent_context, new_context,
+    from docking_agent.runtime.context import (AgentContext, new_context,
                                                request_context)
 
     if assistant == "intake":
         from docking_agent import intake
-        from docking_agent.agents.blackboard import current_blackboard, shared_store, store_blackboard
+        from docking_agent.runtime.blackboard import (current_blackboard, forget_store_blackboard,
+                                                     shared_store, store_blackboard)
 
         run = get_run_store().new("agent", {"mode": "standard:intake", "payload": inp})
         run.data["thread_id"] = thread_id
@@ -330,9 +350,11 @@ async def _run_simple_assistant(assistant: str, inp: Dict[str, Any], thread_id: 
         finally:
             current_blackboard.reset(board_token)
             current_run.reset(token)
+            forget_store_blackboard(run.id)   # 运行结束即丢弃该 run 的黑板视图
 
     from docking_agent.agents import workers
-    from docking_agent.agents.blackboard import current_blackboard, shared_store, store_blackboard
+    from docking_agent.runtime.blackboard import (current_blackboard, forget_store_blackboard,
+                                                 shared_store, store_blackboard)
     from langchain_core.messages import HumanMessage
 
     workers.init_workers(None)
@@ -366,6 +388,7 @@ async def _run_simple_assistant(assistant: str, inp: Dict[str, Any], thread_id: 
         request_context.reset(ctx_token)
         current_blackboard.reset(board_token)
         current_run.reset(token)
+        forget_store_blackboard(run.id)   # 运行结束即丢弃该 run 的黑板视图
 
 
 def parse_frame(chunk: str) -> Tuple[str, Any]:

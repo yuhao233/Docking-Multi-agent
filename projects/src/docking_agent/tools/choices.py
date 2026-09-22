@@ -20,8 +20,7 @@ import json
 import logging
 import os
 import re
-import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from docking_agent.core.resolve import candidate_brief, summarize_attempts
 from docking_agent.paths import project_root
@@ -62,6 +61,84 @@ def mark_receptor_unresolved(source: str, status: str, resolution: Dict[str, Any
         logger.debug("写运行日志失败", exc_info=True)
 
 
+def mark_receptor_input_invalid(source: str, reason: str, message: str,
+                                runtime: Any = None) -> None:
+    """用户上传的受体文件不可用 / 受体名无法识别 → 把本次运行的受体标为 `unresolved`。
+
+    与 `mark_receptor_unresolved`（在线解析失败）同一目的：让 `run_docking` 的护栏
+    **在代码层**拦住后续计算，而不是只靠提示词自觉 —— 用户没重新给出可用受体之前，
+    不该有任何引擎被启动（更不该拿预置受体跑完一整套）。
+    """
+    run = active_run(runtime)
+    if run is None:
+        return
+    data = getattr(run, "data", {})
+    spec = dict(data.get("task_spec") or {})
+    receptor = dict(spec.get("receptor") or {})
+    receptor.update({
+        "name": receptor.get("name") or source,
+        "source": "unresolved",
+        "resolution": {"status": "input_invalid", "reason": reason,
+                       "requested": source, "message": message},
+    })
+    spec["receptor"] = receptor
+    data["task_spec"] = spec
+    try:
+        run.log(f"受体输入不可用（{reason}）：已阻断后续计算，等待用户确认 —— {message[:120]}")
+    except Exception:  # noqa: BLE001
+        logger.debug("写运行日志失败", exc_info=True)
+
+
+def receptor_input_problem(reason: str, source: str, message: str,
+                           options: Sequence[str] = (), runtime: Any = None) -> str:
+    """「受体输入不可用」的统一回答：`needs_user_input` + 阻断本次运行的后续计算。
+
+    产品底线：计算对象不可用时**绝不计算**，也绝不改用任何预置受体。工具层
+    （对接 / 口袋）与归一化失败都走这里，保证用户拿到的是**同一种**回答：
+    说清原因、给出可选项、把选择权交回用户。
+    """
+    mark_receptor_input_invalid(source, reason, message, runtime=runtime)
+    return json.dumps({
+        "status": "needs_user_input",
+        "missing": ["receptor"],
+        "reason": reason,
+        "receptor": source,
+        "options": list(options or []),
+        "message": message + " 在用户给出可用的受体之前，不要调用 run_docking / "
+                             "molecular_docking / run_pocket_analysis 重试。",
+    }, ensure_ascii=False)
+
+
+def receptor_input_guard(exc: Any, runtime: Any = None) -> str:
+    """把 `ReceptorInputError` 转成给用户看的回答（见 `receptor_input_problem`）。"""
+    payload = getattr(exc, "payload", None) or {}
+    return receptor_input_problem(str(getattr(exc, "reason", "") or "input_invalid"),
+                                  str(getattr(exc, "source", "") or ""), str(exc),
+                                  options=payload.get("options") or (), runtime=runtime)
+
+
+#: 给**模型**看的说明：选项已经通过界面下发，模型不要在正文里再列一遍。
+#: 真实反馈：同一批选项既出现在主管 Agent 的 A/B/C/D 表格里，又出现在界面的可点按钮上，
+#: 用户以为系统问了两遍（重复列选项还白占上下文）。
+CHOICES_PROSE_RULE = (
+    "选项已通过界面下发给用户（可直接点选）。**不要在回复里重复列出选项内容、SMILES、"
+    "候选清单或参数**；只用一两句话说明「为什么必须由用户决定」并请用户在界面上点选。")
+
+
+def choices_payload(choices: List[Dict[str, Any]], *, message: str, kind: str = ""
+                    ) -> Dict[str, Any]:
+    """构造给**模型**的「等待用户点选」载荷：只给原因与数量，**不给选项明细**。
+
+    选项明细走 `run.data["choices"]` → SSE → 前端按钮（见 `publish_choices`），
+    模型不需要也不应该复述它们（复述就会造成「同一问题出现两次」）。
+    """
+    first = choices[0] if choices else {}
+    return {"status": "needs_user_input",
+            "message": f"{message} {CHOICES_PROSE_RULE}",
+            "choices_published": {"kind": kind or str(first.get("kind") or ""),
+                                  "count": len(choices)}}
+
+
 def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
                     runtime: Any = None) -> None:
     """把「候选选择项」写进本次运行数据，供 SSE / 运行详情下发给前端点选。
@@ -78,14 +155,14 @@ def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
         run.data.pop("_choices_signatures", None)
         return
     normalized = [{**(c or {}), "kind": (c or {}).get("kind") or kind} for c in choices]
-    # 幂等：同一批候选（同 kind + 同 id 序列）在一次运行里只发布/记日志一次 ——
-    # 重复发布会让界面出现两份选项气泡（真实缺陷）。
+    # 同一个问题在一次运行里**只认第一次发布**（同 kind + 同 id 序列即同一个问题）：
+    # 重复发布既不该记日志，也不该改写已下发的候选 —— 真实反馈：「配体选择问了两次」，
+    # 且界面上的第二份会**覆盖**第一份，用户点了先出现的那份就与后端当前候选错位。
+    # 触发场景：同一工具被两种写法各调用一次（「代森锰锌」/「Mancozeb」），解析到同一 CID，
+    # 选项 id 相同但 prompt 里带不同写法 → 旧实现会改写 `choices` 并再发一次 SSE。
     signature = (kind, tuple(str(c.get("id") or "") for c in normalized))
     published = run.data.setdefault("_choices_signatures", [])
     if signature in published:
-        run.data["choices"] = normalized                 # 保持数据，但不重复记日志
-        if note:
-            run.data["choices_note"] = note
         return
     published.append(signature)
     run.data["choices"] = normalized
@@ -108,6 +185,12 @@ def clear_choices(kind: str = "",
     if run is None:
         return
     current = run.data.get("choices") or []
+    # 被清掉的那一类同时撤销「已发布」标记：同一问题若在本次运行里**再次真的需要**问，
+    # 必须能重新下发（否则会被幂等规则静默吞掉）。
+    signatures = run.data.get("_choices_signatures") or []
+    run.data["_choices_signatures"] = [
+        s for s in signatures
+        if not (isinstance(s, (list, tuple)) and s and (not kind or s[0] == kind))]
     if not current:
         return
     kept = [c for c in current if not kind or c.get("kind") != kind]
@@ -142,9 +225,10 @@ def resolution_failure_json(src: str, resolution: Dict[str, Any]) -> str:
         "attempts": attempts, "candidates": briefs,
         "message": ("在线数据库未找到与该名称匹配的蛋白。已尝试的检索："
                     + "；".join(attempts)
-                    + "。请让用户三选一：① 提供 PDB ID（如 1DWC）；② 提供 UniProt accession"
-                      "（如 Q9SJQ6）；③ 上传受体文件（.pdb/.ent/.cif/.pdbqt），或明确同意改用系统默认受体"
-                      " 凝血酶（thrombin, 1DWC）。"),
+                    + "。请让用户三选一：① 提供 PDB 编号（如 1DWC）；"
+                      "② 提供 UniProt accession（如 Q9SJQ6）；"
+                      "③ 上传受体结构文件（.pdb/.ent/.cif/.pdbqt）。"
+                      "**系统没有默认受体，也不提供预置受体选项** —— 用户指定之前不要调用任何计算工具。"),
     }, ensure_ascii=False)
 
 
@@ -221,21 +305,33 @@ def _ligand_smiles_from_candidates(ligand: Dict[str, Any], paths: List[str]) -> 
 
 
 def _ligand_candidate_paths(block: Dict[str, Any], runtime: Any = None) -> List[str]:
-    """共晶配体的候选结构来源：本次对接所用结构 → 请求里的原始受体文件 → 在线解析缓存。"""
-    candidates: List[str] = [str((block or {}).get("receptor_pdb") or "")]
+    """共晶配体的候选结构来源（按可信度）：原始结构 → 本次对接所用结构 → 请求里的受体文件 → 缓存。
+
+    为什么必须带**原始结构**：对接用的是已去配体的 PDBQT，配体原子在那里根本不存在。
+    真实缺陷（用户实测）：受体先被口袋 Agent 准备成 `xxx_ph7.4.pdbqt`，`cocrystal_ligand`
+    只剩残基名、有没有原始 PDB 路径都没带出去 → 候选列表为空 → 解不出 SMILES →
+    「是否把受体自带配体当阳性对照」的询问**永远不会触发**。
+    """
+    b = block or {}
+    candidates: List[str] = [str(b.get("source_pdb") or ""), str(b.get("receptor_pdb") or "")]
     run = active_run(runtime)
     request = (getattr(run, "data", None) or {}).get("request") or {}
     for key in ("receptor_file", "receptor"):
         value = str(request.get(key) or "").strip()
         if value and not value.startswith(("http://", "https://")) and os.path.isfile(value):
             candidates.append(value)
-    # 受体标签里若带 4 位 PDB 编号（如 7YHP），在线解析的原始结构通常在 assets/cache
-    label = str((block or {}).get("receptor") or "")
-    for token in re.findall(r"\b([0-9][A-Za-z0-9]{3})\b", label):
-        cached = project_root() / "assets" / "cache" / f"{token.upper()}.pdb"
-        if cached.is_file():
-            candidates.append(str(cached))
-    # 去重且保持顺序
+    # 标签/键里若带 4 位 PDB 编号（如 7YHP，也可能是 `7YHP_<hash>_ph7.4` 这种带后缀），
+    # 在线解析的原始结构通常在 assets 缓存里。注意：不能用 `\b` —— 下划线也是词字符，
+    # `7YHP_xxx` 里根本切不出边界（这正是缺陷之一）。
+    label = " ".join(str(b.get(k) or "") for k in ("receptor", "receptor_key", "name", "label", "key"))
+    for token in re.findall(r"(?<![A-Za-z0-9])([0-9][A-Za-z0-9]{3})(?![A-Za-z0-9])", label):
+        for cache in (project_root() / "assets" / "cache",
+                      project_root() / "assets" / "receptor" / "cache"):
+            cached = cache / f"{token.upper()}.pdb"
+            if cached.is_file():
+                candidates.append(str(cached))
+    # 去重、保持顺序。**不过滤不存在的路径**：日志会把这些路径原样列出来 ——
+    # 「记录了一个路径但它不存在」正是这次排查的关键线索（`receptor_pdb` 曾只是一个文件名）。
     seen: set = set()
     out: List[str] = []
     for path in candidates:
@@ -256,6 +352,16 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
     """
     if str(specified_control or "").strip():
         return []                                   # 用户/上游已指定对照：不打扰
+    run = active_run(runtime)
+    data = getattr(run, "data", None) if run is not None else None
+    # 一次运行**只判定一次**，且必须在对接开始前判定（函数名与文档承诺就是「对接前询问」）。
+    # 真实缺陷：同一次运行里 run_docking 可能被调用多次（重试/分阶段），早期调用因受体结构
+    # 还没准备好而解不出 SMILES（日志写「因此未询问」），后期调用却能解出并发布选项 ——
+    # 用户会在对接都快跑完时突然被问一次，且与之前的「不问」自相矛盾。
+    if isinstance(data, dict):
+        if data.get("cocrystal_check_done"):
+            return []
+        data["cocrystal_check_done"] = True
     for block in blocks or []:
         ligand = (block or {}).get("cocrystal_ligand") or {}
         resname = str(ligand.get("resname") or "")
@@ -271,7 +377,6 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
         label = "（".join([parts[0], "，".join(parts[1:]) + "）"]) if len(parts) > 1 else parts[0]
         if not smiles:
             try:
-                run = active_run(runtime)
                 if run is not None:
                     run.log(f"检测到共晶配体 {label}，但在 "
                             f"{'、'.join(tried) or '（无可读结构）'} 中都解不出 SMILES，"
@@ -282,7 +387,7 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
         receptor = str((block or {}).get("receptor") or "")
         choices = [
             {"id": f"positive_control:{ligand.get('key') or resname}", "kind": "positive_control",
-             "label": f"把共晶配体 {label} 作为阳性对照，做结合模式对比",
+             "label": f"把共晶配体 {label} 作为阳性对照，做结合模式对比".replace("） 作为", "）作为"),
              "value": smiles,
              "detail": {"resname": resname, "key": ligand.get("key"),
                         "n_atoms": ligand.get("n_atoms"), "smiles": smiles,

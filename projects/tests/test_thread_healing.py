@@ -9,8 +9,9 @@
 checkpointer 把那条 AIMessage 记进 thread 历史 → 同一会话的**下一轮**直接 400，整段对话卡死。
 
 看护三件事：
-1. `dangling_tool_calls()` 能准确找出没有回执的调用（含中间位置与部分回执两种形态）；
-2. `repair_messages()` 把占位回执插到**所属 AIMessage 正后方**（不是简单追加到末尾）；
+1. `dangling_tool_calls()` / `orphan_tool_call_ids()` 能准确找出两种非法形态；
+2. `pairing_updates()` 用**同 id 改写 AIMessage**（原地生效、顺序天然合法）修掉悬空调用，
+   并移除孤儿回执 —— 而不是往中间插消息（`add_messages` 只会把新 id 追加到末尾，插不进去）；
 3. `repair_thread_state()` 真的把修复写回 LangGraph checkpointer（用真实编译图 + MemorySaver）。
 """
 from __future__ import annotations
@@ -29,7 +30,8 @@ if str(SRC) not in sys.path:
 from docking_agent.agents.threads import (  # noqa: E402
     INTERRUPT_NOTE,
     dangling_tool_calls,
-    repair_messages,
+    orphan_tool_call_ids,
+    pairing_updates,
     repair_thread_state,
 )
 from docking_agent.config import ensure_runtime_env  # noqa: E402
@@ -60,29 +62,65 @@ def test_dangling_detects_tail_partial_and_middle() -> None:
     assert dangling_tool_calls([HumanMessage("没问题", id="h1"), AIMessage("结论", id="a1")]) == []
 
 
-def test_repair_inserts_placeholder_right_after_its_ai_message() -> None:
-    """占位回执必须在所属 AIMessage **正后方**：OpenAI 校验顺序，追加到末尾会继续报错。"""
-    messages = [HumanMessage("x", id="h1"), AIMessage("", tool_calls=[_call(9)], id="a2"),
+def test_pairing_rewrites_the_ai_message_in_place() -> None:
+    """悬空调用靠**同 id 改写 AIMessage**修掉：位置不变、顺序天然合法。
+
+    为什么不是「插一条占位 ToolMessage」：`add_messages` 只把**新 id** 追加到末尾，
+    往中间插消息做不到 —— 第一版就这样，占位回执落到了最新一条人类消息之后，模型端照样 400。
+    """
+    from langgraph.graph.message import add_messages
+
+    messages = [HumanMessage("x", id="h1"), AIMessage("先看口袋", tool_calls=[_call(9)], id="a2"),
                 HumanMessage("继续", id="h2"), AIMessage("结论", id="a3")]
-    repaired, added = repair_messages(messages)
+    updates, stats = pairing_updates(messages)
+    assert stats["rewritten"] == 1 and stats["dropped_calls"] == 1
+    assert stats["removed_orphans"] == 0
 
-    assert added == 1
-    assert _kinds(repaired) == ["HumanMessage", "AIMessage", "ToolMessage",
-                                "HumanMessage", "AIMessage"]
-    placeholder = repaired[2]
-    assert placeholder.tool_call_id == "call_9" and placeholder.name == "run_docking"
-    assert "中断" in placeholder.content and "没有产生结果" in placeholder.content
-    assert dangling_tool_calls(repaired) == []
-    assert len(repaired) == len(messages) + 1, "原有消息一条都不能丢"
+    merged = add_messages(messages, updates)          # 与 LangGraph 的 reducer 同一实现
+    assert _kinds(merged) == ["HumanMessage", "AIMessage", "HumanMessage", "AIMessage"], _kinds(merged)
+    assert [m.id for m in merged][:4] == ["h1", "a2", "h2", "a3"], "位置必须保持不变"
+    rewritten = merged[1]
+    assert not (rewritten.tool_calls or []), "无回执的调用必须去掉"
+    assert "先看口袋" in rewritten.content and "中断" in rewritten.content
+    assert "run_docking" in rewritten.content, "说明里要写清是哪个工具被中断"
+    assert dangling_tool_calls(merged) == []
 
 
-def test_repair_is_noop_when_history_is_valid() -> None:
+def test_pairing_drops_orphan_tool_messages() -> None:
+    """孤儿回执（配对的 AIMessage 被摘要/裁剪切掉）必须移除。"""
+    from langgraph.graph.message import add_messages
+
+    messages = [HumanMessage("x", id="h1"),
+                ToolMessage("旧回执", tool_call_id="gone", id="t0"),
+                AIMessage("结论", id="a1")]
+    assert orphan_tool_call_ids(messages) == ["gone"]
+    updates, stats = pairing_updates(messages)
+    assert stats["removed_orphans"] == 1
+    merged = add_messages(messages, updates)
+    assert _kinds(merged) == ["HumanMessage", "AIMessage"], _kinds(merged)
+
+
+def test_pairing_keeps_answered_calls_when_batch_is_partial() -> None:
+    """并行工具调用只回了一半：保留有回执的那一个，只去掉没回执的。"""
+    from langgraph.graph.message import add_messages
+
+    messages = [HumanMessage("x", id="h1"),
+                AIMessage("", tool_calls=[_call(1), _call(2)], id="a1"),
+                ToolMessage("ok", tool_call_id="call_1", id="t1"),
+                AIMessage("结论", id="a2")]
+    merged = add_messages(messages, pairing_updates(messages)[0])
+    calls = list(merged[1].tool_calls or [])
+    assert [c["id"] for c in calls] == ["call_1"], calls
+    assert dangling_tool_calls(merged) == []
+
+
+def test_pairing_is_noop_when_history_is_valid() -> None:
     messages = [HumanMessage("x", id="h1"),
                 AIMessage("", tool_calls=[_call(1)], id="a1"),
                 ToolMessage("result", tool_call_id="call_1", id="t1"),
                 AIMessage("结论", id="a2")]
-    repaired, added = repair_messages(messages)
-    assert added == 0 and [m.id for m in repaired] == [m.id for m in messages]
+    assert pairing_updates(messages)[0] == []
+    assert orphan_tool_call_ids(messages) == []
 
 
 def test_repair_thread_state_heals_real_checkpointer_state() -> None:
@@ -111,12 +149,13 @@ def test_repair_thread_state_heals_real_checkpointer_state() -> None:
                                                ("call_2", "run_docking")], _kinds(before)
 
         healed = await repair_thread_state(graph, config)
-        assert healed["repaired"] == 2, healed
+        assert healed["repaired"] == 1, healed
 
         after = (await graph.aget_state(config)).values["messages"]
         assert dangling_tool_calls(after) == [], _kinds(after)
-        assert _kinds(after) == ["HumanMessage", "AIMessage", "ToolMessage", "ToolMessage"]
-        assert [m.content for m in after[2:]] == [INTERRUPT_NOTE, INTERRUPT_NOTE]
+        assert _kinds(after) == ["HumanMessage", "AIMessage"], _kinds(after)
+        assert after[1].id == "a1", "必须是原地替换（同 id），不能新增一条"
+        assert "run_pocket_analysis" in after[1].content and INTERRUPT_NOTE[:12] in after[1].content
 
         # 幂等：已是合法历史 → 不再改动
         assert (await repair_thread_state(graph, config))["repaired"] == 0

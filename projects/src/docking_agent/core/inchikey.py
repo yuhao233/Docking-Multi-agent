@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from docking_agent.config import env, env_bool, env_int
+from docking_agent.config import env_bool, env_int
 from docking_agent.paths import cache_dir
 
 logger = logging.getLogger(__name__)

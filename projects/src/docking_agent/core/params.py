@@ -45,8 +45,15 @@ from docking_agent.paths import cache_dir
 
 logger = logging.getLogger(__name__)
 
-# 系统对接默认值（与 `core/docking.py` 保持一致：规划关闭/不适用时的回退）
-FALLBACK_EXHAUSTIVENESS = 6
+#: 对接搜索强度默认值 —— **全仓唯一来源**。
+#: 与设置页 `docking.exhaustiveness`（default=16）、工具签名 `molecular_docking(exhaustiveness=16)`、
+#: 自动规划基准 `AUTO_PARAM_BASE_SCREENING`（default=16）一致。
+#: 历史缺陷：`core/docking.py` 里另有一个字面量 6，于是「直接调 core」的路径默认值与
+#: 产品默认值不同（同一件事两个默认值）；现在 core 从这里导入。
+DEFAULT_EXHAUSTIVENESS = 16
+
+# 规划关闭/不可用时的回退值：与默认值同源，避免出现第二个数字
+FALLBACK_EXHAUSTIVENESS = DEFAULT_EXHAUSTIVENESS
 FALLBACK_N_POSES = 1
 
 # 姿态/结合模式分析的 n_poses 与硬上限（任务规则，也可由 AUTO_PARAM_N_POSES_* 覆盖）
@@ -245,6 +252,40 @@ def _largest_exh_within_budget(mean_sec: float, library_n: int, budget: float, *
 # --------------------------------------------------------------------------- #
 # 主入口：纯函数 + 可选 pilot 回调
 # --------------------------------------------------------------------------- #
+
+#: 「未指定」哨兵：工具签名默认值必须用 0 而不是 16。
+#:
+#: 历史缺陷（审计发现的静默降级）：`run_docking(exhaustiveness=16)` /
+#: `molecular_docking(exhaustiveness=16)` 无法区分「用户显式设了 16」与「没人给值」——
+#: 而 `plan_docking_params` 算出来的是 `clamp(round(16×柔性系数×盒体积系数), 2, 32)`，
+#: 常与 16 不同。协调层一旦忘了把规划值传下来（措辞/渲染任一环失效），运行就会**静默退回**
+#: 16 并偏低估采样强度，且报告里看不出发生过降级。
+#: 现在 0 = 未指定 → 用运行级 `param_plan`（见 `resolve_exhaustiveness`）。
+UNSET_EXHAUSTIVENESS = 0
+
+
+def resolve_exhaustiveness(explicit: Any = UNSET_EXHAUSTIVENESS,
+                           plan: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """把工具参数解析成**本次运行真正要用的**搜索强度。
+
+    优先级：显式值（>0） > 运行级 `param_plan["exhaustiveness"]` > `None`。
+    返回 `None` 表示「本次没有规划值」，由最下游按设置页默认执行 —— 这里**不写第二个默认数字**
+    （`DEFAULT_EXHAUSTIVENESS` 是全仓唯一来源）。
+    """
+    try:
+        value = int(explicit or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value > 0:
+        return value
+    planned = (plan or {}).get("exhaustiveness")
+    try:
+        planned_int = int(planned) if planned is not None else None
+    except (TypeError, ValueError):
+        planned_int = None
+    return planned_int if planned_int and planned_int > 0 else None
+
+
 def plan_docking_params(*, task_type: str = "screening",
                         molecules: Optional[Sequence[Dict[str, Any]]] = None,
                         box_size: Optional[Sequence[float]] = None,

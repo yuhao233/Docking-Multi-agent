@@ -350,13 +350,13 @@ def build_recommendations(ranking: Sequence[Dict[str, Any]], *,
 
     if scored:
         gated = [r for r in scored if r.get("grade_gate")]
-        notes.append(f"共 {len(scored)} 个分子有有效对接分数并进入排行"
-                     f"（A 级 {grades.get('A', 0)} 个 / B 级 {grades.get('B', 0)} 个 / "
-                     f"C 级 {grades.get('C', 0)} 个）；其中 {len(gated)} 个分子因亲和力弱于 "
-                     f"{AFFINITY_GATE_KCAL:.1f} kcal/mol 被等级封顶为 C。")
+        # 等级分布由第 3.1 节「筛选建议」统一给出（这里不重复），只保留「封顶」这个需要解释的量
+        if gated:
+            notes.append(f"其中 {len(gated)} 个分子因亲和力弱于 {AFFINITY_GATE_KCAL:.1f} kcal/mol "
+                         "被等级封顶为 C（综合分照算，不掩盖数值）。")
     if excluded:
-        notes.append(f"{len(excluded)} 个分子没有有效对接分数，未进入排行（明细见"
-                     "「失败与跳过」一节与排序 CSV 的 error 列）。")
+        notes.append(f"{len(excluded)} 个分子没有有效对接分数，未进入排行"
+                     "（明细见第 7 节与 `ranking.csv`）。")
 
     return {
         "status": "ok" if scored else "no_data",

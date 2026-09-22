@@ -148,8 +148,12 @@ def test_recommendations_gate_reasons_and_exclusions() -> None:
     assert rec["rows"][0]["agent_reason"].startswith("亲和力")
     assert rec["rows"][0]["grade"] == "A"
     assert [u["name"] for u in rec["unmatched_reasons"]] == ["不存在的分子"]
-    weak = [r for r in [rec["rows"][0]] if r["name"] == "弱但类药"]
-    assert weak == [] or weak[0]["grade"] == "C"
+    # 弱亲和力的分子：top_n=2 之外不占位；一旦进入排行，必须被亲和力门槛封顶为 C
+    # （原先写的是在 `[rec["rows"][0]]` 里筛「弱但类药」→ 恒为空列表，断言恒真）
+    assert "弱但类药" not in [r["name"] for r in rec["rows"]]
+    ranked = build_recommendations(rows, top_n=5)["rows"]
+    weak = next((r for r in ranked if r["name"] == "弱但类药"), None)
+    assert weak is not None and weak["grade"] == "C", weak
     assert any("亲和力弱于" in n for n in rec["notes"])
     assert any("未进入排行" in n for n in rec["notes"])
 
@@ -161,8 +165,8 @@ def test_recommendations_gate_reasons_and_exclusions() -> None:
 
 def test_recommend_tools_roundtrip(tmp_path: Path) -> None:
     """工具链：recommend_compounds 算排行 → submit_recommendations 只接受在榜分子。"""
-    from docking_agent.agents import tool_io
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime import tool_io
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools.recommend import recommend_compounds, submit_recommendations
 
@@ -356,8 +360,13 @@ def test_protonated_molecules_still_join_with_docking_rows() -> None:
 # --------------------------------------------------------------------------- #
 # 4. 目标 pH 质子化（ph 策略）
 # --------------------------------------------------------------------------- #
-def test_ph_policy_assigns_states_by_target_ph() -> None:
-    """按目标 pH 分配质子化态：酸在 pH>pKa 去质子、碱在 pH<pKa 加质子，方向绝不能反。"""
+def test_ph_policy_assigns_states_by_target_ph(monkeypatch: pytest.MonkeyPatch) -> None:
+    """按目标 pH 分配质子化态：酸在 pH>pKa 去质子、碱在 pH<pKa 加质子，方向绝不能反。
+
+    这里**显式固定用内置规则表**（`LIGAND_PKA_ENGINE=rules`）：本用例断言的是规则表的
+    逐官能团行为（`info["rules"]`），专业引擎路径见 `tests/test_ligand_pka.py`。
+    """
+    monkeypatch.setenv("LIGAND_PKA_ENGINE", "rules")
     from docking_agent.core.protonation import apply_protonation
 
     # 乙酸 pKa 4.5：酸性条件下保持中性，中性以上为阴离子
@@ -390,7 +399,9 @@ def test_ph_policy_assigns_states_by_target_ph() -> None:
     assert quat == "C[N+](C)(C)C" and qinfo["charge_after"] == 1
 
 
-def test_ph_policy_provenance_and_fallbacks() -> None:
+def test_ph_policy_provenance_and_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """内置规则表的溯源与回退口径（强制 rules 引擎；专业引擎路径见 test_ligand_pka.py）。"""
+    monkeypatch.setenv("LIGAND_PKA_ENGINE", "rules")
     from docking_agent.core.protonation import DEFAULT_PH, PKA_TABLE_VERSION, apply_protonation
 
     _out, info = apply_protonation("CC(=O)O", "ph", 7.4)

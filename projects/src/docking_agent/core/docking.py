@@ -25,6 +25,7 @@ from docking_agent.cancellation import CancelledRun
 from docking_agent.config import env, env_int
 from docking_agent.core.files import slug
 from docking_agent.core.ligands import smiles_to_pdbqt
+from docking_agent.core.params import DEFAULT_EXHAUSTIVENESS
 from docking_agent.core.pockets import (
     BOX_LARGE_MAX_SIZE,
     apply_box_floor,
@@ -37,8 +38,6 @@ from docking_agent.core.pockets import (
 )
 from docking_agent.core.receptors import (
     DEFAULT_BOX_SIZE,
-    DEFAULT_RECEPTOR,
-    RECEPTOR_REGISTRY,
     _pdbqt_centroid,
     box_atom_stats,
     resolve_receptor_specs,
@@ -51,7 +50,8 @@ logger = logging.getLogger(__name__)
 # 阳性对照在对接清单里的内部标记名（对外展示时会被替换为「阳性对照」）
 POSITIVE_CONTROL_NAME = "__positive_control__"
 
-DEFAULT_EXHAUSTIVENESS = 6
+# `DEFAULT_EXHAUSTIVENESS` 从 `core.params` 导入（全仓唯一来源），这里不再另立数字 ——
+# 历史上这里写的是 6，而设置页/工具签名/自动规划基准都是 16。
 
 
 DEFAULT_N_POSES = 1
@@ -274,7 +274,6 @@ class DockingSession:
         self._vina = None
         if self.engine in ("auto", "vina"):
             try:
-                from vina import Vina  # type: ignore
 
                 v = self._new_vina(seed)
                 v.set_receptor(spec["pdbqt"])
@@ -488,7 +487,7 @@ def run_docking_autodock_internal(spec: Dict[str, Any], smiles: str,
         npts = [n if n % 2 else n + 1 for n in npts]
 
         # ---- autogrid4: 生成格点能量图 ----
-        gpf = [f"autogrid_parameter_version 4.2.6",
+        gpf = ["autogrid_parameter_version 4.2.6",
                f"npts {npts[0]} {npts[1]} {npts[2]}",
                "gridfld rec.maps.fld", f"spacing {spacing}",
                "receptor_types " + " ".join(rt),
@@ -507,7 +506,7 @@ def run_docking_autodock_internal(spec: Dict[str, Any], smiles: str,
 
         # ---- autodock4: 遗传算法对接 ----
         about = _pdbqt_centroid(lig)
-        dpf = [f"autodock_parameter_version 4.2.6", "outlev 1", "intelec",
+        dpf = ["autodock_parameter_version 4.2.6", "outlev 1", "intelec",
                f"seed {int(seed)}",
                "ligand_types " + " ".join(lt), "fld rec.maps.fld"]
         for t in lt:
@@ -557,9 +556,9 @@ def run_docking_autodock_internal(spec: Dict[str, Any], smiles: str,
             return {"smiles": smiles, "engine": "autodock",
                     "error": "AutoDock 返回全 0 能量（盒子内没有受体原子或网格图构建失败）："
                              "该行不是有效分数，已按失败处理",
-                    "box_center": list(self.spec.get("center") or []),
-                    "box_size": list(self.spec.get("size") or []),
-                    "receptor": receptor_label(self.spec)}
+                    "box_center": list(spec.get("center") or []),
+                    "box_size": list(spec.get("size") or []),
+                    "receptor": receptor_label(spec)}
         return {
             "smiles": smiles,
             "affinity_kcal_mol": round(float(est), 2),          # Estimated Free Energy of Binding
@@ -1217,7 +1216,9 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                           "dropped_waters": spec.get("dropped_waters") or 0,
                           "unsupported_hetatm": spec.get("unsupported_hetatm") or [],
                           "cocrystal_ligand": spec.get("cocrystal_ligand") or {},
-                          # 受体结构路径：供上层解析共晶配体 SMILES（是否用作阳性对照的询问）
+                          # 受体结构路径：供上层解析共晶配体 SMILES（是否用作阳性对照的询问）。
+                          # `source_pdb` 是**准备这份 PDBQT 的原始结构**（去配体后只有它还有配体原子）。
+                          "source_pdb": str(spec.get("source_pdb") or ""),
                           "receptor_pdb": str(spec.get("pdb") or ""),
                           "receptor_protonation": spec.get("receptor_protonation") or {},
                           "dropped_bad_residues": spec.get("dropped_bad_residues") or [],
@@ -1239,31 +1240,6 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
     status = "error" if receptors and all(b.get("status") == "error" for b in receptors) else "ok"
     return {"status": status, "receptors": receptors, "notes": notes,
             "concurrency": plan, "poses_saved": save_all_poses}
-
-
-def save_poses_for(spec: Dict[str, Any], molecules: List[Dict[str, str]], pose_dir: str, *,
-                   engine: str = "auto", exhaustiveness: int = DEFAULT_EXHAUSTIVENESS,
-                   n_poses: int = DEFAULT_N_POSES, seed: int = 42) -> List[Dict[str, Any]]:
-    """对指定分子重新对接并写出位姿。
-
-    与主对接使用完全相同的参数与随机种子，因此位姿与已报告的分数一致、可复现。
-    大库场景下用于「只保留最优前 N 个位姿」。
-    """
-    os.makedirs(pose_dir, exist_ok=True)
-    session = DockingSession(spec, engine=engine, seed=seed)
-    out: List[Dict[str, Any]] = []
-    for m in molecules:
-        name = m.get("name") or m.get("smiles", "")
-        pose_base = os.path.join(pose_dir, f"pose_{slug(name)}")
-        try:
-            r = session.dock(m["smiles"], exhaustiveness, n_poses, pose_base)
-            r["name"] = name
-        except Exception as e:  # noqa: BLE001
-            logger.warning("补写位姿失败 %s: %s", name, e)
-            r = {"name": name, "smiles": m.get("smiles", ""), "error": f"位姿补写失败: {e}"}
-        out.append(r)
-    return out
-
 
 
 # --------------------------------------------------------------------------- #

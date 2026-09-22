@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional
 
 from langchain.tools import tool
 
-from docking_agent.agents.blackboard import get_blackboard
 from docking_agent.core import pockets as P
 from docking_agent.runs import current_run
 from docking_agent.tools.schemas import CoordArray, floats_to_text
@@ -80,10 +79,34 @@ def predict_binding_pockets(receptor_file: str = "", receptor_sources: str = "",
       - suggested 是**按规则建议**的对接盒（实验位点优先、否则用 top 口袋），
         你可以采纳，也可以在理由充分时改选别的口袋（用 set_docking_site 提交）。
     """
+
+    # 未指定受体 → 不执行口袋分析（预置受体仅内部测试用，不能替用户挑靶点）
+    from docking_agent.core.receptors import receptor_unspecified  # noqa: PLC0415
+    from docking_agent.runtime.context import active_run as _active_run  # noqa: PLC0415
+
+    _run = _active_run(runtime)
+    if receptor_unspecified(receptor_sources, _run, receptor_file):
+        return json.dumps({
+            "status": "needs_user_input",
+            "message": ("未指定受体：不能默认挑一个受体做口袋分析。请给出受体来源 —— "
+                        "① PDB 编号；② UniProt accession；③ 上传结构文件。"),
+            "missing": ["receptor"],
+        }, ensure_ascii=False)
     try:
         specs = _resolve_specs(receptor_file, receptor_sources, run=active_run(runtime))
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"status": "error", "message": f"受体解析失败：{e}"}, ensure_ascii=False)
+        from docking_agent.core.receptors import ReceptorInputError  # noqa: PLC0415
+
+        from docking_agent.tools.choices import (  # noqa: PLC0415
+            receptor_input_guard, receptor_input_problem)
+
+        if isinstance(e, ReceptorInputError):
+            return receptor_input_guard(e, runtime=runtime)
+        return receptor_input_problem(
+            "receptor_unusable", (receptor_file or receptor_sources or "").strip(),
+            f"受体无法用于口袋分析：{e}。本次**不执行任何计算**。"
+            "请用户给出可用的受体（PDB 编号 / UniProt accession / 基因或蛋白名 / 结构文件）。",
+            options=("replace_file", "resolve_by_name"), runtime=runtime)
     if not specs:
         return json.dumps({"status": "no_receptor",
                            "message": "未指定受体：请提供受体文件或受体名（thrombin/trypsin）。"},

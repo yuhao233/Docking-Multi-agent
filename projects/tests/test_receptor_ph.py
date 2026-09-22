@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -158,7 +157,8 @@ def test_missing_tool_falls_back_and_records_reason(monkeypatch: pytest.MonkeyPa
     specs, notes = resolve_receptor_specs(str(THROMBIN), protonation="ph", ph=7.4)
     info = specs[0].get("receptor_protonation") or {}
     assert info.get("applied") is False and "pdb2pqr" in str(info.get("reason"))
-    assert any("未" in n and "对齐" in n for n in notes), notes
+    # 报告/笔记必须**如实写出两侧口径不一致**（旧实现写「未…对齐」；措辞可改，事实不能丢）
+    assert any("口径不一致" in n for n in notes), notes
     assert Path(specs[0]["pdbqt"]).is_file(), "回退后仍必须给出可用受体"
 
 
@@ -357,7 +357,7 @@ def test_uploaded_receptor_wins_over_registry_name_in_dispatch(monkeypatch: pyte
     白跑 6 个分子，报告里多出一个受体块，用户会以为跑了两个靶点。
     """
     from docking_agent.runs import current_run
-    from docking_agent.tools import dispatch
+    from docking_agent.agents import dispatch
 
     sent: list = []
 

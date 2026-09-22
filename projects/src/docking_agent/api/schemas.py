@@ -18,9 +18,26 @@ class AgentRequest(BaseModel):
     receptor_file: str = Field(default="", description="上传/提供的蛋白质受体文件路径（.pdb/.pdbqt，优先于 receptor）")
     mode: str = Field(default="manual", description="chat | manual")
     advanced: bool = Field(default=False, description="chat 模式下是否启用高级设置（参数作为默认值）")
-    receptor: Optional[Any] = "thrombin"
+    receptor: Optional[Any] = Field(
+        default=None,
+        description=("受体来源：PDB 编号 / UniProt accession / 基因或蛋白名称 / 结构文件路径。"
+                     "**没有系统默认受体** —— 留空(None/\"\")即「用户未指定」，"
+                     "受理层会据此只提问、不执行任何计算（预置受体仅内部测试用）。"))
     ligands_text: str = ""
     molecule_file: str = ""
+    molecule_choice: str = Field(
+        default="",
+        description=("用户在界面**点选的代表结构**（多组分/配位聚合物时系统会下发 4 个选项）的 SMILES。"
+                     "与 `positive_control` 一样属于「明确的用户决定」：受理层直接按它导入分子库，"
+                     "不再按名称重新查询、也不再询问代表结构。"))
+    molecule_choice_decision: str = Field(
+        default="",
+        description=("该代表结构的取法：`raw-mixture`（PubChem 原始多组分，金属与片段原样保留）/ "
+                     "`metal-monomer`（金属-EBDC 单体）/ `organic-fragment`（最大有机片段、无金属）/ `custom`。"
+                     "仅用于报告与运行记录追溯，不影响解析。"))
+    molecule_choice_label: str = Field(
+        default="",
+        description="选项展示名（如「Mancozeb（CID 3034368）· PubChem 原始多组分结构」），写进报告与运行笔记。")
     positive_control: str = ""
     positive_control_decision: str = Field(
         default="",

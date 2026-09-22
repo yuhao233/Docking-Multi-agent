@@ -302,7 +302,6 @@ def test_ligand_smiles_recovered_from_request_file(tmp_path: Path,
 def test_missing_ligand_message_lists_tried_paths(tmp_path: Path,
                                                   monkeypatch: pytest.MonkeyPatch) -> None:
     """解不出时，运行日志要说清"试过哪些结构"，而不是只报一句失败。"""
-    from docking_agent.core.pockets import cocrystal_ligand
     from docking_agent.tools import choices as CH
 
     logs: list = []
@@ -320,3 +319,93 @@ def test_missing_ligand_message_lists_tried_paths(tmp_path: Path,
         [{"receptor_pdb": str(tmp_path / "missing.pdb"), "cocrystal_ligand": ligand}]) == []
     assert logs and "5CM（C:26:5CM，20 原子）" in logs[0], logs
     assert "missing.pdb" in logs[0] and "解不出 SMILES" in logs[0], logs
+
+
+def test_cocrystal_offer_is_asked_at_most_once_per_run(tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """一次运行内最多问一次（真实缺陷：run_docking 被重试时用户被重复打扰）。
+
+    现场：前两次调用时受体结构还没准备好 → 解不出 SMILES（日志写「因此未询问」），
+    第三次却能解出并发布选项，用户先看到「不问」再被问一次。
+    """
+    from docking_agent.core.pockets import cocrystal_ligand
+    from docking_agent.tools import choices as CH
+
+    pdb = _pdb_with_ligand(tmp_path)
+    blocks = [{"receptor": "thrombin", "receptor_pdb": str(pdb),
+               "cocrystal_ligand": cocrystal_ligand(str(pdb))}]
+
+    published: list = []
+    monkeypatch.setattr(CH, "publish_choices", lambda *a, **k: published.append((a, k)))
+
+    class _Run:
+        def __init__(self) -> None:
+            self.data: Dict[str, Any] = {}
+        def log(self, message: str) -> None:
+            self.data.setdefault("log", []).append(message)
+
+    run = _Run()
+    monkeypatch.setattr(CH, "active_run", lambda runtime=None: run)
+
+    first = CH.offer_cocrystal_positive_control(blocks, specified_control="")
+    assert len(first) == 2 and len(published) == 1, "第一次调用应当询问"
+    assert run.data.get("cocrystal_control_offer"), "询问必须留下可追溯记录"
+
+    second = CH.offer_cocrystal_positive_control(blocks, specified_control="")
+    assert second == [] and len(published) == 1, "同一次运行内不得再问一遍"
+
+
+def test_no_late_cocrystal_ask_once_docking_started(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """对接前判定一次：第一次解不出就**不再**在后期突然发问。
+
+    真实现场（run 20260922-140903-6542）：前两次调用写「因此未询问」，第三次（对接已跑完、
+    报告将生成时）却发布选项，用户被迟到的提问打扰，且与前面的「不问」自相矛盾。
+    """
+    from docking_agent.tools import choices as CH
+
+    blocks = [{"receptor": "7YHP", "receptor_pdb": "",
+               "cocrystal_ligand": {"resname": "5CM", "key": "C:26:5CM", "n_atoms": 20}}]
+
+    class _Run:
+        def __init__(self) -> None:
+            self.data: Dict[str, Any] = {}
+        def log(self, message: str) -> None:
+            self.data.setdefault("log", []).append(message)
+
+    run = _Run()
+    monkeypatch.setattr(CH, "active_run", lambda runtime=None: run)
+    answers = iter([("", ["a.pdb"]), ("CC1CN", ["b.pdb"])])   # 第一次解不出，第二次能解出
+    monkeypatch.setattr(CH, "_ligand_smiles_from_candidates", lambda *a, **k: next(answers))
+    published: list = []
+    monkeypatch.setattr(CH, "publish_choices", lambda *a, **k: published.append((a, k)))
+
+    assert CH.offer_cocrystal_positive_control(blocks, specified_control="") == []
+    assert CH.offer_cocrystal_positive_control(blocks, specified_control="") == [], "不得迟到发问"
+    assert published == [], "第一次解不出 → 本次运行不再询问"
+    assert len([line for line in run.data.get("log", []) if "解不出 SMILES" in line]) == 1
+
+
+def test_cocrystal_smiles_failure_is_logged_once_per_run(tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    """解不出 SMILES 时「未询问」只写一次日志（重试不刷屏）。"""
+    from docking_agent.tools import choices as CH
+
+    blocks = [{"receptor": "7YHP", "receptor_pdb": "",
+               "cocrystal_ligand": {"resname": "5CM", "key": "C:26:5CM", "n_atoms": 20}}]
+
+    class _Run:
+        def __init__(self) -> None:
+            self.data: Dict[str, Any] = {}
+        def log(self, message: str) -> None:
+            self.data.setdefault("log", []).append(message)
+
+    run = _Run()
+    monkeypatch.setattr(CH, "active_run", lambda runtime=None: run)
+    monkeypatch.setattr(CH, "_ligand_smiles_from_candidates", lambda *a, **k: ("", ["fake.pdb"]))
+    monkeypatch.setattr(CH, "publish_choices", lambda *a, **k: None)
+
+    for _ in range(3):
+        assert CH.offer_cocrystal_positive_control(blocks, specified_control="") == []
+    logs = [line for line in run.data.get("log", []) if "解不出 SMILES" in line]
+    assert len(logs) == 1, f"「解不出」说明只应写一次：{logs}"

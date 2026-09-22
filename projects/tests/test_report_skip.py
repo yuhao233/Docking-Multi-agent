@@ -135,7 +135,6 @@ def test_inline_text_with_commas_is_parsed_as_smiles_not_csv() -> None:
 
 def test_docking_tool_passes_save_poses_and_max_ligands(monkeypatch: pytest.MonkeyPatch) -> None:
     """表单里的「保存对接位姿」「最大分子数」必须传到对接层（此前 Agent 路径忽略它们）。"""
-    from typing import Any, Dict
 
     from docking_agent.tools import docking as TD
 

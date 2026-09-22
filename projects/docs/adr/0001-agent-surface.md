@@ -13,7 +13,7 @@
 | --- | --- | --- | --- |
 | ① | `src/docking_agent/api/app.py`（产品 REST，`/api/*`） | 网页真正依赖的业务接口：产物下载、报告/PDF、上传、设置、历史、图表、分子结构图 | 网页（全部非运行类请求）、外部脚本 |
 | ② | `src/docking_agent/api/agent_service.py`（手写 Agent Protocol 子集，18 个 op） | **我们自己写的**平台风格兼容层：`/threads`、`/threads/{id}/runs/stream\|wait`、`/assistants/*`、`/ok`、`/info` 等，把同一张图按平台帧重新包装 | **网页的运行路径**（阶段 2 已从旧端点切过来） |
-| ③ | `langgraph-deploy/`（`langgraph.json` + 7 张图） | **真正的 LangGraph Platform**：`langgraph-cli dev` 起的 Agent Server（含 Studio、SDK、未来的 durable runs） | Studio 调试、外部 SDK 接入 |
+| ③ | `langgraph-deploy/`（`langgraph.json` + 6 张图） | **真正的 LangGraph Platform**：`langgraph-cli dev` 起的 Agent Server（含 Studio、SDK、未来的 durable runs） | Studio 调试、外部 SDK 接入 |
 
 问题：没有文档能回答"外部集成应该调哪一个""新增一个 Agent 能力该加在哪一层"。结果是
 两套面都在长，且协议形状（SSE 帧映射、run_id 双语义、取消、幂等）**存在两处各写一份**的风险。
@@ -86,4 +86,4 @@
   平台版本耦合，离线交付变重；与"单机本地产品"定位不符。若将来明确要做多租户/外部集成，
   再回到这条路线（本 ADR 记录它作为演进路径）。
 - **C：删掉平台面**。实现最简单，但失去 Studio 调试与未来 durable 能力，且已投入的
-  7 张图与回归测试作废。
+  6 张图与回归测试作废。

@@ -20,7 +20,7 @@ from docking_agent.reporting import (
     save_artifact,
     similarity_chart,
 )
-from docking_agent.runtime.context import AgentContext, active_blackboard, active_request, new_context, request_context
+from docking_agent.runtime.context import AgentContext, active_blackboard
 from langchain.tools import ToolRuntime
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 def _from_blackboard(pos_control: Dict[str, Any],
                      runtime: Any = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """从共享黑板汇总「分子 + 性质 + 对接 + 结合模式」并融合排序。"""
-    from docking_agent.agents.blackboard import get_blackboard
     from docking_agent.core import merge_and_rank
 
     board = active_blackboard(runtime)
@@ -62,7 +61,6 @@ def generate_screening_report(aggregated_json: str = "", runtime: ToolRuntime[Ag
     返回 JSON：docking_chart_url、similarity_chart_url、property_chart_url、screening_csv_url，
     以及 artifacts 明细（含本机绝对路径 path）。CSV 自带 engine / exhaustiveness 参数列。
     """
-    ctx = active_request(runtime) or new_context(method="generate_screening_report")  # noqa: F841
     try:
         data: Dict[str, Any] = {}
         if (aggregated_json or "").strip():

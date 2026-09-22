@@ -103,10 +103,19 @@ def test_molecule_endpoints(client):
 
 
 def test_index_page_served(client):
+    """默认首页 = 简易模式；高级模式在 /advanced（/simple 是兼容别名）。"""
     r = client.get("/")
     assert r.status_code == 200
     assert "<html" in r.text.lower()
-    assert "/static/app.js" in r.text
+    assert "/static/simple.js" in r.text, "默认首页应为简易模式"
+
+    adv = client.get("/advanced")
+    assert adv.status_code == 200
+    assert "/static/app.js" in adv.text, "高级模式迁到 /advanced"
+    assert "/static/simple.js" not in adv.text
+
+    alias = client.get("/simple")
+    assert alias.status_code == 200 and "/static/simple.js" in alias.text
 
 
 def test_unknown_run_404(client):

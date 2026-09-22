@@ -19,34 +19,26 @@ import csv
 import gzip
 import hashlib
 import io
-import json
 import logging
 import os
 import re
 from datetime import datetime, time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from rdkit import Chem
 
-from docking_agent.core.files import _fetch_file, slug
-from docking_agent.core.ligands import _looks_like_smiles, describe_ligand, parse_smiles_text
-from docking_agent.core.receptors import (
-    RECEPTOR_EXTS,
-    RECEPTOR_NON_STRUCTURE_EXTS,
-    read_receptor_file,
-)
+from docking_agent.core.files import slug
+from docking_agent.core.ligands import _looks_like_smiles
 from docking_agent.paths import cache_dir
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    # 本模块只导出**自己定义**的东西：归一化层的对外入口在 `core/normalize.py`
+    # （此前这里错列了 4 个 normalize.py 的名字，`__all__` 与实际内容不符）。
     "sniff_format",
-    "normalize_ligand_file",
-    "normalize_ligand_text",
-    "normalize_receptor_source",
-    "record_input_normalization",
 ]
 
 # --------------------------------------------------------------------------- #

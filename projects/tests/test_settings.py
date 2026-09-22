@@ -325,7 +325,12 @@ def test_broken_settings_file_does_not_break_startup(settings_file, monkeypatch)
     from docking_agent.runtime.llm import resolve_role_config
 
     data = S.load_local_settings()
-    assert data == {} or all(isinstance(v, dict) for v in data.values())
+    # 非法段落必须被丢弃（`llm: 123` / `roles: ["x"]` / `runtime: "nope"` 都不能活下来）；
+    # 原来的 `data == {} or all(...)` 里的 `data == {}` 是多余的（空 dict 也满足 all()），
+    # 且掩盖了真实意图：**只有 dict 段落允许保留**。
+    assert isinstance(data, dict)
+    assert all(isinstance(v, dict) for v in data.values()), data
+    assert isinstance(data.get("llm", {}), dict) and isinstance(data.get("roles", {}), dict)
     cfg, _src = resolve_role_config("docking")
     assert cfg["model"]  # 仍然能解析出配置
 

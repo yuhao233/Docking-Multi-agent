@@ -26,7 +26,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC = PROJECT_ROOT / "src"
@@ -37,9 +36,8 @@ from docking_agent.config import ensure_runtime_env  # noqa: E402
 
 ensure_runtime_env()
 
-from docking_agent.agents.blackboard import Blackboard, current_blackboard  # noqa: E402
-from docking_agent.agents import tool_io  # noqa: E402
-from docking_agent.runs import Run, current_run  # noqa: E402
+from docking_agent.runtime import tool_io  # noqa: E402
+from docking_agent.runs import Run  # noqa: E402
 
 BIG = 10_000
 MODEL_PAYLOAD_LIMIT = 64 * 1024      # 单次回传给模型的载荷上限（保守值）
@@ -76,16 +74,7 @@ def _docking_output(rows):
                            "results": rows}]}
 
 
-@pytest.fixture()
-def run_ctx(tmp_path):
-    """造一个真实的 Run 上下文（工具产物写到它的目录里）。"""
-    run = Run(tmp_path, "R-BIG", "agent", {"mode": "manual"})
-    run_token = current_run.set(run)
-    board = Blackboard("R-BIG")
-    board_token = current_blackboard.set(board)
-    yield run, board
-    current_blackboard.reset(board_token)
-    current_run.reset(run_token)
+#: `run_ctx`（真实 Run + 黑板上下文）定义在 `tests/conftest.py` —— 非引擎用例也要用它。
 
 
 # --------------------------------------------------------------------------- #
@@ -100,7 +89,7 @@ def test_big_docking_payload_is_bounded_but_full_detail_is_saved(run_ctx, monkey
     monkeypatch.setattr(dock_tool, "dock_library", lambda *a, **k: full)
 
     out = json.loads(dock_tool.molecular_docking.invoke({"molecules_json": json.dumps(
-        [{"name": "x", "smiles": "CCO"}])}))
+        [{"name": "x", "smiles": "CCO"}]), "receptor_sources": "thrombin"}))
 
     # 回传给模型的载荷必须有界
     raw = json.dumps(out, ensure_ascii=False)
@@ -147,7 +136,7 @@ def test_persist_recovers_all_rows_from_tool_artifact(run_ctx, monkeypatch):
 # 2) 分子清单：回传有界 + 子 Agent 留空读黑板
 # --------------------------------------------------------------------------- #
 def test_big_molecule_list_is_bounded_and_blackboard_keeps_all(run_ctx, monkeypatch):
-    from docking_agent.tools import dispatch
+    from docking_agent.agents import dispatch
 
     run, board = run_ctx
     text = "\n".join(f"MOL{i:05d}:{_smiles(i)}" for i in range(BIG))
@@ -224,7 +213,7 @@ def test_small_library_keeps_legacy_payload(run_ctx, monkeypatch):
     monkeypatch.setattr(dock_tool, "dock_library", lambda *a, **k: _docking_output(rows))
 
     out = json.loads(dock_tool.molecular_docking.invoke({"molecules_json": json.dumps(
-        [{"name": "x", "smiles": "CCO"}])}))
+        [{"name": "x", "smiles": "CCO"}]), "receptor_sources": "thrombin"}))
     assert "receptors" in out and "detail_omitted" not in out, "小库必须保持原有完整结构"
     assert len(out["receptors"][0]["results"]) == 3
     assert len(json.loads((run.dir / "docking_tool.json").read_text(encoding="utf-8"))
@@ -232,7 +221,7 @@ def test_small_library_keeps_legacy_payload(run_ctx, monkeypatch):
 
 
 def test_dispatch_required_keys_accept_both_contracts():
-    from docking_agent.tools.dispatch import _keys_ok
+    from docking_agent.agents.dispatch import _keys_ok
 
     assert _keys_ok({"receptors": []}, ("receptors", "summary"), "docking")
     assert _keys_ok({"summary": {}}, ("receptors", "summary"), "docking")
@@ -432,7 +421,7 @@ def test_scores_are_independent_of_batch_and_workers():
 # A 方案：两阶段漏斗（粗筛 → 精算）+ 精度优先合并 + 分片护栏
 # --------------------------------------------------------------------------- #
 def test_funnel_settings_and_advice(monkeypatch):
-    from docking_agent.agents import tool_io
+    from docking_agent.runtime import tool_io
 
     monkeypatch.setenv("AGENT_FUNNEL_MIN", "100")
     monkeypatch.setenv("AGENT_REFINE_TOP_N", "50")
@@ -497,7 +486,8 @@ def test_refine_picks_top_from_blackboard(run_ctx, monkeypatch):
 
     monkeypatch.setattr(dock_tool, "dock_library", _fake_dock)
     out = json.loads(dock_tool.molecular_docking.invoke(
-        {"molecules_json": "", "top_from_previous": 2, "exhaustiveness": 16}))
+        {"molecules_json": "", "top_from_previous": 2, "exhaustiveness": 16,
+         "receptor_sources": "thrombin"}))
     assert picked["molecules"] == ["good", "mid"], "必须按亲和力取头部 N 个"
     assert out["status"] == "ok"
     saved = json.loads((run.dir / "docking_tool.json").read_text(encoding="utf-8"))

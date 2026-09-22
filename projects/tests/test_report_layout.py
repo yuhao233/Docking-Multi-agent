@@ -130,3 +130,29 @@ def test_cards_registered_as_artifacts_and_in_zip(tmp_path: Path) -> None:
     dest = store.zip("R-CARDZIP")
     with zipfile.ZipFile(dest) as zf:
         assert "charts/recommend_card_01.png" in zf.namelist()
+
+
+def test_report_states_receptor_provenance_itself(tmp_path: Path) -> None:
+    """§1.2 必须自己写明「哪个结构、从哪来」——不能只靠协调 Agent 在结论里复述。
+
+    审计背景：accession/物种/结构来源原先只出现在 `fetch_protein_structure` 的返回与 Agent 的
+    「实际执行」小节里；结论节按「只留结论/风险」精简后，这份溯源会从报告里消失。
+    """
+    from docking_agent.reporting import build_markdown_report
+
+    prov = {"requested": "植物去甲基化酶ROS1", "database": "RCSB PDB",
+            "structure_source": "rcsb", "accession": "Q9SJQ6", "pdb_id": "7YHP",
+            "organism": "Arabidopsis thaliana", "protein": "DNA glycosylase/AP lyase ROS1",
+            "structure_method": "EM", "structure_resolution": "3.1 A"}
+    md = build_markdown_report({"ranking": [], "receptors": [], "receptor_provenance": prov},
+                               kind="agent", run_id="T")
+    line = [ln for ln in md.splitlines() if ln.startswith("- 受体来源：")]
+    assert line, "报告缺少「受体来源」一行"
+    text = line[0]
+    for needle in ("UniProt `Q9SJQ6`", "Arabidopsis thaliana", "RCSB PDB `7YHP`", "EM", "3.1 A"):
+        assert needle in text, f"{needle} 应写进受体来源：{text}"
+    assert "植物去甲基化酶ROS1" in text, "检索词与结构号不同时应一并保留（可追溯）"
+
+    # 没有溯源（未走在线解析 / 旧数据）→ 不出现该行，也不得崩溃
+    plain = build_markdown_report({"ranking": [], "receptors": []}, kind="agent", run_id="T")
+    assert "- 受体来源：" not in plain

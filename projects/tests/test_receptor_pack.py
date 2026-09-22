@@ -67,7 +67,6 @@ def test_prepared_pdb_found_for_ph_variant(tmp_path: Any) -> None:
     from docking_agent.reporting.artifacts import _find_prepared_pdb
 
     cache = tmp_path / "cache"
-    base = cache / "receptor_391427fb44da39a3"
     cache.mkdir(parents=True, exist_ok=True)
     (cache / "receptor_391427fb44da39a3_prot.pdb").write_text("ATOM\n", encoding="utf-8")
     ph_variant = cache / "receptor_391427fb44da39a3_ph7.4.pdbqt"

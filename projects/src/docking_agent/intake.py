@@ -77,7 +77,8 @@ _TASK_KEYWORDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 # --------------------------------------------------------------------------- #
 def _system_default_params() -> Dict[str, Any]:
     """系统默认运行参数（chat 模式折叠高级设置时使用）。"""
-    return {"receptor": DEFAULT_RECEPTOR_NAME, "site": None,
+    # 受体**没有**系统默认值：缺受体属于「计算对象未指定」，受理层会据此判 ask。
+    return {"receptor": "", "site": None,
             "positive_control": "",   # 阳性对照可选：默认不提供 → 不做对照分析
             "exhaustiveness": 16, "n_poses": 1, "engine": "vina", "pocket_engine": "auto",
             "ligands_text": "", "molecule_file": "", "skip_positive_control": False}
@@ -85,7 +86,8 @@ def _system_default_params() -> Dict[str, Any]:
 
 def _params_from_request(req: Any) -> Dict[str, Any]:
     uploaded = (getattr(req, "receptor_file", "") or "").strip()
-    return {"receptor": f"用户上传受体文件 {uploaded}" if uploaded else (req.receptor or DEFAULT_RECEPTOR_NAME),
+    # 受体**没有默认值**：表单/请求里没给就是没给（不再注入内建默认受体名）。
+    return {"receptor": f"用户上传受体文件 {uploaded}" if uploaded else (req.receptor or ""),
             "receptor_file": uploaded,
             "site": (req.site_center, req.site_size) if req.site_center else None,
             "positive_control": (req.positive_control or "").strip(),
@@ -94,6 +96,10 @@ def _params_from_request(req: Any) -> Dict[str, Any]:
             "pocket_engine": (getattr(req, "pocket_engine", "") or "").strip(),
             "ligands_text": (req.ligands_text or "").strip(),
             "molecule_file": (req.molecule_file or "").strip(),
+            # 表单里的「保存对接位姿 / 最大分子数」也要进规约：否则协调 Agent 根本不知道
+            # 用户改过它们，run_docking 也就不会收到（真实缺陷：Agent 模式下这两项被静默忽略）。
+            "save_poses": getattr(req, "save_poses", None),
+            "max_ligands": getattr(req, "max_ligands", None),
             "skip_positive_control": bool(req.skip_positive_control)}
 
 
@@ -147,8 +153,6 @@ def _mentioned_accession(text: str) -> str:
     return hits[0] if hits else ""
 
 
-DEFAULT_RECEPTOR_NAME = "thrombin"
-
 # 形如 1DWC / 3zbf 的 PDB 号（用户点名 PDB 号时交给在线取结构工具）
 _PDB_ID_RE = re.compile(r"^[0-9][A-Za-z0-9]{3}$")
 # UniProt accession 形状（6 位或 10 位；如 P00533 / Q9Y6K9）——可直查，不算「不可解析」
@@ -183,6 +187,59 @@ _RECEPTOR_SYNONYMS = {"凝血酶": "thrombin", "人α-凝血酶": "thrombin", "�
                       "凝血酶(thrombin)": "thrombin", "胰蛋白酶(trypsin)": "trypsin"}
 # 只有类别名词、没有实质名称的表述
 _RECEPTOR_GENERIC = {"受体", "蛋白", "蛋白质", "酶", "receptor", "kinase", "protein"}
+
+#: 基因符号式的受体名（ROS1 / EGFR / BRCA1 / TP53 …）：**没有「酶/蛋白/受体」后缀**，
+#: 上面那条 `_NAMED_RECEPTOR_RE` 抓不到，于是「把拟南芥ROS1和代森锰锌对接」这类指令
+#: 既不算「点名了受体」，也让多轮继承拿不到上一轮已解析的 accession —— 用户点选分子代表
+#: 结构后的追问就会丢掉受体、被判成 `ask`（真实反馈「我选择了，但没有正常工作」）。
+_GENE_SYMBOL_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z][A-Za-z0-9]{1,9})(?![A-Za-z0-9])")
+#: 常见非受体缩写：出现在指令里不代表用户点名了受体（避免把 ADMET/PDB 当成靶点去检索）
+_GENE_SYMBOL_STOP = {
+    "SMILES", "SMARTS", "INCHI", "PDB", "CID", "CSV", "TSV", "SDF", "SMI", "MOL", "MOL2", "XYZ",
+    "ADMET", "QSAR", "QED", "SA", "MD", "MM", "GBSA", "FEP", "RMSD", "IC50", "EC50", "KI", "KD",
+    "DNA", "RNA", "ATP", "ADP", "AMP", "NAD", "NADH", "FAD", "PLP", "HEM", "GTP", "CO2", "PH",
+    "WT", "MUT", "GPU", "CPU", "API", "URL", "HTTP", "HTTPS", "JSON", "CSV", "TSV", "LOG",
+    "TPSA", "LOGP", "HBD", "HBA", "LE", "MW", "ID", "IDS", "AI", "UI", "OS", "VS", "OK",
+}
+
+
+def _looks_like_smiles(token: str) -> bool:
+    """该 token 能不能被 RDKit 当成分子解析？能 → 它是 SMILES（如 `CCO`/`CCN`），不是基因符号。
+
+    为什么必须挡：`帮我筛这两个分子 CCO、CCN` 这种历史消息里，`CCO` 完全符合「大写字母+数字」
+    的形状，会被误当成基因符号，进而把上一轮助手文本里的示例 accession 继承成「用户指定的受体」
+    —— 已有回归 `test_our_own_receptor_question_is_never_inherited_as_user_receptor` 盯着这条。
+    """
+    try:
+        from rdkit import RDLogger
+
+        from rdkit import Chem
+
+        RDLogger.DisableLog("rdApp.*")           # 解析失败是**预期路径**，不要刷 stderr
+        return Chem.MolFromSmiles(token) is not None
+    except Exception:                            # noqa: BLE001 - RDKit 不可用时按「不是 SMILES」处理
+        return False
+
+
+def _gene_symbol_candidate(text: str) -> str:
+    """从文本里抽一个**基因符号式**受体名（ROS1 / EGFR / TP53…）；没有则返回空。
+
+    只在「用户自己写的正文」上调用：这是「用户点名过受体」的弱证据，用来解锁
+    多轮继承（把上一轮已解析出的 accession 带下来），不直接当成本轮受体去检索。
+    """
+    for match in _GENE_SYMBOL_RE.finditer(str(text or "")):
+        token = match.group(1)
+        if token.upper() in _GENE_SYMBOL_STOP:
+            continue
+        if len(token) < 3:
+            continue
+        # 纯小写英文单词（common word）不算基因符号；至少要有大写字母
+        if token.islower():
+            continue
+        if _looks_like_smiles(token):
+            continue
+        return token
+    return ""
 # 「没点名」的泛指/否定表述：出现这些词说明用户并没有给出一个具体的受体名，
 # 不能当成「点名了不可解析的受体」（否则「未指定受体就用系统默认」会被误判成 ask）。
 _RECEPTOR_NON_NAME_MARKERS = ("未指定", "没有指定", "未指明", "未说明", "不指定", "不确定",
@@ -278,12 +335,27 @@ def _named_receptor_candidate(text: str) -> str:
     return ""
 
 
+def _receptor_source_question() -> str:
+    """未指定/未解析出受体时给用户的出路（**不含**任何预置受体——它们仅内部测试用）。"""
+    return ("请指定受体：① 提供 PDB 编号或 UniProt accession；"
+            "② 写出受体的基因名/蛋白名（中英文均可，系统会去在线数据库检索）；"
+            "③ 上传受体结构文件（.pdb/.cif/.pdbqt）。")
+
+
+def _ligand_source_question() -> str:
+    """未给出分子库时给用户的出路（示例库必须由用户**明确同意**才用）。"""
+    return ("请提供候选分子库：① 直接输入分子名称或 SMILES；"
+            "② 上传分子文件（.sdf/.smi/.csv/.mol2）；"
+            "③ 明确同意使用内置示例库。")
+
+
 def _unresolved_receptor_questions(name: str) -> List[str]:
-    """点名了具体受体但解析不了时，给用户的三条出路。"""
+    """点名了具体受体但解析不了时，给用户的出路（不再提供「改用默认受体」这条路）。"""
     return [
         f"未能解析您点名的受体「{name}」（已尝试 UniProt accession 直查与基因/蛋白名称检索，均无匹配）。"
-        "请三选一：① 提供 PDB ID（如 1DWC）；② 上传受体文件（.pdb/.pdbqt）；"
-        "③ 明确同意改用系统默认受体 凝血酶（thrombin, 1DWC）。",
+        "请三选一：① 提供 PDB 编号或 UniProt accession；"
+        "② 写出受体的基因名/蛋白名（中英文均可，系统会在线检索）；"
+        "③ 上传受体结构文件（.pdb/.cif/.pdbqt）。",
     ]
 
 
@@ -368,7 +440,30 @@ def build_task_spec(req: Any, *, raw_request: str = "",
     prior_user_text = _prior_contents(prior, ("user",))
     prior_all_text = _prior_contents(prior)
     prior_molecules = _extract_req_molecules(prior_user_text) or _extract_req_molecules(prior_all_text)
-    prior_receptor = _mentioned_receptor(prior_user_text) or _mentioned_receptor(prior_all_text)
+    # 受体继承：**只有上一轮用户在自己写的正文里确实点名过受体时**，才允许从
+    # 助手/工具回复里补齐「已解析结果」（如上一轮已把 ROS1 查成 Q9SJQ6 / PDB 7YHP）。
+    # 两道门都必须有：
+    #   ① 只看 `user_only_text`（剥掉系统自己的「任务规约」块与「引用文件」清单）——
+    #      那些机器文本里的「先请用户指定受体」会被当成受体名（真实缺陷 2026-09-21）；
+    #   ② 用户没点名过受体时，完全不去扫助手/工具文本 —— 否则提问里的示例 PDB 编号
+    #      （如 3ZBF）会被继承成用户指定的受体，用户什么都没说却拿别人的靶点开跑。
+    prior_user_only = user_only_text(prior_user_text)
+    prior_gene_symbol = _gene_symbol_candidate(prior_user_only)
+    prior_user_named_receptor = (_mentioned_receptor(prior_user_only)
+                                 or _named_receptor_candidate(prior_user_only)
+                                 or bool(prior_gene_symbol))
+    prior_receptor = _mentioned_receptor(prior_user_only)
+    prior_receptor_from_resolution = False
+    if not prior_receptor and prior_user_named_receptor:
+        prior_receptor = _mentioned_receptor(prior_all_text)
+    if not prior_receptor and prior_user_named_receptor:
+        # 上一轮没提注册表名/PDB 号，但**用户点名过基因符号**：优先继承上一轮已解析出的
+        # accession（最省事且结构已定位），否则退回那个基因名（由协调 Agent 第一步在线解析）。
+        prior_receptor = _mentioned_accession(prior_all_text)
+        prior_receptor_from_resolution = bool(prior_receptor)
+        if not prior_receptor:
+            prior_receptor = prior_gene_symbol
+    prior_accessions = _mentioned_accessions(prior_all_text) if prior_user_named_receptor else []
 
     # ---- 配体 ----
     text = (params.get("ligands_text") or "").strip()
@@ -382,7 +477,25 @@ def build_task_spec(req: Any, *, raw_request: str = "",
         # 注意：只接**上传附件**的 molecule_file；表单里的 ligands_text 仍按「对话不注入参数」
         # 的既有契约忽略（见 tests/test_intake.py::test_chat_collapsed_...）。
         mol_file = (getattr(req, "molecule_file", "") or "").strip()
-    if text:
+    choice_smiles = (getattr(req, "molecule_choice", "") or "").strip()
+    if choice_smiles:
+        # 用户在界面点选了「代表结构怎么取」（多组分/配位聚合物的 4 个选项之一）：
+        # 这是**明确的用户决定**，必须优先于指令文本解析，并原样记录以便报告追溯。
+        # 真实缺陷（用户反馈「我选择了，但没有正常工作」）：点选只把选项 prompt 当普通
+        # 消息发回来，一旦该轮指令里没再出现 SMILES（或模型改写成别的措辞），
+        # 配体侧就会退回「名称查询 → 又是多组分 → 再问一次」的死循环。
+        choice_label = (getattr(req, "molecule_choice_label", "") or "").strip()
+        choice_mode = (getattr(req, "molecule_choice_decision", "") or "").strip()
+        choice_name = choice_label or "用户选定的代表结构"
+        ligands = {"source": "choice", "count": 1, "text": "", "file": "",
+                   "molecules": [{"name": choice_name, "smiles": choice_smiles}],
+                   "decision": {"label": choice_label, "mode": choice_mode,
+                                "smiles": choice_smiles, "by": "user", "via": "ui-choice"}}
+        assumptions.append(
+            f"本次对接的化学形式由用户在界面选定：{choice_label or choice_smiles}"
+            + (f"（方式 {choice_mode}）" if choice_mode else "")
+            + " → 直接按该结构导入，不要重新查询该分子、不要再询问代表结构")
+    elif text:
         ligands = {"source": "text", "count": _count_ligands(text), "text": text, "file": ""}
     elif mol_file:
         ligands = {"source": "file", "count": 0, "text": "", "file": mol_file}
@@ -440,7 +553,7 @@ def build_task_spec(req: Any, *, raw_request: str = "",
             f"用户点名了受体「{named_now}」→ 先在线自动解析（UniProt 多策略检索 + RCSB/AlphaFold "
             "结构获取），解析成功即继续；失败或出现多个同样合理的候选时再带候选清单请用户选择")
     else:
-        name = str(getattr(req, "receptor", "") or "") or DEFAULT_RECEPTOR_NAME
+        name = str(getattr(req, "receptor", "") or "").strip()
         if authority in ("chat", "chat+advanced") and (message or prior):
             found = explicit_now
             if not found and named_ok:
@@ -449,28 +562,43 @@ def build_task_spec(req: Any, *, raw_request: str = "",
             if not found and prior_receptor:
                 # 多轮：本轮没提受体，但上一轮提过（或上一轮正是被追问的受体）→ 继承
                 found = prior_receptor
-                assumptions.append(f"受体继承自上一轮对话 → {found}")
+                assumptions.append(
+                    ("受体继承自上一轮已解析结果 → " if prior_receptor_from_resolution
+                     else "受体继承自上一轮对话 → ") + str(found))
             if not found:
-                # 多轮续跑：本轮没提受体，但上一轮（含助手回复）里**正好只有一个**已解析的
-                # UniProt accession（例如上一轮已把植物 ROS1 查成 Q9SJQ6）→ 继承它。
-                # 为什么需要：用户点选「分子代表结构」后的追问通常只带分子，若不继承就会
-                # 退化成「未指定受体 → 默认凝血酶」，把已解析好的受体丢掉。
-                prior_accessions = _mentioned_accessions(prior_all_text)
+                # 多轮续跑：本轮没提受体，但上一轮**用户点名过受体**、且上一轮（含助手回复）
+                # 里**正好只有一个**已解析的 UniProt accession（例如上一轮已把植物 ROS1 查成
+                # Q9SJQ6）→ 继承它。为什么需要：用户点选「分子代表结构」后的追问通常只带分子，
+                # 若不继承就会丢掉已解析好的受体。
+                # 注意 `prior_accessions` 只在「上一轮用户点名过受体」时才有值 ——
+                # 否则助手提问/工具说明里的示例 accession 会被误当成用户指定（见上方注释）。
                 if len(prior_accessions) == 1:
                     found = prior_accessions[0]
                     assumptions.append(f"受体继承自上一轮已解析结果 → {found}")
             if found:
                 receptor = {"name": found, "file": "", "source": "user"}
             else:
-                receptor = {"name": name, "file": "", "source": "default"}
-                assumptions.append("未指定受体 → 由系统内建默认受体兜底"
-                                   "（具体受体名以工具返回的 notes/结果块为准，报告里照抄该名称）")
+                receptor = {"name": "", "file": "", "source": "default"}
+                assumptions.append(
+                    "未指定受体 → **不执行任何计算**，先请用户指定受体"
+                    "（PDB 编号 / UniProt accession / 基因或蛋白名称 / 上传结构文件）")
         else:
             if named_ok:
                 name = named_resolved
-            receptor = {"name": name, "file": "", "source": "user" if authority == "manual" else "default"}
+            # 只有「表单模式 + 用户确实填了受体」才算 user（表单是权威参数）。
+            # 其余情形（含高级设置里的预填值）一律视为**未指定** → 受理层判 ask。
+            receptor = {"name": name, "file": "",
+                        "source": "user" if (authority == "manual" and name) else "default"}
     if params.get("receptor_file") and not uploaded:
         receptor["file"] = params["receptor_file"]
+
+    # ---- 必需项缺失清单（确定性；供提问与报告使用）----
+    # 必需三项：受体 / 分子库 / 任务类型。前两项缺失时如实记进 missing，
+    # 并且**不允许**用任何预置/内建资源兜底（预置受体仅内部测试用）。
+    if not (receptor.get("file") or receptor.get("name")):
+        missing.append("receptor")
+    if str(ligands.get("source") or "") == "library":
+        missing.append("ligands")
 
     site = {"center": [], "size": [], "source": "tool"}
     if params.get("site"):
@@ -523,45 +651,56 @@ def build_task_spec(req: Any, *, raw_request: str = "",
 
 
 def _resolvable_ligands(spec: Dict[str, Any]) -> bool:
-    """用户是否已经给出了可识别的分子来源（文本/文件/指令中抽取到的 SMILES/名称）。"""
-    return (spec.get("ligands") or {}).get("source") in ("text", "file", "mentioned", "message")
+    """用户是否已经给出了可识别的分子来源（文本/文件/指令中抽取到的 SMILES/名称）。
+
+    「分子库」是必需项之一（契约第 2 条），但用户**明确同意用内置示例库**也算
+    来源已确定（`allow_example_fallback=true` 是用户的显式要求，不是系统替他选）。
+    """
+    # `choice` = 用户在界面点选的代表结构（多组分/配位聚合物）：来源明确，不需要再问
+    if (spec.get("ligands") or {}).get("source") in ("text", "file", "mentioned", "message", "choice"):
+        return True
+    return user_requested_example_library(spec.get("raw_request") or "")
 
 
 def _can_ask(spec: Dict[str, Any]) -> bool:
     """受理层是否允许判 `ask`（唯一的判定入口）。
 
-    三种成立情形（任一满足即 ask）：
+    契约（用户明确要求）：**必需信息不齐 → 只提问、零工具调用**。
+    必需项 = 受体 / 分子库 / 任务类型（任务类型恒有确定值，不在这里判）。
+    因此任一情形成立即 ask：
       0. **`receptor.source == "unresolved"`**：用户点名了一个无法解析的受体
-         （不是注册表 key/别名、不是 PDB 号、不是 UniProt accession，也没有上传受体文件）。
+         （不是 PDB 号、不是 UniProt accession、不是基因/蛋白名称，也没有上传受体文件）。
          这是**产品底线**：不明确计算对象时绝不计算，所以它优先于多轮守卫 ——
          哪怕本轮是在回答上一轮的追问（`prior_turns` 非空、分子已继承），照样要停下来问，
          绝不能因为「上一轮问过」就把受体悄悄换成默认值继续算。
-      1. 受理模型**明确要求**用户补充（`needs_user_input=true`）；
-      2. 当前规约里**没有任何可识别的分子来源**（含从上一轮继承来的分子）。
+      0b. **`receptor.source == "default"`**：指令与表单都没给受体。**预置受体仅内部测试用**，
+         系统不再有「未指定就用某个内建受体」的兜底；计算对象未指定 → 同样先问再算。
+      1. **没有任何可识别的分子来源**（`ligands.source == "library"`，且用户也没有明确
+         要求使用内置示例库）—— 分子库与受体同为必需项，缺了就是「任务没提清楚」。
+      2. 受理模型**明确要求**用户补充（`needs_user_input=true`）—— 情形 0/0b/1 已覆盖
+         绝大多数情况，这一项只作为显式记录保留（`merge_llm_understanding` 会写入规约）。
 
-    **多轮守卫**（只适用于情形 1/2）：当存在 `prior_turns` 且本轮 `message` 非空时，
-    用户通常正是在回答上一轮的问题。此时若上一轮已经给出了分子（`build_task_spec` 会把它
-    确定性继承进规约），条件 2 不再成立，于是不会再次判 `ask` —— 否则用户每回答一次就被
-    重新追问一次，对话永远无法推进。仅当「模型仍要求补充」且「上一轮与本轮都拿不到任何
-    分子来源」时，才允许再问一次。
+    **多轮守卫**：当存在 `prior_turns` 且本轮 `message` 非空时，用户通常正是在回答上一轮的问题。
+    此时若上一轮已经给出了分子（`build_task_spec` 会把它确定性继承进规约），条件 1 不再成立，
+    于是不会再次判 `ask` —— 否则用户每回答一次就被重新追问一次，对话永远无法推进。
     """
-    if str((spec.get("receptor") or {}).get("source") or "") == "unresolved":
+    if str((spec.get("receptor") or {}).get("source") or "") in ("unresolved", "default"):
         return True
-    if not spec.get("needs_user_input"):
-        return False
-    return not _resolvable_ligands(spec)
+    # 分子库缺失同样是「必需信息不齐」→ 先问再算（不再默默跑一遍没意义的东西）
+    if not _resolvable_ligands(spec):
+        return True
+    return False
 
 
 def _finalize(spec: Dict[str, Any]) -> Dict[str, Any]:
     """按规约内容推导最终决策（受理层唯一有权改 decision 的地方）。
 
-    注意：**`missing` 本身不构成「不能跑」**。系统对受体、阳性对照、对接参数都有默认值，
-    分子也有内置示例库兜底；把「没提供分子」当成阻断会直接违反产品底线
-    （输入合法且能对接就必须完整跑完）。因此 `ask` 成立的情形只有两种：
-    ① 用户**点名了具体受体但无法解析**（`receptor.source == "unresolved"`，含多轮——
-       计算对象不明确时绝不能算）；② 受理模型**明确要求用户补充**（`needs_user_input=true`）
-    且用户没有给出任何可识别的分子来源 —— 也就是「用户显然想分析某个特定东西，但我们完全
-    无法识别」。多轮语义见 `_can_ask`。
+    契约：**必需信息不齐 → 只提问、零工具调用**。必需项是受体 / 分子库 / 任务类型，
+    所以只有三种情形会判 `ask`：
+    ① 用户**点名了具体受体但无法解析**（`receptor.source == "unresolved"`，含多轮）；
+    ①b 用户**根本没指定受体**（`receptor.source == "default"`——系统没有默认受体了）；
+    ①c 用户**没有给出任何可识别的分子来源**（且没明确同意用示例库）。
+    `missing` 只是**记录**（用于提问文案与报告），判定本身由 `_can_ask` 负责。
     """
     if spec.get("out_of_scope"):
         spec["decision"] = DECISION_REJECT
@@ -570,11 +709,17 @@ def _finalize(spec: Dict[str, Any]) -> Dict[str, Any]:
         if spec.get("prior_turn_count"):
             spec["ask_is_followup"] = True     # 可观测：这是多轮里确实无法识别的追问
         if not spec.get("questions"):
-            if str((spec.get("receptor") or {}).get("source") or "") == "unresolved":
+            receptor_source = str((spec.get("receptor") or {}).get("source") or "")
+            if receptor_source == "unresolved":
                 name = str((spec.get("receptor") or {}).get("name") or "用户点名的受体")
                 spec["questions"] = _unresolved_receptor_questions(name)
+            elif receptor_source == "default":
+                # 没指定受体 → 只提问、不算；分子也缺时一并问清（一次问全，不挤牙膏）。
+                spec["questions"] = [_receptor_source_question()]
+                if not _resolvable_ligands(spec):
+                    spec["questions"].append(_ligand_source_question())
             else:
-                spec["questions"] = ["请问您想分析哪些分子？（可给名称或 SMILES，或上传分子文件）"]
+                spec["questions"] = [_ligand_source_question()]
     else:
         spec["decision"] = DECISION_RUN
         if spec.get("prior_turn_count") and spec.get("current_message") \
@@ -596,8 +741,9 @@ INTAKE_SYSTEM_PROMPT = """你是分子筛选系统的「任务受理 Agent」。
   "task_type": "screening|properties_only|docking_only|binding_only|report_only|unknown",
   "goal": "用一句话复述用户目标",
   "mentioned_molecules": ["原文中逐字出现的分子名称或 SMILES"],
-  "mentioned_receptor": "用户点名的受体（逐字：注册表名/PDB 号/UniProt accession/基因或蛋白名称）或 ''",
+  "mentioned_receptor": "用户点名的受体（逐字：PDB 号/UniProt accession/基因或蛋白名称）或 ''",
   "multi_intent": false,                       // 用户是否同时要了多个维度
+  "needs_user_input": false,                   // 仅当「用户显然想分析某个特定对象，但原文里没有任何可识别的分子」时才 true
   "missing": ["仍缺少的必需数据"],
   "questions": ["需要向用户确认的问题（最多 3 条）"],
   "assumptions": ["你的合理假设"],
@@ -611,10 +757,11 @@ INTAKE_SYSTEM_PROMPT = """你是分子筛选系统的「任务受理 Agent」。
    参数由界面表单与系统默认决定，不由你决定。
 3. 只有在**确实与分子筛选无关**时才把 out_of_scope 设为 true（闲聊、天气、订餐、写诗…）；
    看不出意图但可能是分子任务时不要判越界。
-4. **系统对缺失信息普遍有默认值与兜底，所以「缺东西」通常不是阻断**：
+4. **必需项只有三个：受体 / 分子库 / 任务类型。缺了必需项由受理层规则判 `ask`（只提问、零工具调用），
+   你不需要也**不要**替它判定**：
    - 分子缺失 → 由用户补充（**默认不使用内置示例库**；仅当用户明确要求「用示例库」时才用）；
-   - 受体缺失 → 用默认受体；阳性对照缺失 → 跳过对照分析；参数缺失 → 用系统默认；
-   - 位点坐标缺失 → 由口袋预测工具自动确定。
+   - **受体缺失 → 受理层规则会据此提问**（绝不允许用任何内置/预置/默认受体兜底）；
+   - 阳性对照缺失 → 跳过对照分析；参数缺失 → 用系统默认；位点坐标缺失 → 由口袋预测工具自动确定。
    因此**不要**因为"用户没给分子/受体/参数"而设置 `needs_user_input`，也不要把它写进 missing。
 5. 只有当「用户显然想分析某个**特定**对象，但原文里没有任何可识别的分子（名称/SMILES/文件）」，
    以至于直接执行会答非所问时，才设 `needs_user_input: true` 并在 questions 里给出要问的问题。
@@ -629,7 +776,8 @@ INTAKE_SYSTEM_PROMPT = """你是分子筛选系统的「任务受理 Agent」。
    多个同样合理的候选时才会带着候选清单问用户，因此你**不要**在这里判定「解析不了」。
 9. **附件清单不是名称来源**：指令末尾可能有 `[附件清单…]`（上传文件）。那里的文件名/路径片段
    （时间戳、6~12 位十六进制哈希、`PGR_120` 这类带数字的库名）**不是**分子名、更**不是**受体名；
-   用户没在正文里点名受体时，`mentioned_receptor` 必须留空（系统会用默认受体并在报告里注明）。"""
+   用户没在正文里点名受体时，`mentioned_receptor` 必须留空（系统会据此向用户提问，
+   绝不会替他挑一个内建受体）。"""
 
 
 def _llm_enabled() -> bool:
@@ -666,6 +814,21 @@ def user_requested_example_library(raw: str) -> bool:
 def user_instruction_text(raw: str) -> str:
     """用户**自己输入**的指令部分（剥掉机器拼接的「引用文件」清单）。"""
     return _ATTACH_REF_RE.sub("", str(raw or "")).strip()
+
+
+#: 受理层渲染给编排层的机器块标题（`render_agent_message`）。整段都是**系统生成**的：
+#: 里面的措辞（「先请用户指定受体」「不要回退任何默认受体」…）会被受体名抽取
+#: (`_named_receptor_candidate`) 误当成「用户点名的受体」—— 进而让上一轮助手回复里的
+#: 示例 PDB 编号（如 3ZBF）被继承成用户指定的受体。真实缺陷 2026-09-21 实测复现。
+_TASK_SPEC_BLOCK_RE = re.compile(r"\n*-{2,}\s*任务规约（受理层产出[\s\S]*$")
+
+
+def user_only_text(raw: str) -> str:
+    """只保留用户**自己写的**正文：剥掉「引用文件」清单与「任务规约」机器块。
+
+    多轮继承（受体/分子）必须只看这段文本，否则系统会把自己的提问当成用户的输入。
+    """
+    return _TASK_SPEC_BLOCK_RE.sub("", user_instruction_text(raw)).strip()
 
 
 def _llm_instruction_view(raw: str) -> str:
@@ -874,30 +1037,19 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
             "（不是注册表受体/PDB 号/UniProt accession，也没有上传受体文件；"
             "已尝试 UniProt accession 直查与基因/蛋白名称检索，均无匹配）。"
             "**不要对接、不要回退默认受体、不要臆造结构** —— 请只向用户提问并给出三条出路："
-            "① 提供 PDB ID（如 1DWC）；② 上传受体文件（.pdb/.pdbqt）；"
-            "③ 明确同意改用系统默认受体 凝血酶（thrombin, 1DWC）。")
+            "① 提供 PDB ID 或 UniProt accession；② 上传受体文件（.pdb/.cif/.pdbqt）；"
+            "③ 写出受体的基因名/蛋白名（中英文均可）。")
     elif str(receptor.get("source") or "") == "default":
-        # 关键：`source=="default"` 表示**受理层没从指令/表单拿到受体**，这个名字只是兜底默认值。
-        # 旧实现无论来源一律渲染成「受体：thrombin」的权威口吻，编排层于是把示例默认受体
-        # 当成用户指定，用户说「用 trypsin」也被覆盖（真实缺陷）。这里必须用弱表述，并明确
-        # 要求把 receptor_sources 留空，交由对接工具回退默认（回退时工具会写「未指定受体」note）。
-        fallback = receptor.get("name") or DEFAULT_RECEPTOR_NAME
-        if fallback == DEFAULT_RECEPTOR_NAME:
-            # 不点名具体受体（默认资源不进入 Agent 视野）：名字由工具在运行时给出，报告照抄即可。
-            lines.append(
-                "受体：**指令未指定**（受理层未从指令中识别到受体；系统会按内建默认受体兜底，"
-                "**不是**用户指定的受体）。调用 run_pocket_analysis / run_docking 时，"
-                "请把 receptor_sources 与 receptor_file 留空，由工具回退系统默认 —— "
-                "工具会在 notes 里写明「未指定受体，已默认使用 <受体名>」，"
-                "你必须在最终回复里**照抄工具给出的受体名**，不要自己假定。"
-                "若上面的用户指令其实指定了别的受体（名称/PDB 号/文件），以指令为准。")
-        else:
-            lines.append(
-                f"受体：**指令未指定**（{fallback} 来自高级设置，只是指令没提受体时的默认值，"
-                "**不是**用户指令）。若指令未指定受体，可用 " + fallback +
-                "；若指令里明确提到了其它受体，以指令为准。")
+        # 用户没要求受体：**不许替他挑**。产品底线（用户明确要求）：未指定受体时不执行对接，
+        # 只向用户提问 —— 旧实现会静默回退内建默认受体，跑出来的结果答非所问。
+        lines.append(
+            "受体：**指令与表单都未指定受体**。**不要对接、不要回退任何默认受体、不要臆造结构** —— "
+            "这是「计算对象未指定」，只向用户提问并给出三条出路："
+            "① 提供 PDB 编号或 UniProt accession；"
+            "② 写出受体的基因名/蛋白名（中英文均可，系统会去在线数据库检索）；"
+            "③ 上传受体结构文件（.pdb/.cif/.pdbqt）。用户指定之前不要调用任何计算工具。")
     else:
-        lines.append(f"受体：{receptor.get('name') or DEFAULT_RECEPTOR_NAME}")
+        lines.append(f"受体：{receptor.get('name') or '（未指定）'}")
     site = spec.get("site") or {}
     if site.get("center"):
         size = site.get("size") or [22, 22, 22]
@@ -922,6 +1074,38 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
         + "，n_poses=" + ("默认（筛选 1）" if (poses is None or system_default) else f"{poses}")
         + "，engine=" + ("auto" if system_default else str(params.get("engine") or "auto"))
         + f"，pocket_engine={(params.get('pocket_engine') or 'auto')}")
+    # 表单里的「保存对接位姿 / 最大分子数」必须显式渲染给编排层 —— 否则协调 Agent 不知道
+    # 有这两项，用户的勾选/填写就被静默忽略（真实缺陷：Agent 模式下这两项曾经不生效）。
+    form_params: List[str] = []
+    if params.get("save_poses") is not None:
+        form_params.append(f"save_poses={bool(params.get('save_poses'))}")
+    if params.get("max_ligands"):
+        form_params.append(f"max_ligands={int(params['max_ligands'])}")
+    if form_params:
+        lines.append("表单指定（请**原样**传给 run_docking，不得忽略）：" + "，".join(form_params))
+    # 质子化态策略是**运行级口径**（配体与理化性质必须同一形式），必须显式告知编排层。
+    # 旧版 chat 指令里没有这一行 → 协调 Agent 会**臆测**策略：真实反馈里它写「当前策略为 keep」，
+    # 而实际默认是 ph 7.4（用户据此做的决定会被误导）。
+    from docking_agent.core.protonation import (PROTONATION_POLICIES, protonation_ph,
+                                                protonation_policy)
+
+    policy = str(params.get("protonation") or "").strip().lower()
+    if policy not in PROTONATION_POLICIES:
+        policy = protonation_policy()
+    if policy == "ph":
+        target = params.get("protonation_ph")
+        try:
+            target_ph = float(target) if target not in (None, "") else protonation_ph()
+        except (TypeError, ValueError):
+            target_ph = protonation_ph()
+        if not (target_ph > 0):        # 0 = 「未设置」哨兵（历史事故：0 与 pH 0 撞车）
+            target_ph = protonation_ph()
+        lines.append("质子化态策略：ph（按目标 pH "
+                     f"{target_ph:g} 分配；配体与理化性质必须同一形式，不要自行更改）")
+    elif policy == "neutralize":
+        lines.append("质子化态策略：neutralize（只中和带净电荷的分子，中性分子不变）")
+    else:
+        lines.append("质子化态策略：keep（保持输入形式，只告警不处理）")
     control = spec.get("positive_control") or {}
     if control.get("provided_by") == "skipped":
         lines.append("阳性对照：本次不使用（跳过结合模式对照分析）")
@@ -946,6 +1130,14 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
             f"不要自行拼接或猜测路径）：{ligands['file']}。"
             "请立即调用 import_molecule_library(molecule_file=\"" + str(ligands["file"]) +
             "\") 导入（它会写入共享黑板，后续子 Agent 工具留空参数即可使用全量分子）。")
+    elif ligands.get("source") == "choice" and ligands.get("molecules"):
+        decision = ligands.get("decision") or {}
+        first = ligands["molecules"][0]
+        lines.append(
+            f"候选分子库（1 条，**用户在界面选定**的化学形式：{first.get('name')}"
+            + (f"；方式 {decision.get('mode')}" if decision.get("mode") else "")
+            + f"）：{first.get('name')}:{first.get('smiles')}。"
+            "**不要再查询该分子、不要再询问代表结构**：直接用它导入分子库并继续完整流程。")
     elif ligands.get("source") == "message" and ligands.get("molecules"):
         joined = "；".join(ligands["molecules"])
         lines.append(f"候选分子库（{ligands.get('count') or len(ligands['molecules'])} 条，"
@@ -975,7 +1167,7 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
             count = len(ligands["molecules"])
         if count:
             try:
-                from docking_agent.agents.tool_io import funnel_advice
+                from docking_agent.runtime.tool_io import funnel_advice
 
                 advice = funnel_advice(count)
                 if advice:
@@ -1132,10 +1324,17 @@ def render_agent_message(spec: Dict[str, Any], run: Any = None) -> str:
                  f"decision={spec.get('decision')}　confidence={spec.get('confidence')}")
     if spec.get("assumptions"):
         lines.append("假设：" + "；".join(str(a) for a in spec["assumptions"][:5]))
-    if spec.get("missing"):
-        lines.append("缺少：" + "；".join(str(m) for m in spec["missing"][:5]))
-    if spec.get("questions"):
-        lines.append("待向用户确认：" + "；".join(str(q) for q in spec["questions"][:3]))
+    # 「缺少 / 待向用户确认」只在 **decision=ask**（受理层确实要停下来问用户）时下发。
+    # 真实缺陷：受理模型会把「用户点名了分子但没给 SMILES」记进 missing 并附一条
+    # 「请提供候选分子库」的问题；规则层判定 decision=run（名称会先在线查询），
+    # 但渲染层仍把这两行原样发给编排层 → 主管 Agent 当场转述成一次提问，
+    # 用户于是被问了两遍（一次问分子库、一次选结构）。missing/questions 仍保留在
+    # run.json 里作为可观测记录，只是不再进入给编排层的指令。
+    if spec.get("decision") == DECISION_ASK:
+        if spec.get("missing"):
+            lines.append("缺少：" + "；".join(str(m) for m in spec["missing"][:5]))
+        if spec.get("questions"):
+            lines.append("待向用户确认：" + "；".join(str(q) for q in spec["questions"][:3]))
     lines.append("")
 
     lines.append(_render_params(params, spec, header, run))
@@ -1155,12 +1354,15 @@ def render_agent_message(spec: Dict[str, Any], run: Any = None) -> str:
                 "decision=ask：这是受理层的判定 —— **用户点名的受体无法解析**，计算对象不明确。"
                 "**不要调用任何工具**（尤其不要 run_docking / molecular_docking，也不要改用默认受体）；"
                 "只用一两句话说明已尝试 UniProt accession 直查与基因/蛋白名称检索均无匹配，"
-                "并请用户三选一：① 提供 PDB ID；② 上传 .pdb/.pdbqt 受体文件；"
-                "③ 明确同意改用系统默认受体 凝血酶(thrombin, 1DWC)。"
+                "并请用户三选一：① 提供 PDB ID / UniProt accession；② 上传 .pdb/.cif/.pdbqt "
+                "受体文件；③ 写出受体的基因名/蛋白名（中英文均可）。"
                 "**不得把「已用默认受体跑完」当成完成任务。**")
         else:
-            lines.append("decision=ask：这是受理层的判定 —— 缺少必需数据。"
-                         "**不要调用任何工具**，只向用户说明缺什么并请他补充（这不算「中途停下」，"
+            lines.append("decision=ask：这是受理层的判定 —— **必需信息不齐**"
+                         "（必需项只有三个：受体 / 分子库 / 任务类型）。"
+                         "**不要调用任何工具**（包括 import_molecule_library / "
+                         "run_property_assessment / run_pocket_analysis / run_docking 等），"
+                         "只向用户说明缺什么并请他补充（这不算「中途停下」，"
                          "而是受理层已经做出的决定）。")
     else:
         lines.append("decision=run：受理层已确认输入合法 —— 只要候选分子库非空，就必须完整执行"
@@ -1168,7 +1370,7 @@ def render_agent_message(spec: Dict[str, Any], run: Any = None) -> str:
                      "**不得在中途停下来询问用户**，也不得只完成其中一步。")
         if str((spec.get("receptor") or {}).get("source") or "") == "named":
             lines.append(
-                "**受体解析是唯一例外**：上面点名的受体字面上不是注册表受体/PDB 号/UniProt accession，"
+                "**受体解析是唯一例外**：上面点名的受体字面上不是 PDB 号/UniProt accession，"
                 "必须先调用 fetch_protein_structure 自动解析后再继续；只有「解析出多个同样合理的候选 / "
                 "置信度不足」或「所有自动检索都失败」时，才允许停下来让用户从候选清单里选择 —— "
                 "这不算「中途询问」，而是计算对象不明确时的必要确认。**绝不允许退化成默认受体开跑。**")

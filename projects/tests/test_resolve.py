@@ -202,10 +202,16 @@ def test_decide_status_thresholds() -> None:
 # --------------------------------------------------------------------------- #
 # 结构化选项（choices）
 # --------------------------------------------------------------------------- #
-def test_receptor_choices_are_structured_and_include_default_option() -> None:
+def test_receptor_choices_are_structured_and_never_offer_a_default_receptor() -> None:
+    """候选选项只含真实检索结果 —— **不再追加「改用系统默认受体」**。
+
+    历史缺陷：这里曾无条件追加一个 `thrombin` 选项，与「预置受体只用于内部测试 /
+    系统没有默认受体」的产品规则（以及 `run_docking` 的护栏）直接冲突：
+    用户可以点一个预置测试受体当研究靶点跑出无关结果。
+    """
     resolved = resolve.resolve_receptor_name("植物去甲基化酶ROS1", fetch=fake_fetch)
     choices = resolve.receptor_choices(resolved["candidates"])
-    assert len(choices) >= 2
+    assert len(choices) >= 1
     first = choices[0]
     assert first["kind"] == "receptor"
     assert first["value"] == "Q9SJQ6"
@@ -213,8 +219,11 @@ def test_receptor_choices_are_structured_and_include_default_option() -> None:
     assert first["prompt"].startswith("用 Q9SJQ6")
     assert first["detail"]["accession"] == "Q9SJQ6"
     assert first["detail"]["pdb_ids"] == ["7YHP"]
-    default = choices[-1]
-    assert default["value"] == "thrombin" and "默认" in default["label"]
+    # 任何一项都不得是预置/默认受体
+    assert all("默认受体" not in str(c.get("label") or "") for c in choices), choices
+    assert all(str(c.get("value") or "") != "thrombin" for c in choices), choices
+    # 没有候选时不下发任何选项（由提问文案给出三条出路）
+    assert resolve.receptor_choices([]) == []
 
 
 def test_candidate_structure_hint_prefers_rcsb_then_alphafold() -> None:

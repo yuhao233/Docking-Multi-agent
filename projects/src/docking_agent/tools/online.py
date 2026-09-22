@@ -34,8 +34,9 @@ from docking_agent.core.resolve import (
     summarize_attempts,
 )
 from docking_agent.paths import cache_dir
-from docking_agent.runtime.context import AgentContext, active_request, new_context, request_context
+from docking_agent.runtime.context import AgentContext, active_run
 from docking_agent.tools.choices import (
+    choices_payload,
     clear_choices,
     mark_receptor_unresolved,
     mixture_choices,
@@ -325,30 +326,19 @@ def _download_and_prepare(url: str, dest: str) -> Dict[str, Any]:
 def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = None) -> str:
     """从在线数据库获取蛋白质结构，并现场准备为可直接对接的受体。
 
-    参数 source（四种用法，均支持；**点名受体时优先用本工具自动解析，不要先问用户**）：
-      - PDB 结构号：如 3ZBF / 1DWC —— 直接从 RCSB 下载该三维结构；
-      - UniProt accession：如 Q9SJQ6 / P08922 —— 查询其关联的 PDB 结构，选最优的一个下载；
-      - 基因名 / 蛋白名（英）：如 ROS1 / epidermal growth factor receptor —— 先在 UniProt 检索；
-      - 基因名 / 蛋白名（中）：如「植物去甲基化酶ROS1」「植物去甲基化1酶」—— 自动做中英映射
-        与物种推断（植物 → 拟南芥 taxid 3702），多策略检索 UniProt 后取最优候选。
+    source 支持四种写法（**点名受体时先调本工具，不要先问用户**）：PDB 号（3ZBF）、
+    UniProt accession（Q9SJQ6）、英文基因/蛋白名（ROS1）、中文名（「植物去甲基化酶ROS1」，
+    自动中英映射 + 物种推断）。结构优先取 RCSB 实验结构，缺失时回退 AlphaFold DB 预测结构
+    （版本随接口返回，不写死）。
 
-    结构来源链：UniProt 交叉引用 / RCSB 反查的**实验结构**优先；没有实验结构或候选结构都
-    准备失败时，回退 **AlphaFold DB 预测结构**（`pdbUrl`，模型版本随接口返回，不写死文件名）。
-
-    返回 JSON（受体 spec）：
-      {"status":"ok","receptor_file":可传给 run_docking 的 receptor_file,
-       "box_center":[...],"box_size":[...],"structure_source":"rcsb|alphafold",
-       "pdb_id":"7YHP" 或 "alphafold":{...},"accession":"Q9SJQ6","organism":"Arabidopsis thaliana",
-       "protein":...,"score":...,"score_reasons":[...],"why_selected":"...",
-       "structure_url":"...","structure_file":"...","receptor_resolution":{"attempt_summary":[...]},
-       "candidates":[蛋白候选],"structure_candidates":[PDB 结构候选],"provenance":{...}}
-    解析出多个同样合理的候选且无法消歧时返回
-      {"status":"ambiguous","candidates":[...],"attempts":[...],"message":"..."}；
-    所有检索都失败时返回 {"status":"error","reason":"not_found","attempts":[...],"message":"..."}。
-    两种失败都会把本次运行规约的受体标为 unresolved，`run_docking` 护栏将拒绝计算；
-    同时把候选写成结构化 `choices`（SSE 下发、前端可点选）。
+    返回（受体 spec）：
+      ok → {"status":"ok","receptor_file":传给 run_docking 的文件,"box_center":[…],"box_size":[…],
+            "structure_source":"rcsb|alphafold","pdb_id","accession","organism","protein",
+            "score","score_reasons","structure_url","provenance":{数据库/物种/方法与分辨率…}}
+      ambiguous（多个同样合理的候选）→ 给出候选并写成可点选 `choices`，此时**不做任何计算**；
+      error/not_found → 给出已尝试的检索；这两种情况都会把本次受体标为 unresolved，
+      `run_docking` 护栏拒绝计算。
     """
-    ctx = active_request(runtime) or new_context(method="fetch_protein_structure")  # noqa: F841
     src = (source or "").strip()
     if not src:
         return json.dumps({"status": "error",
@@ -382,10 +372,8 @@ def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = No
                     publish_choices("receptor", receptor_choices(resolution["candidates"]),
                                      note="检索到多个/低置信候选：请选择要使用的受体，系统不替用户决定",
                                      runtime=runtime)
-                else:
-                    publish_choices("receptor", receptor_choices([], include_default=True),
-                                     note="未检索到候选：可改用系统默认受体，或提供 PDB/accession/文件",
-                                     runtime=runtime)
+                # 检索不到候选时**不下发任何选项**：系统没有默认受体，预置受体也不是用户可选来源
+                # （历史缺陷：这里曾追加「改用系统默认受体 凝血酶」选项，与产品规则/代码守卫冲突）。
                 return resolution_failure_json(src, resolution)
             named_candidate = resolution["selected"]
             accession = str(named_candidate.get("accession") or "")
@@ -467,8 +455,7 @@ def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = No
             if named:
                 failed_resolution = resolved.get("receptor_resolution") or {}
                 mark_receptor_unresolved(src, "structure_unavailable", failed_resolution, runtime=runtime)
-                publish_choices("receptor", receptor_choices(failed_resolution.get("candidates") or [],
-                                                             include_default=True),
+                publish_choices("receptor", receptor_choices(failed_resolution.get("candidates") or []),
                                  note="解析到候选但结构准备失败：可改选其它候选或提供 PDB 文件",
                                  runtime=runtime)
             return json.dumps({
@@ -513,6 +500,14 @@ def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = No
             "uniprot_attempts": (resolved.get("receptor_resolution") or {}).get("attempt_summary") or [],
             "score_reasons": resolved.get("score_reasons") or [],
         }
+        # 选中结构的方法/精度（实验结构才有）：报告 §1.2 要写明「用的是哪个结构、什么分辨率」
+        _sel = next((c for c in (resolved.get("structure_candidates") or [])
+                     if str(c.get("pdb") or "").upper() == str(pdb_id or "").upper()), {})
+        resolved["provenance"]["structure_method"] = _sel.get("method") or ""
+        resolved["provenance"]["structure_resolution"] = _sel.get("resolution") or ""
+        from docking_agent.runtime.run_facts import note_receptor_provenance
+
+        note_receptor_provenance(active_run(runtime), resolved["provenance"])
         logger.info("蛋白结构已就绪：%s -> %s（来源 %s，候选尝试 %s 个）",
                     src, spec.get("pdbqt"), structure_source, len(tried))
         clear_choices("receptor", runtime=runtime)
@@ -553,7 +548,6 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
     （最大有机片段，仅作**代表结构**），并给出 `mixture_note` 说明代表结构的取法 —— 绝不臆造单一结构。
     查不到时按分子侧既有规则返回 error 并要求用户补名称/CID/SMILES。
     """
-    ctx = active_request(runtime) or new_context(method="fetch_molecule_record")  # noqa: F841
     id_type = (id_type or "name").lower().strip()
     if id_type not in ("name", "cid", "smiles", "inchikey", "inchi"):
         return json.dumps({"status": "error",
@@ -653,7 +647,13 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
         publish_choices("molecule", choices,
                          note="该名称是多组分/聚合物：代表结构的取法需要用户确认，系统不替用户决定",
                          runtime=runtime)
-        out["choices"] = choices
+        # 选项明细只走界面（`run.data["choices"]`）；给**模型**的载荷里不带明细，
+        # 否则主管 Agent 会把四个 SMILES 再抄成一张表 —— 同一问题在界面上出现两次（真实反馈）。
+        out.update(choices_payload(
+            choices,
+            message=(f"「{resolved_query}」是多组分结构/配位聚合物：代表结构的取法必须由用户确认，"
+                     "本工具**没有**导入任何分子（不替用户选择）。"),
+            kind="molecule"))
     else:
         clear_choices("molecule", runtime=runtime)
     return json.dumps(out, ensure_ascii=False)

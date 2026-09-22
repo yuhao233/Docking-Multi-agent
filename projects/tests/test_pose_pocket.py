@@ -15,9 +15,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any
 
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC = PROJECT_ROOT / "src"
@@ -277,7 +276,7 @@ def test_report_says_so_when_no_pose(tmp_path: Path) -> None:
 # 4. Agent 工具
 # --------------------------------------------------------------------------- #
 def test_analyze_pose_pocket_tool_returns_real_contacts(tmp_path: Path) -> None:
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools.pose import analyze_pose_pocket
 
@@ -308,7 +307,7 @@ def test_analyze_pose_pocket_tool_returns_real_contacts(tmp_path: Path) -> None:
     board = Blackboard("POSE-BOARD")
     token, btoken = current_run.set(run), current_blackboard.set(board)
     try:
-        from docking_agent.agents import tool_io
+        from docking_agent.runtime import tool_io
 
         tool_io.record("docking", {"status": "ok", "receptors": [
             {"receptor": "测试受体", "receptor_key": "T", "pdbqt": str(rec),
@@ -331,7 +330,7 @@ def test_analyze_pose_pocket_tool_returns_real_contacts(tmp_path: Path) -> None:
 
 
 def test_analyze_pose_pocket_tool_without_pose_is_honest(tmp_path: Path) -> None:
-    from docking_agent.agents.blackboard import Blackboard, current_blackboard
+    from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools.pose import analyze_pose_pocket
 
@@ -359,7 +358,7 @@ def test_analyze_pose_pocket_tool_without_pose_is_honest(tmp_path: Path) -> None
     board = Blackboard("POSE-BOARD-2")
     token, btoken = current_run.set(run), current_blackboard.set(board)
     try:
-        from docking_agent.agents import tool_io
+        from docking_agent.runtime import tool_io
 
         tool_io.record("docking", {"status": "ok", "receptors": [
             {"receptor": "测试受体", "pdbqt": str(rec), "box_center": [3, 2, 3],

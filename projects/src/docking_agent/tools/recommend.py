@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from langchain.tools import tool
 
-from docking_agent.agents import tool_io
+from docking_agent.runtime import tool_io
 from docking_agent.core import POSITIVE_CONTROL_NAME, merge_and_rank
 from docking_agent.reporting import rank_molecules
 from docking_agent.reporting.recommend import (
@@ -30,7 +30,7 @@ from docking_agent.reporting.recommend import (
     build_recommendations,
 )
 from docking_agent.runs import current_run
-from docking_agent.runtime.context import AgentContext, active_blackboard, active_request, active_run, new_context, request_context
+from docking_agent.runtime.context import AgentContext, active_blackboard, active_run
 from langchain.tools import ToolRuntime
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,6 @@ def current_ranking(runtime: Any = None) -> Tuple[List[Dict[str, Any]], Dict[str
     与落盘层（`agents/persistence.py`）同一口径：文件是 Agent 之间交接数据的总线，
     黑板只用于补救「还没落盘」的中间状态。
     """
-    from docking_agent.agents.blackboard import get_blackboard
 
     molecules = _rows_from_file("molecules")
     properties = _rows_from_file("properties")
@@ -175,7 +174,6 @@ def recommend_compounds(top_n: int = 0, runtime: ToolRuntime[AgentContext] = Non
     `submit_recommendations` 写「为什么推荐/如何推进」的理由（依据只能来自这里的数值与
     产物文件里的事实，不要编造分子或数值）。不要把手算的综合分写进理由。
     """
-    ctx = active_request(runtime) or new_context(method="recommend_compounds")  # noqa: F841
     try:
         run = active_run(runtime)
         rec = build_for_run(run, top_n)
@@ -238,35 +236,21 @@ def _report_coverage(rows: List[Dict[str, Any]], field: str) -> str:
 def customize_report(spec_json: str = "", runtime: ToolRuntime[AgentContext] = None) -> str:
     """按**用户的具体要求**定制最终报告（固定骨架不变，内容与呈现方式可变）。
 
-    什么时候用：用户对输出提了要求，例如
-      - 「报告里要带上小分子的 ID」→ extra_columns: ["id"]
-      - 「列出分子式和来源文件」→ extra_columns: ["formula", "source_file"]
-      - 「标题写成 EGFR 抑制剂筛选」→ title: "..."
-      - 「结论里点明为什么选 X」→ highlights: ["..."]
-      - 「说明你有没有按我说的做」→ requirements: [{"ask": "...", "response": "..."}]
+    用户对输出提要求时调用（做完推荐排行之后），例如「带上小分子 ID / 分子式 / 来源文件」
+    → `extra_columns: ["id","formula","source_file"]`；「标题写成 XX」→ `title`；
+    「结论里点明为什么选 X」→ `highlights`；「说明你有没有按我说的做」→ `requirements`。
 
-    spec_json 形如：
-    {
-      "title": "EGFR 抑制剂筛选（含分子 ID）",
-      "extra_columns": ["id", "formula"],
-      "highlights": ["本次优先推进 X：亲和力最优且无 Lipinski 违例"],
-      "requirements": [{"ask": "带上分子 ID", "response": "已按输入文件 ID 列展示（覆盖 30/30）"}],
-      "notes": "可选：≤600 字的一段补充说明（会写进报告的『本次要求与响应』一节）"
-    }
+    spec_json 字段：title / extra_columns / highlights / requirements[{"ask","response"}] /
+    notes（≤600 字，写进报告「本次要求与响应」一节）。
+    extra_columns **只能**从工具白名单里选（name/smiles/id/formula/molecular_weight/logP/tpsa/
+    hbd/hba/rotatable_bonds/aromatic_rings/lipinski_violations/drug_likeness_pass/
+    affinity_kcal_mol/ligand_efficiency/composite/grade/engine/exhaustiveness/box_group/
+    similarity_to_positive_control/maccs_tanimoto/structural_consistency/anchor_match/
+    source_index/source_file）。
 
-    extra_columns 只能从这些**真实字段**里选（工具会核对本次数据的覆盖率）：
-      id / name / smiles / formula / molecular_weight / logP / tpsa / hbd / hba /
-      rotatable_bonds / aromatic_rings / lipinski_violations / drug_likeness_pass /
-      affinity_kcal_mol / ligand_efficiency / composite / grade / engine / exhaustiveness /
-      box_group / similarity_to_positive_control / maccs_tanimoto / structural_consistency /
-      anchor_match / source_index / source_file
-
-    返回 JSON：accepted（已生效的配置，报告会照此输出）、coverage（每个附加列的覆盖率，
-    如 "id": "30/30"）、rejected（不认识或本次无数据的项 + 原因）。
-    **覆盖率不足时必须如实告诉用户**（例如「输入文件里没有 ID 字段，已按名称展示」），
-    不要假装带上了；也不要为了满足要求去编造字段值。
+    返回：accepted（已生效）、coverage（每个附加列的覆盖率，如 "id": "30/30"）、rejected（+原因）。
+    **覆盖率不足必须如实说明**（如「输入文件里没有 ID 字段，已按名称展示」），不得假装生效或编造字段值。
     """
-    ctx = active_request(runtime) or new_context(method="customize_report")  # noqa: F841
     try:
         run = active_run(runtime)
         if run is None:
@@ -358,7 +342,7 @@ def _current_ranking_rows(run: Any) -> List[Dict[str, Any]]:
     if rows:
         return rows
     try:
-        from docking_agent.agents import tool_io
+        from docking_agent.runtime import tool_io
 
         loaded = tool_io.load("ranking", run=run)
         if isinstance(loaded, list) and loaded:
@@ -381,7 +365,6 @@ def submit_recommendations(recommendations_json: str, runtime: ToolRuntime[Agent
     `reason` 必填且必须基于真实数据（工具输出的分值、分量或产物文件中的事实），
     不要写没有依据的推测；`suggestion` 选填。
     """
-    ctx = active_request(runtime) or new_context(method="submit_recommendations")  # noqa: F841
     try:
         run = active_run(runtime)
         text = str(recommendations_json or "").strip()

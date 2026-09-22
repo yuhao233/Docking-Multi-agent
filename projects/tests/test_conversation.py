@@ -262,15 +262,18 @@ _PRIOR_WITH_MOLECULES = [
 
 
 def test_answer_to_previous_question_is_run_and_receptor_is_recognized() -> None:
-    """用户回答「用 trypsin」→ decision=run 且受体命中 trypsin（不再当成新对话）。"""
+    """用户回答「用 trypsin」→ 受体命中 trypsin、计入上一轮（不再当成新对话）。
+
+    分子还缺（上一轮只问了受体）→ 受理层继续问分子：必需信息不齐就只提问、零工具调用。
+    """
     prior = [{"role": "assistant", "content": "请问您想用哪个受体？"}]
     spec = intake.build_task_spec(_req(message="用 trypsin"), prior_turns=prior)
-    assert spec["decision"] == "run"
-    assert spec["receptor"]["name"] == "trypsin"
     assert spec["prior_turn_count"] == 1
+    assert spec["receptor"]["name"] == "trypsin"
+    assert spec["decision"] == "ask", "受体已识别，但上一轮/本轮都没有分子来源 → 继续问分子"
+    assert any("候选分子库" in q for q in spec["questions"]), spec["questions"]
 
-    # 无 prior_turns 时同样的 message 不因这条守卫变成 run（保持既有语义：
-    # 受理模型若仍要求补充且无可识别分子来源，就还是 ask）
+    # 无 prior_turns 时同样是 ask（缺受体也缺分子）
     base = intake._finalize({**intake.build_task_spec(_req(message="用 trypsin")),
                              "needs_user_input": True})
     assert base["decision"] == "ask"
@@ -336,7 +339,7 @@ def test_prior_turns_are_passed_to_intake_llm_context(monkeypatch) -> None:
 
 def test_build_message_accepts_prior_turns_without_breaking_signature() -> None:
     """既有调用方式（不传 prior_turns）必须保持可用。"""
-    message, spec = intake.build_message(_req(message="筛一下", ligands_text="A:CCO"))
+    message, spec = intake.build_message(_req(message="用 1DWC 筛一下", ligands_text="A:CCO"))
     assert spec["prior_turn_count"] == 0
     assert "decision=run" in message
     message2, spec2 = intake.build_message(_req(message="筛一下"), prior_turns=_PRIOR_WITH_MOLECULES)

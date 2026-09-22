@@ -1,79 +1,34 @@
 """配置与环境变量：替代 coze_workload_identity（平台环境变量下发）。
 
 本地从 `projects/.env` 读取，其次取进程环境变量。
+
+**分层**（审计 SCC-1）：读取原语在 `docking_agent/envs.py`（`settings.py` 只依赖它，
+从而不再与 `config` 互相 import）；本模块只负责**运行时环境 bootstrap**
+（MPLCONFIGDIR、COZE_WORKSPACE_PATH、设置页运行参数的注入）。
+历史导入路径 `from docking_agent.config import env_int` 依旧可用（下面是显式再导出）。
 """
 from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
-from typing import Optional
 
 from docking_agent.paths import project_root
 
+# 显式再导出（`as` 别名 + __all__ 让 ruff 不把它当未使用导入）
+from docking_agent.envs import env as env
+from docking_agent.envs import env_bool as env_bool
+from docking_agent.envs import env_float as env_float
+from docking_agent.envs import env_int as env_int
+from docking_agent.envs import load_env as load_env
+
 logger = logging.getLogger(__name__)
 
-_LOADED = False
+#: 图递归上限的默认值（super-step 数）。60 → 120 的原因：一次长筛选里子 Agent 要连续调用
+#: 「解析受体 → 口袋 → 对接（分批）→ 结合模式」多轮工具，加上每个模型调用至少 2 个 super-step，
+#: 60 在真实长任务上会顶到 `GRAPH_RECURSION_LIMIT`（用户实测报错）。仍可用 `RECURSION_LIMIT` 覆盖。
+DEFAULT_RECURSION_LIMIT = 120
 
-
-def load_env(force: bool = False) -> None:
-    """加载 projects/.env（幂等）。已存在的进程环境变量优先，不会被覆盖。"""
-    global _LOADED
-    if _LOADED and not force:
-        return
-    try:
-        from dotenv import load_dotenv  # type: ignore
-
-        env_file = project_root() / ".env"
-        if env_file.exists():
-            load_dotenv(dotenv_path=env_file, override=False)
-    except Exception:  # noqa: BLE001
-        # 无 python-dotenv 时退化为手写解析
-        env_file = project_root() / ".env"
-        if env_file.exists():
-            for raw in env_file.read_text(encoding="utf-8").splitlines():
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k, v = k.strip(), v.strip().strip('"').strip("'")
-                os.environ.setdefault(k, v)
-    _LOADED = True
-
-
-def env(name: str, default: Optional[str] = None) -> Optional[str]:
-    load_env()
-    v = os.getenv(name)
-    if v is None or v == "":
-        return default
-    return v
-
-
-def env_bool(name: str, default: bool = False) -> bool:
-    v = env(name)
-    if v is None:
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "y", "on")
-
-
-def env_int(name: str, default: int) -> int:
-    v = env(name)
-    if v is None:
-        return default
-    try:
-        return int(v)
-    except ValueError:
-        return default
-
-
-def env_float(name: str, default: float) -> float:
-    v = env(name)
-    if v is None:
-        return default
-    try:
-        return float(v)
-    except ValueError:
-        return default
+__all__ = ["ensure_runtime_env", "env", "env_bool", "env_float", "env_int", "load_env"]
 
 
 def ensure_runtime_env() -> None:

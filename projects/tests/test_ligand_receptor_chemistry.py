@@ -47,8 +47,13 @@ def test_plain_ligand_is_untouched():
     assert d["warnings"] == [], d["warnings"]
 
 
-def test_default_ph_policy_deprotonates_acid() -> None:
-    """默认策略 = ph（7.4）：羧酸按生理 pH 去质子化，且必须留痕（不是静默改写）。"""
+def test_default_ph_policy_deprotonates_acid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认策略 = ph（7.4）：羧酸按生理 pH 去质子化，且必须留痕（不是静默改写）。
+
+    本用例断言内置规则表的逐官能团留痕（`protonation["rules"]`），因此**固定用 rules 引擎**；
+    专业引擎（Dimorphite-DL）的路径见 `tests/test_ligand_pka.py`。
+    """
+    monkeypatch.setenv("LIGAND_PKA_ENGINE", "rules")
     from docking_agent.core.ligands import DEFAULT_PH, describe_ligand
 
     d = describe_ligand("CC(=O)Oc1ccccc1C(=O)O")          # 阿司匹林
@@ -189,7 +194,7 @@ def test_dropped_hetatm_is_tallied_not_silently_lost(receptor_pdb):
     assert spec["dropped_hetatm"] == {"ZN": 1, "HEM": HEM_ATOMS, "GOL": GOL_ATOMS}
     assert spec["kept_hetatm"] == {}
     prepared = Path(spec["pdbqt"]).with_name(Path(spec["pdbqt"]).stem + "_prot.pdb")
-    text = Path(str(Path(spec["pdbqt"]).parent / (Path(spec["pdbqt"]).stem + "_prot.pdb"))).read_text()
+    text = prepared.read_text()
     assert "HETATM" not in text, "未指定保留时准备后的 PDB 不应含 HETATM"
     assert "ZN" not in text and "HEM" not in text
 

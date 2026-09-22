@@ -440,7 +440,7 @@ def _render_blocks(writer: _PageWriter, blocks: Sequence[Tuple[str, Any]],
             writer.reserve(0.60)
             writer.text(str(payload), size=SMALL_SIZE, weight="bold", color=TEXT_COLOR)
         elif kind == "quote":
-            writer.text(f"提示：{payload}", size=SMALL_SIZE, color=MUTED_COLOR, indent=0.16)
+            writer.text(f"说明：{payload}", size=SMALL_SIZE, color=MUTED_COLOR, indent=0.16)
         elif kind == "text":
             writer.text(payload, indent=0.08 if str(payload).startswith("-") else 0.0)
         elif kind == "table":
@@ -466,7 +466,7 @@ def _render_blocks(writer: _PageWriter, blocks: Sequence[Tuple[str, Any]],
                 caption = "" if _CAPTION_RE.match(f"**{alt}**") else f"图：{alt}"
                 writer.image(path, caption=caption)
             else:
-                writer.text(f"（图表 {alt} 未找到对应产物文件，可在网页报告的「中间数据」中单独下载）",
+                writer.text(f"（图表 {alt} 无对应产物文件；可在报告页「中间数据」单独下载）",
                             size=SMALL_SIZE, color=MUTED_COLOR)
         else:  # blank
             writer.blank(0.08)

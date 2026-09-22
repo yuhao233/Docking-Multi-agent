@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from docking_agent.core import merge_and_rank
 from docking_agent.reporting import (
@@ -23,10 +23,10 @@ from docking_agent.reporting import (
     write_report_charts,
     write_report_pdf,
 )
-from docking_agent.agents import tool_io
+from docking_agent.runtime import tool_io
 from docking_agent.core.docking import POSITIVE_CONTROL_NAME
 from docking_agent.runtime.payload import as_text
-from docking_agent.runs import Run, slug
+from docking_agent.runs import Run
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +242,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     outputs, args = extract_tool_data(messages)
 
     # ---- 数据来源：**工具产物优先**，模型回显的工具消息仅作兜底 ----
-    # 大库时工具只把「摘要」回传给模型，明细写在这些产物文件里（见 agents/tool_io.py），
+    # 大库时工具只把「摘要」回传给模型，明细写在这些产物文件里（见 runtime/tool_io.py），
     # 因此落盘/报告不再依赖模型把上万条结果搬运回上下文（那在物理上也不可能）。
     sources: Dict[str, str] = {}
 
@@ -326,7 +326,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         # 共享黑板是口袋结果的权威来源（口袋工具就写在那里）；
         # 子 Agent 的嵌套调用不进父图消息历史，因此这里优先信任黑板。
         try:
-            from docking_agent.agents.blackboard import get_blackboard
+            from docking_agent.runtime.blackboard import get_blackboard
 
             board = get_blackboard()
             board_pockets = board.get_pockets() if board is not None else []
@@ -456,6 +456,10 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         "cocrystal_control_offer": dict(run.data.get("cocrystal_control_offer") or {}),
         "positive_control_decision": str(
             (run.data.get("request") or {}).get("positive_control_decision") or ""),
+        # 条件纪律段注入了哪些（审计：提示词不再是常量，必须能复盘「这次给了模型哪些纪律」）
+        "prompt_blocks": dict(run.data.get("prompt_blocks") or {}),
+        # 受体溯源（哪个结构/哪来的）：由 `fetch_protein_structure` 记账，报告 §1.2 直接渲染
+        "receptor_provenance": dict(run.data.get("receptor_provenance") or {}),
     }
 
     # ---- 没有真实计算的运行**不产规范报告** ----
@@ -466,18 +470,29 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     executed = bool(molecules or properties or candidate_results or pocket_analysis or ranking)
     if not executed:
         decision = str((run.data.get("task_spec") or {}).get("decision") or "")
-        if decision in ("reject", "rejected", "unsupported", "out_of_scope"):
+        # 「停下来等用户点选」不是 no_op：受体可能已经解析成功、工具也确实跑过，只是
+        # 配体侧必须由用户确认。标成 no_op 会让历史列表显示 [ SKIP ]、日志说「未调用任何
+        # 工具」，与事实不符（真实反馈：界面把「等你选配体」说成「本次未执行计算」）。
+        pending_choices = list(run.data.get("choices") or [])
+        if pending_choices:
+            kinds = "、".join(sorted({str(c.get("kind") or "") for c in pending_choices}))
+            reason = ("已向用户提出确认问题（%s，%d 项），等待在界面上选择；未执行任何计算"
+                      % (kinds or "choices", len(pending_choices)))
+            result["status"] = "needs_user_input"
+            result["needs_user_input"] = True
+        elif decision in ("reject", "rejected", "unsupported", "out_of_scope"):
             reason = "任务未受理（decision=%s），未执行任何计算" % decision
         elif decision:
             reason = "受理通过但没有任何工具产出（decision=%s），未执行任何计算" % decision
         else:
             reason = "未执行任何计算"
         run.set(no_report_reason=reason)
-        # 运行状态如实标成 no_op：历史列表里显示 [ SKIP ]，而不是一个「成功但什么都没有」的 [ OK ]
-        result["status"] = "no_op"
-        result["no_op"] = True
-        logger.info("run %s: 未执行任何计算（decision=%s），跳过排序 CSV / 图表 / 规范报告",
-                    run.id, decision or "-")
+        if not pending_choices:
+            # 运行状态如实标成 no_op：历史列表里显示 [ SKIP ]，而不是一个「成功但什么都没有」的 [ OK ]
+            result["status"] = "no_op"
+            result["no_op"] = True
+        logger.info("run %s: 未执行任何计算（decision=%s, pending_choices=%d），跳过排序 CSV / 图表 / 规范报告",
+                    run.id, decision or "-", len(pending_choices))
         # 协调 Agent 的对话回复仍然留档（它就是本次运行的全部产出）
         if narrative:
             run.write_text("agent_report.md", narrative, name="agent_report_md",
@@ -486,7 +501,8 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         run.write_json("result", {k: result.get(k) for k in
                                   ("status", "ranking", "positive_control", "receptors", "notes",
                                    "pockets", "pocket_analysis", "param_plan", "task_spec",
-                                   "report_customization")},
+                                   "report_customization", "prompt_blocks",
+                                   "receptor_provenance")},
                        label="完整结果（JSON）")
         _finish_run_meta(run, result, molecules, receptors_block, ranking, args)
         return result
@@ -525,7 +541,8 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
                               ("status", "ranking", "positive_control", "receptors", "notes",
                                "pockets", "pocket_analysis", "param_plan", "task_spec",
                                "report_customization", "cocrystal_control_offer",
-                               "positive_control_decision")},
+                               "positive_control_decision", "prompt_blocks",
+                               "receptor_provenance")},
                    label="完整结果（JSON）")
 
     _finish_run_meta(run, result, molecules, receptors_block, ranking, args)

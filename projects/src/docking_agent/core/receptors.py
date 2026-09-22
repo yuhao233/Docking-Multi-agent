@@ -177,6 +177,27 @@ def _parse_unmatched_residues(text: str) -> List[str]:
     return found
 
 
+class ReceptorInputError(ValueError):
+    """用户提供的受体**不可用**：文件准备失败，或名称无法识别。
+
+    产品底线：计算对象不可用 / 不明确时**绝不计算**，也绝不改用任何预置受体
+    （预置受体只用于内部测试，不是用户可选来源）。
+
+    历史缺陷：这两种情况原先都「静默回退 凝血酶(thrombin) 继续跑完」，只在小字笔记里说明 ——
+    用户会拿到一份**以凝血酶为受体**的答非所问报告。现在改为硬错误：由调用方
+    （`tools/docking.py` / `tools/pockets.py`）转成 `needs_user_input`，把选择权交回用户。
+
+    `payload` 是给调用方与界面用的结构化信息（`reason` / `options` / `file`）。
+    """
+
+    def __init__(self, message: str, *, reason: str = "", source: str = "",
+                 payload: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.source = source
+        self.payload = dict(payload or {})
+
+
 def guess_cocrystal_ligand(pdb_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """找共晶小分子配体（最大的一团非水/非添加剂 HETATM）。
 
@@ -504,7 +525,12 @@ def prepare_user_receptor(source: str,
                        "dropped_hetatm": dropped, "kept_hetatm": kept,
                        "dropped_waters": waters,
                        "unsupported_hetatm": sorted(set(unsupported) | set(unmatched)),
-                       "cocrystal_ligand": (lig_info or {}).get("resname", ""),
+                       # 共晶配体存**完整**信息（resname + chain:resid:resname 的 key + 原子数）：
+                       # 只存残基名时，下游拿 .pdbqt 就再也解不出 SMILES ——「是否把受体自带配体
+                       # 当阳性对照」的询问因此永远不会触发（真实缺陷，用户实测反馈）。
+                       "cocrystal_ligand": lig_info or {},
+                       # 原始结构路径：.pdbqt 是**去配体**的，只有回到这里才能取回配体原子
+                       "source_pdb": os.path.abspath(raw),
                        "receptor_protonation": receptor_protonation},
                       f, ensure_ascii=False)
     except OSError as e:
@@ -513,6 +539,7 @@ def prepare_user_receptor(source: str,
                    "蛋白质质心（未找到共晶配体，建议由口袋预测工具确定位点）")
     return {"key": base, "name": base, "pdb": base, "protein": f"用户自定义受体 ({base})",
             "pdbqt": out_pdbqt, "center": center, "size": box_size, "user_provided": True,
+            "source_pdb": os.path.abspath(raw),
             "dropped_hetatm": dropped, "kept_hetatm": kept, "dropped_waters": waters,
             "cocrystal_ligand": lig_info or {},
             "unmatched_residues": sorted(unmatched),
@@ -555,9 +582,9 @@ def resolve_receptor_specs(receptor_arg: Any = None,
                 notes.append(f"受体 {spec.get('key')} 质子化：{text}")
             if info and not info.get("applied"):
                 notes.append(
-                    f"**注意**：受体 {spec.get('key')} 的质子化态**未**与配体目标 pH {prot_ph:g} 对齐"
-                    "（原因见上一条）。若研究条件对 His/Asp/Glu 的质子化态敏感，"
-                    "建议提供已按目标 pH 准备好的受体 PDBQT/PQR，或用 PDB2PQR_BIN 指定可用的 pdb2pqr。")
+                    f"受体 {spec.get('key')} 的质子化态未按目标 pH {prot_ph:g} 准备，"
+                    "与配体口径不一致（原因见本受体的质子化记录）；对 His/Asp/Glu 敏感的体系"
+                    "宜提供已按目标 pH 备好的受体 PDBQT/PQR，或用 PDB2PQR_BIN 指定可用的 pdb2pqr。")
 
     def _norm(v: Any) -> List[Any]:
         if v is None:
@@ -580,13 +607,13 @@ def resolve_receptor_specs(receptor_arg: Any = None,
 
     items = [it for it in _norm(receptor_arg) if not _is_blank(it)]
     if not items:
-        spec = dict(RECEPTOR_REGISTRY[DEFAULT_RECEPTOR])
-        spec["receptor_protonation"] = {
-            "applied": False, "policy": prot_policy, "ph": prot_ph,
-            "reason": "注册表预置 PDBQT：质子化态由该文件本身决定，未按运行 pH 重新准备"}
-        specs.append(spec)
-        notes.append("未指定受体，已默认使用 凝血酶(thrombin, 1DWC)；如需其他靶点请提供 PDB 文件或受体编号(如 trypsin/1PTU)。")
-        return specs, notes
+        # 用户要求：**彻底删除「未指定受体就回退默认受体」**。
+        # 计算对象没给定时不能替用户挑一个靶点开跑（旧实现会静默用凝血酶），
+        # 这里直接报错；上层（对接工具）会把它转成「请用户指定受体」的提问与可选项。
+        raise ValueError(
+            "未指定受体：计算对象不明确，不能默认使用任何受体。"
+            "请提供 PDB 编号 / UniProt accession、受体名称/基因名，"
+            "或上传受体结构文件（.pdb/.cif/.pdbqt）。")
 
     for it in items:
         if isinstance(it, dict):
@@ -620,30 +647,34 @@ def resolve_receptor_specs(receptor_arg: Any = None,
                                                    source_ext=ext, protonation=prot_policy,
                                                    ph=prot_ph))
             except Exception as e:  # noqa: BLE001
-                # **不静默回退**：说清「为什么这个文件当不了受体」，并明确标注回退的
-                # 不是用户指定的受体，让用户/Agent 能立刻发现并换文件。
+                # **绝不静默改用预置受体**（旧行为：回退 thrombin 跑完并出报告 —— 答非所问）。
                 # 原因可能很长（meeko 的完整 stderr），截断到可读长度，避免刷屏。
                 detail = " ".join(str(e).split())
                 if len(detail) > 300:
                     detail = detail[:300] + "…"
-                spec = dict(RECEPTOR_REGISTRY[DEFAULT_RECEPTOR])
-                spec["receptor_protonation"] = {
-                    "applied": False, "policy": prot_policy, "ph": prot_ph,
-                    "reason": "回退到注册表预置 PDBQT：质子化态由该文件本身决定"}
-                specs.append(spec)
-                notes.append(
-                    f"该文件无法作为受体结构使用（{os.path.basename(raw)}：{detail}）；"
-                    f"已回退默认 凝血酶(thrombin, 1DWC) —— 这不是你指定的受体，请检查该文件。")
+                raise ReceptorInputError(
+                    f"上传的受体文件无法用于对接：{os.path.basename(raw)}（{detail}）。"
+                    "本次**不执行任何计算**。请用户三选一："
+                    "① 换一个结构文件（.pdb/.ent/.cif/.pdbqt，或先自行去水/去杂原子）；"
+                    "② 给出该受体的 PDB 编号 / UniProt accession / 基因或蛋白名，由系统在线解析；"
+                    "③ 按上面的原因修正文件后重试。",
+                    reason="prepare_failed", source=raw,
+                    payload={"file": raw, "detail": detail,
+                             "options": ["replace_file", "resolve_by_name", "fix_and_retry"]},
+                ) from e
             else:
                 notes.append(f"用户上传受体({ext.lstrip('.') or '结构文件'})已现场准备："
                              f"{os.path.basename(local)}")
             continue
-        spec = dict(RECEPTOR_REGISTRY[DEFAULT_RECEPTOR])
-        spec["receptor_protonation"] = {
-            "applied": False, "policy": prot_policy, "ph": prot_ph,
-            "reason": "注册表预置 PDBQT：质子化态由该文件本身决定，未按运行 pH 重新准备"}
-        specs.append(spec)
-        notes.append(f"未识别受体 {it!r}，已回退默认 凝血酶(thrombin, 1DWC)。")
+        # 既不是注册表里的显式名字，也不是可读的结构文件 → 停下来问用户（不替用户挑靶点）
+        raise ReceptorInputError(
+            f"受体 {it!r} 无法识别：它既不是 PDB 编号 / UniProt accession / 基因或蛋白名，"
+            "也不是可读的结构文件（.pdb/.ent/.cif/.pdbqt）。本次**不执行任何计算**。"
+            "请用户三选一：① 提供 PDB 编号或 UniProt accession；"
+            "② 写出受体的基因名/蛋白名（中英文均可，系统会在线检索）；③ 上传受体结构文件。",
+            reason="unrecognized", source=str(it),
+            payload={"source": str(it), "options": ["pdb_or_uniprot", "name", "upload_file"]},
+        )
     _note_protonation()
     return specs, notes
 
@@ -773,7 +804,6 @@ def registry_site_for(local: str) -> Optional[Dict[str, Any]]:
 
 def _pretty_name(name: str) -> str:
     """去掉上传时加的时间戳前缀，得到便于展示的受体名。"""
-    import re as _re
 
     return re.sub(r"^\d{8}-\d{6}-[0-9a-f]{6}-", "", name) or name
 
@@ -790,6 +820,7 @@ def _pdbqt_spec(local: str, keep_hetatm: Sequence[str] = (),
     base = re.sub(r"_[0-9a-f]{16}$", "", stem) or stem
     center, size, source = None, None, ""
     chem: Dict[str, Any] = {}
+    origin_path = ""
     # pH 产物形如 `<base>_<src10><keep6>_ph7.4`：位点侧车挂在**基础名**上，
     # 受体质子化溯源挂在**带 pH 后缀**的同名侧车上 —— 两份都要看。
     ph_match = re.match(r"^(?P<base>.+)_ph(?P<ph>\d+(?:\.\d+)?)$", stem)
@@ -818,12 +849,25 @@ def _pdbqt_spec(local: str, keep_hetatm: Sequence[str] = (),
             center = [float(x) for x in (info.get("center") or [])] or None
             size = [float(x) for x in (info.get("size") or [])] or None
             source = str(info.get("source") or "")
+            origin_path = str(info.get("origin_path") or info.get("source_pdb") or "")
+            raw_lig = info.get("cocrystal_ligand")
+            if isinstance(raw_lig, dict) and raw_lig.get("resname"):
+                cocrystal = dict(raw_lig)
+            elif raw_lig:
+                # 旧 sidecar 只存了残基名 → 回到原始结构把 key/原子数补回来
+                cocrystal = {"resname": str(raw_lig)}
+            else:
+                cocrystal = {}
+            # 没有 key 就解不出 SMILES（`cocrystal_ligand_smiles` 按 chain:resid:resname 取原子）
+            if cocrystal and not cocrystal.get("key") and origin_path and os.path.isfile(origin_path):
+                recovered = guess_cocrystal_ligand(origin_path) or {}
+                if recovered.get("key"):
+                    cocrystal = recovered
             chem = {"dropped_hetatm": info.get("dropped_hetatm") or {},
                     "kept_hetatm": info.get("kept_hetatm") or {},
                     "dropped_waters": info.get("dropped_waters") or 0,
                     "unsupported_hetatm": info.get("unsupported_hetatm") or [],
-                    "cocrystal_ligand": ({"resname": info["cocrystal_ligand"]}
-                                         if info.get("cocrystal_ligand") else {}),
+                    "cocrystal_ligand": cocrystal,
                     # 受体质子化溯源也在 sidecar 里：这份 PDBQT 若是按目标 pH 准备的，
                     # 必须把「确实按 pH 7.4 做过」带出来 —— 否则下游只看到 .pdbqt，
                     # 会把一次**做过 pH 处理**的准备误报成「未按 pH 准备」（真实踩到过）。
@@ -851,6 +895,8 @@ def _pdbqt_spec(local: str, keep_hetatm: Sequence[str] = (),
     label = _pretty_name(base)
     return {"key": base, "name": label, "pdb": "",
             "file": os.path.basename(local),
+            # 原始结构（准备这份 PDBQT 的 .pdb）：去配体的 PDBQT 里取不回共晶配体原子
+            "source_pdb": origin_path,
             "protein": f"用户上传受体 (PDBQT: {label})",
             "pdbqt": local, "center": center,
             "size": size or list(DEFAULT_BOX_SIZE),
@@ -889,3 +935,36 @@ def read_receptor_file(source: str, keep_hetatm: Sequence[str] = (),
         return _pdbqt_spec(local, keep_hetatm=keep_hetatm, policy=prot_policy, ph_value=prot_ph)
     return prepare_user_receptor(local, keep_hetatm=keep_hetatm, source_ext=ext,
                                  protonation=protonation, ph=ph)
+
+def receptor_catalog() -> Dict[str, Any]:
+    """受体目录（预置受体清单 + 默认受体名）：供各处工具输出统一的 JSON。
+
+    此前 `list_known_receptors`（受理/分发侧）与 `available_receptors`（对接侧）各写一遍，
+    两处一旦漂移，模型看到的清单与工具实际接受的受体就会不一致。
+    """
+    from docking_agent.core import DEFAULT_RECEPTOR, list_receptors
+
+    return {"status": "ok", "default": DEFAULT_RECEPTOR, "receptors": list_receptors()}
+
+def receptor_unspecified(receptor: Any, run: Any = None, receptor_file: str = "") -> bool:
+    """用户是否**没有指定受体**（受理层判定 default，或压根没给来源）。
+
+    判定只看两件事：有没有上传受体文件、受理层的 `task_spec.receptor.source` 是不是 `default`，
+    以及传进来的受体来源是不是空的。预置受体注册表**仅供内部测试**，不再作为用户可选来源，
+    因此这里不做任何「回退默认」的动作，只回答「是否未指定」。
+
+    为什么不再比对受体名：受理层判定「未指定」时 `task_spec.receptor.name` 已经是空串
+    （没有任何内建默认受体名了），而 `source == "default"` 本身就把「主管 Agent 习惯性
+    写上的默认受体名」拦住了。反过来，**没有 task_spec 的直调**（流水线/工具级调用）里
+    显式传入的受体名就是调用方的真实意图，不能再被当成「未指定」（否则 `thrombin` 这种
+    合法受体名会被误判）。
+    """
+    if str(receptor_file or "").strip():
+        return False
+    spec_receptor = (((getattr(run, "data", None) or {}).get("task_spec") or {})
+                     .get("receptor") or {}) if run is not None else {}
+    if str(spec_receptor.get("source") or "") == "default":
+        return True
+    if isinstance(receptor, (list, tuple)):
+        return not receptor
+    return not str(receptor or "").strip()

@@ -170,7 +170,7 @@ def test_report_section0_shows_requirements_and_dispatch(tmp_path: Path) -> None
     assert "## 0. 本次要求与响应（协调 Agent）" in md
     assert "报告里带上小分子的 ID" in md and "覆盖 2/2" in md
     assert "优先推进 分子1" in md
-    assert "协调 Agent 的调度记录" in md and "对接执行" in md and "m-b" in md
+    assert "各角色模型调用统计" in md and "对接执行" in md and "m-b" in md
 
 
 def test_report_without_customization_is_unchanged() -> None:
@@ -274,4 +274,4 @@ def test_report_states_cocrystal_control_decision(offer: dict, decision: str,
     if decision == "use" and offer.get("smiles"):
         assert offer["smiles"] in row[0], "用作对照时应写明所用 SMILES"
     if decision == "skip":
-        assert "未做对照分析" in row[0], row[0]
+        assert "不使用" in row[0], row[0]

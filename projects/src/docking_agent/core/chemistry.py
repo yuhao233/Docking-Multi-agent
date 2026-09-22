@@ -203,7 +203,8 @@ def binding_mode_profile(name: str, smiles: str, control_smiles: str,
         "aromatic_rings": props.get("aromatic_rings"),
         "rotatable_bonds": props.get("rotatable_bonds"),
         "pharmacophore": flags,
-        "control_pharmacophore": ctrl_flags,
+        # 逐行**不再重复**对照药效团：它只与对照有关，已由 report 顶层的
+        # `control_pharmacophore` 给一次（逐分子重复会让载荷按分子数线性膨胀）
         "anchor_match": bool(flags.get("cationic_anchor") and ctrl_flags.get("cationic_anchor")),
         "mw_delta": _delta("molecular_weight"),
         "logp_delta": _delta("logP"),

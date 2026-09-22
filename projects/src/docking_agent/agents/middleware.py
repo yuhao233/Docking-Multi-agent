@@ -8,6 +8,7 @@
 | `ModelCallLimitMiddleware` | 单次运行的模型调用上限（**安全网**） | 防"跑飞"把预算烧穿；阈值取得很高，正常筛选/长对话绝不会碰到 |
 | `ToolCallLimitMiddleware` | 单次运行的工具调用上限（**安全网**） | 同上（工具里有真实对接，跑飞代价更高） |
 | `SummarizationMiddleware` | 长对话把旧消息**摘要**成一条，而不是直接丢弃 | 原来超出窗口就静默丢历史；摘要在保留关键上下文的前提下继续对话 |
+| `ToolCallPairingMiddleware` | 模型调用前把非法序列修成合法（**包裹式 `wrap_model_call`**，不占递归步数） | 取消 / 限额 / 工具异常会在历史里留下「AI(tool_calls) 但没有回执」（或孤儿回执），下一次调用被模型端 400 拒绝（子 Agent 的固定角色线程尤其致命，详见 `agents/threads.py`） |
 
 设计口径（与项目「如实告知、不编造」一致）：
   - 限额命中时用 `exit_behavior="end"`（**优雅结束**并让协调 Agent 收尾），而不是 `error` ——
@@ -58,6 +59,12 @@ def build_agent_middleware(llm: Any, *, role: str = "") -> List[Any]:
     `llm` 用于摘要（摘要本身也是一次模型调用，所以复用该角色的实例 → 仍按角色配置模型/端点）。
     """
     out: List[Any] = []
+
+    # 0) 工具调用配对自愈（放在最前）：任何一次模型调用都不能看到悬空的 tool_calls，
+    #    否则模型端直接 400，而重试中间件只会把同一段非法历史再发一次。
+    from docking_agent.agents.threads import ToolCallPairingMiddleware  # noqa: PLC0415
+
+    out.append(ToolCallPairingMiddleware())
 
     retry_max = env_int("AGENT_RETRY_MAX", DEFAULT_RETRY_MAX)
     if retry_max > 0:

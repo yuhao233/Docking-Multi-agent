@@ -10,7 +10,8 @@
    `receptor.source` 改成 `unresolved`，`run_docking` 护栏随即在调用任何对接引擎之前拦下
    （产品底线：计算对象不明确时绝不计算，绝不悄悄换默认受体）；
 3. 多轮：哪怕上一轮已经问过、分子也已继承，本轮点名受体时照样先自动解析；
-4. 不误伤：完全没提受体 / thrombin·trypsin·1DWC·PDB 号·accession / 上传受体文件 → 仍然 run。
+4. 不误伤：thrombin·trypsin·1DWC·PDB 号·accession / 上传受体文件 → 仍然 run；
+   **完全没提受体 → `default` → ask（只提问，绝不用任何内建受体兜底）**。
 """
 from __future__ import annotations
 
@@ -66,7 +67,8 @@ def test_named_receptor_is_marked_named_for_auto_resolution() -> None:
 def test_uniprot_accession_in_choice_followup_is_used_verbatim() -> None:
     """用户点选候选后的追问（消息里带 accession）必须被当成明确指定的受体，直接解析。"""
     spec = intake.build_task_spec(
-        _req(message="用 Q9SJQ6（拟南芥 ROS1 去甲基化酶）作为受体继续对接筛选"))
+        _req(message="用 Q9SJQ6（拟南芥 ROS1 去甲基化酶）作为受体继续对接筛选",
+             ligands_text="A:CCO"))
     assert spec["receptor"] == {"name": "Q9SJQ6", "file": "", "source": "user"}
     assert spec["decision"] == "run"
 
@@ -91,10 +93,16 @@ def test_llm_mentioned_uniprot_or_pdb_is_resolvable_and_runs() -> None:
 
 
 def test_generic_demonstrative_is_not_treated_as_named_receptor() -> None:
-    """「这个受体」「该受体」只是指代、没有点名 → 不得误判成 unresolved。"""
+    """「这个受体」「该受体」只是指代、没有点名 → 不得误判成 named/unresolved。
+
+    注意：「没点名受体」本身也属于**必需项缺失**，所以最终仍然是 `ask`
+    （受理层只提问、零工具调用），但它问的是「请指定受体」，而不是
+    「您点名的受体解析不了」。"""
     spec = intake.build_task_spec(_req(message="帮我看看这个受体的成药性", ligands_text=""))
-    assert spec["receptor"]["source"] == "default"
-    assert spec["decision"] == "run"
+    assert spec["receptor"]["source"] == "default", spec["receptor"]
+    assert spec["receptor"]["name"] == ""
+    assert spec["decision"] == "ask"
+    assert any("请指定受体" in q for q in spec["questions"]), spec["questions"]
 
 
 @pytest.mark.parametrize("message", [
@@ -106,10 +114,14 @@ def test_generic_demonstrative_is_not_treated_as_named_receptor() -> None:
     "没有指定受体，你看着办",
 ])
 def test_indefinite_receptor_phrases_are_not_named_receptors(message: str) -> None:
-    """「未指定/默认/某个/其它受体」是泛指，不是点名 → 不得误判成 ask（真实回归）。"""
+    """「未指定/默认/某个/其它受体」是泛指，不是点名 → 不得误判成 named/unresolved（真实回归）。
+
+    系统已经没有默认受体了，因此这些表述统一落到 `default` → **只提问**（零工具调用），
+    而不是拿一个内置受体开跑。"""
     spec = intake.build_task_spec(_req(message=message, ligands_text=""))
     assert spec["receptor"]["source"] == "default", spec["receptor"]
-    assert spec["decision"] == "run"
+    assert spec["decision"] == "ask"
+    assert any("请指定受体" in q for q in spec["questions"]), spec["questions"]
 
 
 # --------------------------------------------------------------------------- #
@@ -140,13 +152,16 @@ def test_known_receptors_still_run(message: str, expected: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ④ 完全没提受体 → run + 默认 + note（既有行为不回归）
+# ④ 完全没提受体 → **只提问**（已无任何「默认受体」兜底）
 # --------------------------------------------------------------------------- #
-def test_no_receptor_mentioned_still_runs_with_default() -> None:
+def test_no_receptor_mentioned_asks_instead_of_defaulting() -> None:
     spec = intake.build_task_spec(_req(message="帮我筛一下这两个分子 CCO", ligands_text=""))
     assert spec["receptor"]["source"] == "default"
-    assert spec["decision"] == "run"
-    assert any("默认受体" in a for a in spec["assumptions"])
+    assert spec["decision"] == "ask", "受体是必需项；未指定就只提问，绝不替用户挑靶点"
+    assert "receptor" in spec["missing"]
+    msg = intake.render_agent_message(spec)
+    assert "thrombin" not in msg and "1DWC" not in msg
+    assert "不要回退任何默认受体" in msg
 
 
 # --------------------------------------------------------------------------- #
@@ -195,13 +210,75 @@ def test_multi_turn_inherits_pdb_id_when_prior_turn_mentioned_one() -> None:
     assert spec["decision"] == "run"
 
 
+def test_our_own_receptor_question_is_never_inherited_as_user_receptor() -> None:
+    """回归（2026-09-21 实测复现）：系统自己生成的「请指定受体…」提问（含示例 PDB/accession）
+    绝不能被当成**用户点名**的受体。
+
+    真实故障：第 1 轮问「请指定受体：① 提供 PDB 编号（如 4HHB）或 UniProt accession（如 P08922）…」，
+    第 2 轮用户只回一句「好的，继续」→ 受理层从**助手回复**里抽到 4HHB 并当成用户指定，
+    于是 decision=run、系统拿一个示例编号开跑。用户什么都没说却跑了别人的靶点。
+    """
+    from docking_agent.intake import _receptor_source_question
+
+    # (a) 用**真实**的当前提问文案
+    prior_real = [
+        {"role": "user", "content": "帮我筛这两个分子 CCO、CCN"},
+        {"role": "assistant", "content": _receptor_source_question()},
+    ]
+    spec = intake.build_task_spec(_req(message="好的，继续", ligands_text=""),
+                                  prior_turns=prior_real)
+    assert spec["receptor"]["source"] == "default", spec["receptor"]
+    assert spec["decision"] == "ask"
+    assert spec["ligands"]["source"] == "message", "分子仍应从上一轮继承"
+
+    # (b) 真实形态：上一轮的「用户」消息其实是**受理层渲染后的整段机器文本**
+    #     （checkpointer 里存的就是它）——里面的「先请用户指定受体」会被受体名抽取当成
+    #     用户点名的受体，进而去扫助手回复里的示例编号。这是实测复现的泄漏路径。
+    round1_spec = intake.build_task_spec(
+        _req(message="帮我筛这两个分子 CCO、CCN，未指定受体", ligands_text=""))
+    rendered_user_turn = intake.render_agent_message(round1_spec)
+    assert "先请用户指定受体" in rendered_user_turn, "渲染块里确实有会被误抽的措辞"
+    prior_rendered = [
+        {"role": "user", "content": rendered_user_turn},
+        {"role": "assistant",
+         "content": "请指定受体：① 提供 PDB 编号（如 3ZBF）或 UniProt accession（如 P08922）；"
+                    "② 上传受体结构文件（.pdb/.cif/.pdbqt）。"},
+    ]
+    spec2 = intake.build_task_spec(_req(message="好的，继续", ligands_text=""),
+                                   prior_turns=prior_rendered)
+    assert spec2["receptor"] == {"name": "", "file": "", "source": "default"}, spec2["receptor"]
+    assert spec2["decision"] == "ask", spec2
+    assert not any("3ZBF" in a for a in spec2["assumptions"]), spec2["assumptions"]
+
+    # (b2) 提问文案里带具体示例编号（防止以后有人再加回示例）同样不得继承
+    prior_with_example = [
+        {"role": "user", "content": "帮我筛这两个分子 CCO、CCN"},
+        {"role": "assistant", "content": _receptor_source_question() + "（如 4HHB / P08922）"},
+    ]
+    spec2b = intake.build_task_spec(_req(message="好的，继续", ligands_text=""),
+                                    prior_turns=prior_with_example)
+    assert spec2b["receptor"]["source"] == "default", spec2b["receptor"]
+    assert spec2b["decision"] == "ask"
+    assert not any("4HHB" in a for a in spec2b["assumptions"]), spec2b["assumptions"]
+
+    # (c) 对照：上一轮**用户**确实点名过受体时，助手回复里的已解析 accession 仍可继承
+    prior_user_named = [
+        {"role": "user", "content": "从在线数据库中获取植物去甲基化酶ROS1，与小分子代森锰锌对接"},
+        {"role": "assistant", "content": "已解析受体 Q9SJQ6（Arabidopsis thaliana）。"},
+    ]
+    spec3 = intake.build_task_spec(_req(message="好的，继续", ligands_text=""),
+                                   prior_turns=prior_user_named)
+    assert spec3["receptor"] == {"name": "Q9SJQ6", "file": "", "source": "user"}
+
+
 # --------------------------------------------------------------------------- #
 # ⑥ 分发护栏：只有**真正解析失败**（工具写回 unresolved）才拦下，且零对接调用
 # --------------------------------------------------------------------------- #
 def test_fetch_failure_marks_receptor_unresolved_and_guard_blocks(monkeypatch) -> None:
     """在线检索确实查不到时：工具把规约改成 unresolved，护栏拦下对接（产品底线）。"""
     from docking_agent.runs import Run, current_run
-    from docking_agent.tools import dispatch, online
+    from docking_agent.agents import dispatch
+    from docking_agent.tools import online
 
     resolution = {"status": "not_found", "query": {"raw": "查不到的假受体ZZZQQ9"},
                   "selected": None, "candidates": [],
@@ -230,7 +307,8 @@ def test_fetch_failure_marks_receptor_unresolved_and_guard_blocks(monkeypatch) -
 def test_fetch_ambiguity_publishes_choices_and_guard_blocks(monkeypatch) -> None:
     """检索到多个同样合理的候选：下发结构化 choices，且仍然阻断对接（不替用户选）。"""
     from docking_agent.runs import Run, current_run
-    from docking_agent.tools import dispatch, online
+    from docking_agent.agents import dispatch
+    from docking_agent.tools import online
 
     cands = [
         {"accession": "P08922", "protein": "Proto-oncogene tyrosine-protein kinase ROS",
@@ -265,7 +343,7 @@ def test_fetch_ambiguity_publishes_choices_and_guard_blocks(monkeypatch) -> None
 
 def test_run_docking_guard_returns_needs_user_input_with_zero_docking(monkeypatch) -> None:
     from docking_agent.runs import Run, current_run
-    from docking_agent.tools import dispatch
+    from docking_agent.agents import dispatch
     from docking_agent.tools import docking as docking_tool
 
     calls = {"agent": 0, "dock_library": 0, "molecular_docking": 0}
@@ -302,22 +380,29 @@ def test_run_docking_guard_returns_needs_user_input_with_zero_docking(monkeypatc
 
     assert out["status"] == "needs_user_input"
     assert "植物去甲基化1酶" in out["message"]
-    assert "1DWC" in out["message"] and ".pdbqt" in out["message"]
+    assert ".pdbqt" in out["message"] and "UniProt accession" in out["message"]
     assert "gene_exact:ROS1" in out["message"], "回执要列出已尝试的检索"
     assert "Q9SJQ6" in out["message"], "回执要列出找到的候选"
     assert calls == {"agent": 0, "dock_library": 0, "molecular_docking": 0}, calls
 
 
-def test_run_docking_guard_does_not_block_default_or_user_receptor() -> None:
-    """对照：未指定（default）或用户显式指定的受体不得被护栏吞掉。"""
-    from docking_agent.tools import dispatch
+def test_run_docking_guard_blocks_default_and_passes_user_receptor() -> None:
+    """护栏语义（新契约）：**未指定受体（default）同样被拦下**（系统没有默认受体），
+    用户显式指定的受体不受影响。"""
+    from docking_agent.agents import dispatch
 
     class _Run:
         def __init__(self, spec):
             self.data = {"task_spec": spec}
 
-    assert dispatch.unresolved_receptor_message(
-        _Run({"receptor": {"name": "thrombin", "source": "default"}})) == ""
+    blocked_default = json.loads(dispatch.unresolved_receptor_message(
+        _Run({"receptor": {"name": "", "source": "default"}})))
+    assert blocked_default["status"] == "needs_user_input"
+    assert blocked_default["missing"] == ["receptor"]
+    assert not blocked_default.get("choices"), "预置受体不得作为用户可选来源下发"
+    assert "thrombin" not in blocked_default["message"]
+    assert "1DWC" not in blocked_default["message"]
+
     assert dispatch.unresolved_receptor_message(
         _Run({"receptor": {"name": "trypsin", "source": "user"}})) == ""
     assert dispatch.unresolved_receptor_message(_Run({})) == ""
@@ -325,6 +410,24 @@ def test_run_docking_guard_does_not_block_default_or_user_receptor() -> None:
     blocked = json.loads(dispatch.unresolved_receptor_message(
         _Run({"receptor": {"name": "植物去甲基化1酶", "source": "unresolved"}})))
     assert blocked["status"] == "needs_user_input"
+
+
+def test_no_agent_binds_the_preset_receptor_catalog_tools() -> None:
+    """契约：预置受体**只用于内部测试** —— 任何 Agent（协调层与子 Agent）都不得绑定
+    「列出预置受体」的工具，否则模型会把它当成用户可选来源。"""
+    from pathlib import Path
+
+    from docking_agent.agents.workers import _WORKER_SPECS
+
+    for role, (_sp_factory, tools_factory) in _WORKER_SPECS.items():
+        names = {getattr(t, "name", "") for t in tools_factory()}
+        assert "available_receptors" not in names, f"{role} 子 Agent 不得暴露预置受体清单"
+        assert "list_known_receptors" not in names, f"{role} 子 Agent 不得暴露预置受体清单"
+
+    coord_src = (Path(__file__).resolve().parent.parent
+                 / "src/docking_agent/agents/coordinator.py").read_text(encoding="utf-8")
+    assert "list_known_receptors" not in coord_src, "协调 Agent 的工具面不得再有预置受体清单"
+    assert "available_receptors" not in coord_src
 
 
 # --------------------------------------------------------------------------- #
@@ -354,15 +457,15 @@ def test_llm_instruction_view_hides_absolute_paths() -> None:
 
 
 def test_receptor_hash_from_upload_path_is_not_named_receptor() -> None:
-    """上传落盘名里的哈希片段被模型当成受体名时必须丢弃 → 回到默认受体并继续跑。"""
+    """上传落盘名里的哈希片段被模型当成受体名时必须丢弃 → 回到「未指定受体」并按契约提问。"""
     spec = intake.build_task_spec(_req(message=_REF_BLOCK, molecule_file=_UPLOAD_PATH))
     assert spec["receptor"]["source"] == "default"
-    assert spec["decision"] == "run"
+    assert spec["decision"] == "ask", "缺受体 = 必需项缺失 → 只提问"
 
     merged = intake.merge_llm_understanding(spec, {"mentioned_receptor": "C6B872"})
     assert merged["receptor"]["source"] == "default", merged["receptor"]
     assert merged["receptor"]["name"] != "C6B872"
-    assert merged["decision"] == "run", "不得因为路径里的哈希片段阻断整个运行"
+    assert merged["decision"] == "ask", "丢弃伪受体名不会改变受理层结论"
     notes = " ".join(merged.get("llm_notes") or [])
     assert "C6B872" in notes and "附件路径" in notes, notes
 
@@ -388,3 +491,44 @@ def test_llm_invented_receptor_is_still_dropped_with_reason() -> None:
     assert merged["receptor"]["source"] == "default"
     notes = " ".join(merged.get("llm_notes") or [])
     assert "SNAP25" in notes and "原文中不存在" in notes, notes
+
+
+# --------------------------------------------------------------------------- #
+# 跨面不变量：**「系统没有默认受体」必须在每一个用户可见/模型可见的面上成立**
+# --------------------------------------------------------------------------- #
+def test_no_user_facing_surface_offers_a_default_receptor() -> None:
+    """跨面回归（2026-09-21 审计发现的真实漂移）。
+
+    代码层（`intake` / `run_docking` 护栏 / `molecular_docking`）改成「未指定受体只提问」
+    之后，另外三个「面」还留着「改用系统默认受体 凝血酶」：
+      ① 协调 Agent 提示词（`config/agent_llm_config.json` 的 `sp`）—— 模型会照着说；
+      ② 在线检索失败的回执与 choices（`tools/choices.py` / `tools/online.py`）—— 用户会照点；
+      ③ 候选生成器（`core/resolve.py`）—— 无条件追加一个 `thrombin` 选项。
+
+    后果是「用户什么都没说，系统却拿预置测试受体当研究靶点跑」。这里把四个面逐一钉住。
+    """
+    import json as _json
+
+    cfg = _json.loads((PROJECT_ROOT / "config" / "agent_llm_config.json").read_text(encoding="utf-8"))
+    sp = cfg.get("sp") or ""
+    assert "按系统默认受体执行" not in sp, "协调提示词仍在指示「按系统默认受体执行」"
+    assert "系统内建默认兜底" not in sp, "协调提示词仍宣称「系统内建默认兜底」"
+    assert "系统没有默认受体" in sp, "协调提示词必须写明「系统没有默认受体」"
+
+    src = PROJECT_ROOT / "src" / "docking_agent"
+    choices_py = (src / "tools" / "choices.py").read_text(encoding="utf-8")
+    assert "改用系统默认受体" not in choices_py, "choices 回执仍在提供「改用系统默认受体」"
+
+    resolve_py = (src / "core" / "resolve.py").read_text(encoding="utf-8")
+    assert "include_default" not in resolve_py, "候选生成器仍有 include_default 分支"
+    assert "default-thrombin" not in resolve_py, "候选生成器仍在追加预置 thrombin 选项"
+
+    online_py = (src / "tools" / "online.py").read_text(encoding="utf-8")
+    assert "include_default" not in online_py, "在线解析仍在请求默认受体选项"
+
+    prompts_py = (src / "agents" / "prompts.py").read_text(encoding="utf-8")
+    for line in prompts_py.splitlines():
+        if "默认受体" in line:
+            assert any(k in line for k in ("不得", "没有", "不要", "绝不", "禁止", "只用于内部")), \
+                f"子 Agent 提示词仍在正面描述默认受体：{line.strip()[:80]}"
+

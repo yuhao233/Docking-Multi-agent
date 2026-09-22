@@ -463,7 +463,7 @@ def binding_interaction_map_2d(analysis: Dict[str, Any], *, pose_path: str = "",
     ax.set_axis_off()
     cx = sum(p[0] for p in coords.values()) / len(coords) if coords else width / 2
     cy = sum(p[1] for p in coords.values()) / len(coords) if coords else height / 2
-    # 按方向角排序后沿左右两侧均匀铺开标签：**每个残基一条**（多个残基可以指向同一个原子 —— 
+    # 按方向角排序后沿左右两侧均匀铺开标签：**每个残基一条**（多个残基可以指向同一个原子 ——
     # LigPlot 也是这么画的；用 setdefault 合并会丢掉"同一原子被多个残基接触"的信息）。
     anchored = [a for a in anchors if a["atom_idx"] in coords]
     anchored.sort(key=lambda a: _math.atan2(coords[a["atom_idx"]][1] - cy,

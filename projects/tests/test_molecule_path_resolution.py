@@ -30,8 +30,10 @@ from docking_agent.config import ensure_runtime_env  # noqa: E402
 
 ensure_runtime_env()
 
-from docking_agent.agents.blackboard import Blackboard, current_blackboard  # noqa: E402
+from docking_agent.runtime.blackboard import Blackboard, current_blackboard  # noqa: E402
 from docking_agent.runs import Run, current_run  # noqa: E402
+from docking_agent.agents import dispatch  # noqa: E402
+from docking_agent.tools import molecule_paths  # noqa: E402
 
 
 def _write_sdf(directory: Path, filename: str = "20260917-112109-3e5739-PGR.sdf",
@@ -62,7 +64,7 @@ def _write_sdf(directory: Path, filename: str = "20260917-112109-3e5739-PGR.sdf"
 
 
 def test_looks_like_molecule_path_distinguishes_smiles() -> None:
-    from docking_agent.tools.dispatch import looks_like_molecule_path
+    from docking_agent.tools.molecule_paths import looks_like_molecule_path
 
     assert looks_like_molecule_path("PGR.sdf") is True
     assert looks_like_molecule_path("assets/uploads/PGR.sdf") is True
@@ -75,41 +77,38 @@ def test_looks_like_molecule_path_distinguishes_smiles() -> None:
 
 def test_resolve_bare_filename_matches_timestamped_upload(tmp_path, monkeypatch) -> None:
     """上传端点的落盘名带时间戳前缀；裸文件名必须能解析到它。"""
-    from docking_agent.tools import dispatch
 
     uploaded = _write_sdf(tmp_path, "20260917-112109-3e5739-PGR.sdf")
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
 
-    resolved, attempts, candidates = dispatch.resolve_molecule_file("PGR.sdf")
+    resolved, attempts, candidates = molecule_paths.resolve_molecule_file("PGR.sdf")
     assert Path(resolved) == uploaded.resolve()
     assert candidates == []
     # 精确文件名未命中会被如实记录（供失败时上报），但后缀匹配成功返回
     assert any("PGR.sdf" in a for a in attempts)
 
     # 无扩展名的词干也要能命中
-    resolved2, _, candidates2 = dispatch.resolve_molecule_file("PGR")
+    resolved2, _, candidates2 = molecule_paths.resolve_molecule_file("PGR")
     assert Path(resolved2) == uploaded.resolve() and candidates2 == []
 
 
 def test_resolve_ambiguous_suffix_returns_candidates_without_guessing(tmp_path, monkeypatch) -> None:
     """多个候选命中同一后缀时必须返回候选清单、不得随便取一个。"""
-    from docking_agent.tools import dispatch
 
     _write_sdf(tmp_path, "20260917-112109-3e5739-PGR.sdf", names=("aspirin",))
     _write_sdf(tmp_path, "20260918-090000-aaaaaa-PGR.sdf", names=("caffeine",))
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
 
-    resolved, attempts, candidates = dispatch.resolve_molecule_file("PGR.sdf")
+    resolved, attempts, candidates = molecule_paths.resolve_molecule_file("PGR.sdf")
     assert resolved == "PGR.sdf"          # 不猜
     assert len(candidates) == 2
     assert attempts and "无法确定" in attempts[-1]
 
 
 def test_resolve_reports_every_attempted_path_with_reason(tmp_path, monkeypatch) -> None:
-    from docking_agent.tools import dispatch
 
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
-    resolved, attempts, candidates = dispatch.resolve_molecule_file("not_here.sdf")
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
+    resolved, attempts, candidates = molecule_paths.resolve_molecule_file("not_here.sdf")
     assert resolved == "not_here.sdf" and candidates == []
     assert attempts, "必须逐条记录尝试过的路径"
     assert any("not_here.sdf" in a and "不存在" in a for a in attempts)
@@ -117,10 +116,9 @@ def test_resolve_reports_every_attempted_path_with_reason(tmp_path, monkeypatch)
 
 def test_import_molecule_library_accepts_bare_filename(tmp_path, monkeypatch) -> None:
     """真实缺陷主场景：只给显示名 PGR.sdf，也要读到上传的 3 个分子。"""
-    from docking_agent.tools import dispatch
 
     _write_sdf(tmp_path, names=("aspirin", "caffeine", "ibuprofen"))
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
 
     out = json.loads(dispatch.import_molecule_library.invoke({"molecule_file": "PGR.sdf"}))
     assert out["status"] == "ok"
@@ -130,10 +128,9 @@ def test_import_molecule_library_accepts_bare_filename(tmp_path, monkeypatch) ->
 
 def test_import_molecule_library_treats_path_in_query_or_text_as_file(tmp_path, monkeypatch) -> None:
     """模型把路径塞进 query_or_text 时，不能被当成 SMILES 文本解析。"""
-    from docking_agent.tools import dispatch
 
     _write_sdf(tmp_path, names=("aspirin", "caffeine"))
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
 
     out = json.loads(dispatch.import_molecule_library.invoke({"query_or_text": "PGR.sdf"}))
     assert out["status"] == "ok" and out["source"] == "file"
@@ -142,10 +139,9 @@ def test_import_molecule_library_treats_path_in_query_or_text_as_file(tmp_path, 
 
 def test_import_molecule_library_falls_back_to_request_molecule_file(tmp_path, monkeypatch) -> None:
     """「上传成功 = 对话里一定能用」：模型一个参数都不传，也要用上传的库。"""
-    from docking_agent.tools import dispatch
 
     uploaded = _write_sdf(tmp_path, names=("aspirin", "caffeine", "ibuprofen"))
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
 
     run = Run(tmp_path, "R-UP", "agent", {"mode": "chat", "molecule_file": str(uploaded)})
     run_token = current_run.set(run)
@@ -160,9 +156,8 @@ def test_import_molecule_library_falls_back_to_request_molecule_file(tmp_path, m
 
 
 def test_import_molecule_library_failure_lists_attempts(tmp_path, monkeypatch) -> None:
-    from docking_agent.tools import dispatch
 
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
     out = json.loads(dispatch.import_molecule_library.invoke({"molecule_file": "/no/such/lib.sdf"}))
     assert out["status"] == "no_molecules"
     assert out["molecules"] == []
@@ -229,7 +224,6 @@ def test_upload_count_equals_import_count_and_ids_survive(tmp_path) -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     from docking_agent.api.app import app
-    from docking_agent.tools import dispatch
 
     big = _write_big_sdf(tmp_path, 120)
     with TestClient(app) as client, open(big, "rb") as fh:
@@ -255,11 +249,10 @@ def test_upload_count_equals_import_count_and_ids_survive(tmp_path) -> None:
 
 def test_import_ambiguous_suffix_asks_user_with_candidates(tmp_path, monkeypatch) -> None:
     """歧义时工具不得猜：返回候选清单并置 needs_user_input。"""
-    from docking_agent.tools import dispatch
 
     _write_sdf(tmp_path, "20260917-112109-3e5739-PGR.sdf", names=("aspirin",))
     _write_sdf(tmp_path, "20260918-090000-bbbbbb-PGR.sdf", names=("caffeine",))
-    monkeypatch.setattr(dispatch, "molecule_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
 
     out = json.loads(dispatch.import_molecule_library.invoke({"molecule_file": "PGR.sdf"}))
     assert out["status"] == "no_molecules"

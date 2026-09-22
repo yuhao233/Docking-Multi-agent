@@ -178,7 +178,7 @@ def ligand_span(pdbqt: str) -> List[float]:
 
 def _span_from_smiles(smiles: str, *, seed: int = _SPAN_SEED) -> List[float]:
     """SMILES → 3D → 跨度（与对接使用同一随机种子，保证跨度描述的就是被对接的构象）。"""
-    from docking_agent.core.ligands import smiles_to_pdbqt  # noqa: PLC0415（重依赖 rdkit/meeko）
+    from docking_agent.core.ligands import smiles_to_pdbqt  # noqa: PLC0415  # 重依赖 rdkit/meeko
 
     return ligand_span(smiles_to_pdbqt(smiles, seed=seed))
 
@@ -262,8 +262,8 @@ def _percentile_nearest_rank(values: Sequence[float], fraction: float) -> float:
 def _heavy_atom_count(smiles: str) -> int:
     """2D 便宜描述符：重原子数（排序抽样用，失败返回 0 但仍参与抽样）。"""
     try:
-        from rdkit import Chem  # noqa: PLC0415（重依赖）
-        from rdkit.Chem import Descriptors  # noqa: PLC0415（重依赖）
+        from rdkit import Chem  # noqa: PLC0415  # 重依赖
+        from rdkit.Chem import Descriptors  # noqa: PLC0415  # 重依赖
 
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:

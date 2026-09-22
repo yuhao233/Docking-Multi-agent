@@ -17,18 +17,18 @@ from docking_agent.runtime.context import AgentContext, Context
 from docking_agent.runtime.llm import build_chat_llm, load_llm_config
 from docking_agent.runtime.checkpoints import get_memory_saver
 
-from docking_agent.agents.blackboard import shared_store
+from docking_agent.runtime.blackboard import shared_store
 from docking_agent.agents.middleware import build_agent_middleware
+from docking_agent.agents.prompt_blocks import coordinator_prompt_middleware
 from docking_agent.agents.prompts import COORDINATOR_SP
 from docking_agent.agents.state import AgentState  # noqa: F401 - 再导出，保持既有 import 路径
 from docking_agent.agents.workers import init_workers
-from docking_agent.tools.dispatch import (
+from docking_agent.agents.dispatch import (
     import_molecule_library,
     run_property_assessment,
     run_pocket_analysis,
     run_docking,
     run_binding_mode_analysis,
-    list_known_receptors,
 )
 from docking_agent.tools.pose import analyze_pose_pocket
 from docking_agent.tools.recommend import customize_report, recommend_compounds, submit_recommendations
@@ -54,12 +54,17 @@ def build_agent(ctx: Optional[Context] = None) -> Any:
     llm = build_chat_llm(ctx, role="coordinator")
     logger.info("整体协调 Agent 构建完成，model=%s", cfg["config"].get("model"))
 
+    # 系统提示词：配置里的 `sp` 是**全文**（含条件段标记）。动态提示词中间件按本次运行的
+    # 事实抽掉用不到的纪律段（省固定开销），并把注入清单记进 run.data["prompt_blocks"]。
+    base_sp = cfg.get("sp") or COORDINATOR_SP
+    middleware = list(build_agent_middleware(llm, role="coordinator"))
+    middleware.append(coordinator_prompt_middleware(base_sp))
+
     return create_agent(
         model=llm,
-        system_prompt=cfg.get("sp") or COORDINATOR_SP,
+        system_prompt=base_sp,
         tools=[
             import_molecule_library,
-            list_known_receptors,
             run_property_assessment,
             run_pocket_analysis,
             run_docking,
@@ -72,7 +77,7 @@ def build_agent(ctx: Optional[Context] = None) -> Any:
             fetch_protein_structure,
             fetch_molecule_record,
         ],
-        middleware=build_agent_middleware(llm, role="coordinator"),
+        middleware=middleware,
         checkpointer=get_memory_saver(),
         state_schema=AgentState,
         context_schema=AgentContext,

@@ -7,7 +7,7 @@
   （真实事故：`molecular_property_assessment` 的 docstring 漂移出并不存在的 `protonation_ph`，
   就是因为没有 schema 兜底）。
 - **不**类化：`molecules_json` / `*_file` —— 它们承担的是「大库按文件交接」的既定契约
-  （`agents/tool_io.py`：1 万分子 ≈ 0.5 MB ≈ 13 万 tokens），强类型化会把明细塞回上下文。
+  （`runtime/tool_io.py`：1 万分子 ≈ 0.5 MB ≈ 13 万 tokens），强类型化会把明细塞回上下文。
 
 为了让**既有调用方（CLI / 测试 / 旧提示词）传字符串也不炸**，这里提供
 `floats_to_text()`：`None` / `""` / `"31.5,13.74,24.36"` / `"31.5 13.74 24.36"` /
@@ -15,7 +15,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 NumberList = Optional[Union[str, Sequence[float]]]
 

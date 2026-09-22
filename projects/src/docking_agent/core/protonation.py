@@ -87,14 +87,9 @@ def _env_policy() -> str:
 
 def _run_request() -> Dict[str, Any]:
     """本次运行请求里的参数（没有运行上下文时返回空）。"""
-    try:
-        from docking_agent.runs import current_run
+    from docking_agent import run_context
 
-        run = current_run.get()
-        return dict((getattr(run, "data", None) or {}).get("request") or {})
-    except Exception as e:  # noqa: BLE001 - 脚本/测试里没有运行上下文
-        logger.debug("读取运行请求失败（改用环境变量）：%s", e)
-        return {}
+    return run_context.run_request_or_empty()
 
 
 def protonation_policy(explicit: Optional[str] = None) -> str:
@@ -213,6 +208,27 @@ def apply_ph_rules(mol: Any, ph: float) -> Tuple[Optional[Any], List[Dict[str, A
         return None, [], f"按 pH 分配后的结构不合法（{type(e).__name__}: {e}）"
 
 
+#: 逐分子质子化溯源里**聚合口径**需要的字段（报告 §1.3/§4 的统计只读这些）。
+#:
+#: 其余字段（`method`/`note`/`variants`/`variant_rule`/`engine_window`/`engine_precision`/`rules`）
+#: 是**审计明细**：完整记录留在工具产物里，给 Agent 的视图只带聚合字段 ——
+#: 一个 `method` 字符串（"dimorphite-dl 2.0.2（专业 pKa 引擎；pH 7.4 ± 0.5）"）就占 60+ 字符，
+#: 而它完全等价于 `engine`+`engine_version`+`ph`+`engine_window` 四个数据字段；
+#: 逐分子重复一遍会让大库的属性/对接载荷白白膨胀（实测属性行 82% 的字节是这段溯源）。
+PROTONATION_AGGREGATE_FIELDS = ("policy", "applied", "engine", "engine_version", "engine_fallback_reason",
+                                "ph", "charge_before", "charge_after")
+
+
+def compact_protonation(info: Any) -> Dict[str, Any]:
+    """把逐分子质子化溯源压成**聚合口径**字段（数据保留，散文细节交给产物）。"""
+    if not isinstance(info, dict):
+        return {}
+    out = {k: info[k] for k in PROTONATION_AGGREGATE_FIELDS if info.get(k) not in (None, "")}
+    if "applied" in info:
+        out["applied"] = bool(info.get("applied"))
+    return out
+
+
 def apply_protonation(smiles: str, policy: Optional[str] = None,
                       ph: Any = None) -> Tuple[str, Dict[str, Any]]:
     """按运行级策略处理配体质子化态，返回 `(处理后的 SMILES, 溯源)`。
@@ -240,7 +256,43 @@ def apply_protonation(smiles: str, policy: Optional[str] = None,
 
     if chosen == "ph":
         target_ph = protonation_ph(ph)
-        info.update({"ph": target_ph, "method": f"内置 pKa 规则表 {PKA_TABLE_VERSION}（{PKA_DISCLAIMER}）"})
+        # ---- 优先用**专业 pKa 引擎**（Dimorphite-DL）；不可用/异常时回退内置规则表 ----
+        from docking_agent.core import ligand_pka
+
+        engine_result = ligand_pka.protonate(raw, target_ph)
+        if engine_result.get("ok"):
+            out_smiles = str(engine_result["smiles"])
+            after = int(engine_result.get("charge") or 0)
+            variants = list(engine_result.get("variants") or [out_smiles])
+            info.update({
+                "ph": target_ph, "charge_after": after,
+                "applied": out_smiles != canonical_in,
+                "engine": engine_result.get("engine") or "",
+                "engine_version": engine_result.get("version") or "",
+                "engine_window": engine_result.get("window"),
+                "engine_precision": engine_result.get("precision"),
+                "variants": variants,
+                "variant_rule": engine_result.get("rule") or "",
+                "method": (f"{engine_result.get('engine')} {engine_result.get('version')}"
+                           f"（专业 pKa 引擎；pH {target_ph:g}"
+                           f" ± {float(engine_result.get('window') or 0):g}）"),
+            })
+            extra = ""
+            if len(variants) > 1:
+                extra = (f"；窗口内共 {len(variants)} 个微观态，"
+                         f"按「{engine_result.get('rule')}」选定对接形式"
+                         "（需要逐态枚举或指定其它微观态时，请以 SDF 提供并选择 `keep`）")
+            info["note"] = (f"目标 pH {target_ph:g}：净电荷 {before:+d} → {after:+d}；"
+                            f"引擎 {engine_result.get('engine')} "
+                            f"{engine_result.get('version')}{extra}")
+            return out_smiles, info
+
+        # 引擎不可用 / 配置强制 rules → 内置规则表（近似），并把回退原因如实记录
+        info["engine_fallback_reason"] = str(engine_result.get("reason") or "专业 pKa 引擎不可用")
+        if engine_result.get("install"):
+            info["engine_install"] = str(engine_result["install"])
+        info.update({"ph": target_ph,
+                     "method": f"内置 pKa 规则表 {PKA_TABLE_VERSION}（{PKA_DISCLAIMER}）"})
         try:
             neutral = _uncharge(mol)
         except Exception as e:  # noqa: BLE001
@@ -257,13 +309,14 @@ def apply_protonation(smiles: str, policy: Optional[str] = None,
             info["note"] = (err or f"pH {target_ph:g} 下没有命中的可电离官能团 → 按中性形式对接")
             if info["applied"]:
                 info["note"] += f"（净电荷 {before:+d} → {info['charge_after']:+d}）"
+            info["note"] += f"；专业引擎不可用（{info['engine_fallback_reason']}）"
             return fallback, info
         canonical_out = Chem.MolToSmiles(new_mol)
         after = int(Chem.GetFormalCharge(new_mol))
         info.update({"charge_after": after, "rules": hits, "applied": canonical_out != canonical_in})
         changed = "、".join(f"{h['name']}({h['action']}, pKa {h['pka']:g})" for h in hits) or "无"
         info["note"] = (f"目标 pH {target_ph:g}：净电荷 {before:+d} → {after:+d}；"
-                        f"命中规则 {changed}")
+                        f"命中规则 {changed}；专业引擎不可用（{info['engine_fallback_reason']}）")
         return canonical_out, info
 
     # ---- neutralize：只处理带净电荷的分子（非默认策略） ----

@@ -15,11 +15,15 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+from typing import List
 
 # src/docking_agent/paths.py -> parents[0]=docking_agent, [1]=src, [2]=projects
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+
+logger = logging.getLogger(__name__)
 
 
 def project_root() -> Path:
@@ -32,6 +36,37 @@ def workspace_dir() -> Path:
     if env:
         return Path(env).expanduser().resolve()
     return PROJECT_ROOT
+
+
+#: 运行必需的「仓库布局」目录：前端、配置、资源都在里面。
+#: wheel 安装（`pip install .`）后 `parents[2]` 落在 site-packages，那里三个目录都不存在 ——
+#: 系统会以「前端 404 / 找不到受体注册表」这类晦涩方式失败。这里显式检查并给出修复方式。
+LAYOUT_DIRS = ("config", "web", "assets")
+
+
+def missing_layout_dirs() -> List[str]:
+    """返回工作区里缺失的布局目录（空列表 = 布局完整）。"""
+    base = workspace_dir()
+    return [name for name in LAYOUT_DIRS if not (base / name).is_dir()]
+
+
+def assert_runtime_layout(*, strict: bool = False) -> None:
+    """启动自检：布局不完整时**明确报错或响亮告警**，而不是等到 404/KeyError。
+
+    `strict=True` 用于真正要对外提供服务的入口（`-m http`）：装错了就当场失败；
+    默认只在日志里告警 —— 部分测试/工具会把 `DOCKING_WORKSPACE` 指到临时目录。
+    """
+    missing = missing_layout_dirs()
+    if not missing:
+        return
+    message = (
+        f"运行目录布局不完整：{workspace_dir()} 下缺少 {missing}。"
+        "本系统按**源码检出**运行（`config/` 注册表、`web/` 前端、`assets/` 资源都在仓库里，"
+        "不在 wheel 内）：请用 `pip install -e projects`（或仓库内 `bash start.sh`）运行，"
+        "或把 `DOCKING_WORKSPACE` 指到包含这些目录的工作区。")
+    if strict:
+        raise RuntimeError(message)
+    logger.warning("%s", message)
 
 
 def _ensure(path: Path) -> Path:

@@ -150,7 +150,7 @@ def _layers(raw: Dict[str, Any], role: str, local: Dict[str, Any]) -> list:
         layers.append((f"内置角色默认 roles.{role}", dict(_role_overrides(raw, role))))
         role_ui = (local.get("roles") or {}).get(role)
         layers.append((f"界面设置（{role}）", dict(role_ui) if isinstance(role_ui, dict) else {}))
-        layers.append((f"角色环境变量", _env_layer(role)))
+        layers.append(("角色环境变量", _env_layer(role)))
     return layers
 
 
