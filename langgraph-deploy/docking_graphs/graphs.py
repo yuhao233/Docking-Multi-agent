@@ -26,13 +26,16 @@ from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 
 from docking_agent.config import env_int
-
 # 重量级/会碰文件系统的导入一律放**模块顶层**：图加载发生在事件循环之外，
 # 而首次 `import matplotlib` 会创建缓存目录（os.mkdir）——若留在节点函数里懒导入，
 # `langgraph dev` 的 blockbuster 会直接判为 BlockingError 让整次运行失败。
 from docking_agent import intake as intake_layer
 from docking_agent.api.schemas import AgentRequest
 from docking_agent.agents.persistence import persist_agent_run
+
+# 角色清单是**单一事实来源**：图清单、子 Agent 取用函数都由它派生
+# （手工清单与它漂移过：新增角色不暴露、已删图仍在清单里）。
+from docking_agent.runtime.llm import ROLES
 
 # 绝对导入（不能用相对导入）：LangGraph CLI 是按**文件路径**加载 graphs.py 的，
 # 此时模块没有 __package__，`from .runtime import ...` 会报
@@ -122,7 +125,7 @@ def _wrap_agent(name: str, inner: Any) -> CompiledStateGraph:
                 # P1：把运行上下文作为 **LangGraph context** 传入（工具侧的权威来源），
                 # ContextVar 仍保留为兜底（双读期两条路径等价）
                 from docking_agent.runtime.context import AgentContext
-                from docking_agent.agents.blackboard import current_blackboard
+                from docking_agent.runtime.blackboard import current_blackboard
 
                 out = await inner.ainvoke(
                     {"messages": messages},
@@ -182,12 +185,13 @@ def coordinator() -> CompiledStateGraph:
 # --------------------------------------------------------------------------- #
 _workers: Dict[str, CompiledStateGraph] = {}
 
-_WORKER_GETTERS = {
-    "property": "get_property_agent",
-    "pocket": "get_pocket_agent",
-    "docking": "get_docking_agent",
-    "binding": "get_binding_agent",
-}
+#: 非子 Agent 的角色（协调层与受理层不是「子 Agent」，不通过 `get_*_agent()` 暴露）
+_NON_WORKER_ROLES = frozenset({"coordinator", "intake"})
+
+#: 子 Agent 角色 → 取实例的函数名。**由 `ROLES` 派生**（单一事实来源）：
+#: 手工清单曾在新增/改名角色时静默漏掉（"新增角色永不暴露"）。
+_WORKER_GETTERS = {role: f"get_{role}_agent"
+                   for role in ROLES if role not in _NON_WORKER_ROLES}
 
 
 def _worker(name: str) -> CompiledStateGraph:
@@ -226,34 +230,29 @@ def binding_agent() -> CompiledStateGraph:
 # --------------------------------------------------------------------------- #
 # 4) 任务受理层（可观测：自然语言到底被理解成了什么）
 # --------------------------------------------------------------------------- #
-class IntakeState(TypedDict, total=False):
-    """受理层输入（字段与 `AgentRequest` 对齐，只列常用的）。"""
+def _intake_input_annotations() -> Dict[str, Any]:
+    """受理节点的输入字段由 `AgentRequest` **派生**（单一事实来源）。
 
-    message: str
-    mode: str
-    advanced: bool
-    receptor: str
-    receptor_file: str
-    ligands_text: str
-    molecule_file: str
-    positive_control: str
-    exhaustiveness: Optional[int]
-    n_poses: Optional[int]
-    engine: str
-    pocket_engine: str
-    site_center: Optional[List[float]]
-    site_size: Optional[List[float]]
-    save_poses: Optional[bool]
-    max_ligands: Optional[int]
-    protonation: str
-    protonation_ph: float
-    skip_positive_control: bool
-    use_llm: bool
-    # ---- 输出 ----
-    task_spec: Dict[str, Any]
-    agent_message: str
-    run_id: str
-    run_dir: str
+    为什么必须派生：LangGraph 按 State 里**声明过的 channel** 过滤输入 ——
+    手工维护的清单少写一个字段，Studio / 标准面传进来的它就被静默丢掉，
+    而 `AgentRequest` 那份却在照常演进（真实缺陷：`conversation_id` 与
+    `positive_control_decision` 曾经就是这样被丢的）。
+    """
+    annotations: Dict[str, Any] = {}
+    for name, field in AgentRequest.model_fields.items():
+        annotations[name] = field.annotation if field.annotation is not None else Any
+    return annotations
+
+
+IntakeState = TypedDict("IntakeState", {   # type: ignore[operator]
+    **_intake_input_annotations(),
+    # ---- 部署层额外的输入 / 输出（不属于 AgentRequest）----
+    "use_llm": bool,
+    "task_spec": Dict[str, Any],
+    "agent_message": str,
+    "run_id": str,
+    "run_dir": str,
+}, total=False)
 
 
 async def _run_intake(state: IntakeState) -> Dict[str, Any]:

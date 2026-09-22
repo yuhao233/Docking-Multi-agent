@@ -9,7 +9,7 @@ langgraph-deploy/
 ├── pyproject.toml          # 部署包（依赖与 ../projects 逐条一致，check.sh 会比对）
 ├── pip.conf                # Docker 构建时的 pip 源（阿里云镜像）
 ├── docking_graphs/
-│   ├── graphs.py           # 7 个图入口（协调 / 流水线 / 受理 / 4 个子 Agent）
+│   ├── graphs.py           # 6 个图入口（协调 / 受理 / 4 个子 Agent）
 │   └── runtime.py          # 运行上下文适配（run 目录 + ContextVar，与网页端一致）
 ├── scripts/
 │   ├── install.sh          # 建独立 .venv + 安装（editable 安装项目源码）
@@ -148,7 +148,7 @@ ls -la ../projects/var/runs/<run_id>/
 ### 6.1 自动化测试
 
 ```bash
-bash scripts/test.sh          # 离线：55 项（不联网 / 不调 LLM / 不真对接，约 2 秒）
+bash scripts/test.sh          # 离线：46 项通过 + 4 项跳过（live，不联网 / 不调 LLM / 不真对接，约 2 秒）
 bash scripts/test.sh --live   # 离线 + 真实服务集成：8 项（自起隔离 dev server + 真实 Vina + 真实 LLM）
 ```
 
@@ -165,7 +165,7 @@ bash scripts/test.sh --live   # 离线 + 真实服务集成：8 项（自起隔�
 
 | 验证项 | 结果 |
 | --- | --- |
-| `scripts/check.sh` | 依赖清单 19 条与 `../projects` 完全一致；7 个图全部加载成功且**无 checkpointer** |
+| `scripts/check.sh` | 依赖清单与 `../projects` 完全一致；6 个图全部加载成功且**无 checkpointer** |
 | 工具集一致性 | 协调 Agent 12 个工具、property 2 / pocket 5 / docking 3 / binding 3 个工具，全部来自项目源码 |
 | 运行环境 | 工作区解析到 `projects/`，可对接受体 2 个（thrombin_1DWC / trypsin_1PTU），LLM 6 个角色实例可构建 |
 | ~~`pipeline` 图~~（该图已移除，见 ADR-0001 与 projects/README 记录 60） | 历史实测：2 分子 + Vina，4 秒完成，22 项产物 |

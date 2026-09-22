@@ -106,19 +106,22 @@ def check_coordinator_tools(built: dict) -> None:
         ok(f"协调 Agent 绑定 {len(tools)} 个工具：{', '.join(tools)}")
     workers = {}
     from docking_agent.agents import workers as W
+    from docking_agent.runtime.llm import ROLES
 
-    for role, getter in (("property", "get_property_agent"), ("pocket", "get_pocket_agent"),
-                         ("docking", "get_docking_agent"), ("binding", "get_binding_agent")):
-        agent = getattr(W, getter)()
+    # 子 Agent 清单由 ROLES 派生（单一事实来源）：手工清单漏角色时会静默少检一个
+    worker_roles = [r for r in ROLES if r not in ("coordinator", "intake")]
+    for role in worker_roles:
+        getter = f"get_{role}_agent"
+        agent = getattr(W, getter, lambda: None)()
         if agent is None:
-            bad(f"子 Agent 未初始化：{role}")
+            bad(f"子 Agent 未初始化：{role}（{getter}）")
             continue
         wnode = getattr(agent, "nodes", {}).get("tools")
         wtools = sorted(getattr(getattr(wnode, "bound", None), "tools_by_name", {}) or {})
         workers[role] = wtools
         ok(f"{role:8s} 子 Agent 绑定 {len(wtools)} 个工具：{', '.join(wtools)}")
-    for role, agent in (("property", W.get_property_agent()), ("pocket", W.get_pocket_agent()),
-                        ("docking", W.get_docking_agent()), ("binding", W.get_binding_agent())):
+    for role in worker_roles:
+        agent = getattr(W, f"get_{role}_agent", lambda: None)()
         if agent is not None and getattr(agent, "checkpointer", None) is not None:
             warn(f"{role} 子 Agent 自带 checkpointer（作为工具调用无妨，Platform 只校验顶层图）")
 

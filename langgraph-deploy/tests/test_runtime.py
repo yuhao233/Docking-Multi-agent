@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from docking_agent.agents.blackboard import current_blackboard
+from docking_agent.runtime.blackboard import current_blackboard
 from docking_agent.runs import current_run
 from docking_agent.runtime.context import request_context
 from docking_graphs.runtime import (

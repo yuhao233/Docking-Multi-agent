@@ -4,7 +4,7 @@
 SSE 请求里注入它们：
 
     docking_agent.runs.current_run                     -> 运行目录（中间数据 / 产物落盘）
-    docking_agent.agents.blackboard.current_blackboard -> 子 Agent 之间的黑板交接
+    docking_agent.runtime.blackboard.current_blackboard -> 子 Agent 之间的黑板交接
     docking_agent.runtime.context.request_context      -> 调用上下文（run_id / method）
 
 LangGraph Studio 与 LangGraph Platform 没有这一层，因此本模块补上等价的
@@ -27,7 +27,7 @@ import logging
 from typing import Any, Dict, Iterator, List, Optional
 
 # 顶层导入：这些模块在事件循环里被首次导入时同样会触发文件 I/O（blockbuster 会拦）
-from docking_agent.agents.blackboard import (Blackboard, current_blackboard, shared_store,
+from docking_agent.runtime.blackboard import (Blackboard, current_blackboard, shared_store,
                                               store_blackboard)
 from docking_agent.paths import project_root, workspace_dir
 from docking_agent.runs import current_run, get_run_store

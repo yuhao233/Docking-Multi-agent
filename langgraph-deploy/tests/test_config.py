@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from docking_agent.runtime.llm import ROLES
+
 pytestmark = pytest.mark.offline
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1]
@@ -14,26 +16,33 @@ LANGGRAPH_JSON = DEPLOY_DIR / "langgraph.json"
 DEPLOY_PYPROJECT = DEPLOY_DIR / "pyproject.toml"
 PROJECT_PYPROJECT = DEPLOY_DIR.parent / "projects" / "pyproject.toml"
 
-# langgraph.json 的 6 个入口：图名 -> graphs.py 里的工厂函数名
-EXPECTED_GRAPH_FACTORIES = {
-    "coordinator": "coordinator",
-    "intake": "intake",
-    "property": "property_agent",
-    "pocket": "pocket_agent",
-    "docking": "docking_agent",
-    "binding": "binding_agent",
-}
+
+def _expected_graph_factories() -> dict:
+    """图名 → graphs.py 工厂名，**由 `ROLES` 派生**（单一事实来源）。
+
+    原先是一份手写清单：角色表新增/改名后，langgraph.json 与它一起漂移也不会有测试发现
+    （真实缺陷：`pipeline` 图删除后，清单与 smoke.py 都还留着它）。
+    """
+    return {role: (role if role in ("coordinator", "intake") else f"{role}_agent")
+            for role in ROLES}
+
+
+EXPECTED_GRAPH_FACTORIES = _expected_graph_factories()
 
 
 def _load_langgraph_json() -> dict:
     return json.loads(LANGGRAPH_JSON.read_text(encoding="utf-8"))
 
 
-def test_langgraph_json_parses_and_declares_six_graphs():
+def test_langgraph_json_matches_role_table_exactly():
+    """langgraph.json 的图清单必须与 `ROLES` **完全一致**（多一个 / 少一个都失败）。"""
     cfg = _load_langgraph_json()
     assert isinstance(cfg.get("graphs"), dict)
-    assert set(cfg["graphs"]) == set(EXPECTED_GRAPH_FACTORIES)
-    assert len(cfg["graphs"]) == 6
+    assert set(cfg["graphs"]) == set(EXPECTED_GRAPH_FACTORIES), (
+        f"langgraph.json 与 ROLES 漂移："
+        f"文件多 {sorted(set(cfg['graphs']) - set(EXPECTED_GRAPH_FACTORIES))} / "
+        f"少 {sorted(set(EXPECTED_GRAPH_FACTORIES) - set(cfg['graphs']))}")
+    assert len(cfg["graphs"]) == len(ROLES)
 
 
 @pytest.mark.parametrize("name,factory", sorted(EXPECTED_GRAPH_FACTORIES.items()))
@@ -89,3 +98,24 @@ def test_agent_graphs_are_single_node_wrappers(graphs_module):
         graph = getattr(graphs_module, factory)()
         assert "agent" in graph.nodes
     assert "intake" in graphs_module.intake().nodes
+
+
+def test_intake_state_covers_every_request_field(graphs_module) -> None:
+    """受理 State 必须覆盖 `AgentRequest` 的**全部**字段。
+
+    LangGraph 按 State 里声明的 channel 过滤输入：手工清单少写一个字段，
+    Studio / 标准面传进来的它就被静默丢掉（真实缺陷：`conversation_id` 与
+    `positive_control_decision` 曾经就是这样丢的）。现在由 `AgentRequest.model_fields` 派生，
+    这条测试是防回归的兜底。
+    """
+    from docking_agent.api.schemas import AgentRequest
+
+    declared = set(graphs_module.IntakeState.__annotations__)
+    missing = sorted(set(AgentRequest.model_fields) - declared)
+    assert missing == [], f"IntakeState 漏了 AgentRequest 的字段（会被静默丢弃）：{missing}"
+
+
+def test_worker_getters_cover_all_worker_roles(graphs_module) -> None:
+    """子 Agent 取用函数清单由 `ROLES` 派生 —— 不得漏角色。"""
+    expected = {r for r in ROLES if r not in ("coordinator", "intake")}
+    assert set(graphs_module._WORKER_GETTERS) == expected
