@@ -1,4 +1,4 @@
-# 本地 HTTP API 契约（v0.6.0）
+# 本地 HTTP API 契约（v0.7.0）
 
 本文件是**前端与后端的接口契约**。任何一方改动都必须同步更新本文件。
 服务默认监听 `http://127.0.0.1:5000`，无鉴权（本地单机使用）。
@@ -17,7 +17,7 @@
 ```json
 {
   "status": "ok",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "llm_configured": true,
   "model": "deepseek-flash",
   "base_url": "https://api.deepseek.com",

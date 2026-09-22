@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "docking-agent"
-version = "0.6.0"
+version = "0.7.0"
 license = {text = "AGPL-3.0-or-later"}
 description = "蛋白质受体已知位点 × 小分子库的多 Agent 分子对接筛选系统（协调 Agent + 口袋分析 / 性质评估 / 对接执行 / 结合模式检测 4 个子 Agent，含交互式网页）"
 readme = "README.md"
