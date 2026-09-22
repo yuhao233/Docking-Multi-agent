@@ -57,9 +57,10 @@ def _text_units(ax: plt.Axes, size_pt: float, *, leading: float = 1.6) -> float:
 
 def _box(ax: plt.Axes, x: float, y: float, w: float, h: float, title: str,
          lines: Sequence[str] = (), color: str = "#4a5568",
-         title_size: float = TITLE_SIZE, line_size: float = LINE_SIZE) -> None:
+         title_size: float = TITLE_SIZE, line_size: float = LINE_SIZE,
+         pad: float = 0.010) -> None:
     ax.add_patch(patches.FancyBboxPatch(
-        (x, y), w, h, boxstyle="round,pad=0.010,rounding_size=0.018",
+        (x, y), w, h, boxstyle=f"round,pad={pad},rounding_size=0.018",
         linewidth=1.4, edgecolor=color, facecolor=color + "12"))
     title_h = _text_units(ax, title_size, leading=1.8)
     ax.text(x + w / 2, y + h - title_h * 0.70, title, ha="center", va="center",
@@ -86,18 +87,20 @@ def _arrow(ax: plt.Axes, start: Tuple[float, float], end: Tuple[float, float],
 
 def render_architecture(out: Path) -> Path:
     """协作架构：每层只写「是什么 + 一句话」，细节留给 README 正文与图注。"""
-    fig = plt.figure(figsize=(14.0, 12.8), dpi=160)
+    fig = plt.figure(figsize=(14.0, 13.2), dpi=160)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
 
-    ax.text(0.5, 0.982, "分子对接多 Agent 协作系统 · 协作架构",
+    ax.text(0.5, 0.984, "分子对接多 Agent 协作系统 · 协作架构",
             ha="center", va="top", fontsize=21, fontweight="bold", color="#1f2733")
 
-    bands = [("users", 0.085), ("intake", 0.085), ("coord", 0.092), ("govern", 0.093),
-             ("workers", 0.090), ("share", 0.085), ("core", 0.085), ("store", 0.090)]
-    top, gap = 0.868, 0.026
+    # 纵向预算：标题 0.93 以下开始，底部 0.145 留给两行图注；每个带的高度按内容给，间距等分
+    bands = [("users", 0.078), ("intake", 0.078), ("coord", 0.084), ("govern", 0.088),
+             ("workers", 0.080), ("share", 0.078), ("core", 0.078), ("store", 0.080)]
+    top, bottom = 0.905, 0.145
+    gap = (top - bottom - sum(h for _n, h in bands)) / (len(bands) - 1)
     y: Dict[str, float] = {}
     cursor = top
     for name, height in bands:
@@ -105,24 +108,24 @@ def render_architecture(out: Path) -> Path:
         cursor = y[name] - gap
 
     _box(ax, 0.045, y["users"], 0.28, 0.085, "简易模式（默认首页）",
-         ["一句话即可跑 · 零参数表单"], COLORS["user"])
+         ["一句话即可跑 · 零参数表单"], COLORS["user"], pad=0.003)
     _box(ax, 0.360, y["users"], 0.28, 0.085, "高级模式",
-         ["参数表单 · 对话 · 运行详情"], COLORS["user"])
+         ["参数表单 · 对话 · 运行详情"], COLORS["user"], pad=0.003)
     _box(ax, 0.675, y["users"], 0.28, 0.085, "Studio / SDK",
-         ["标准 Agent Protocol"], COLORS["user"])
+         ["标准 Agent Protocol"], COLORS["user"], pad=0.003)
 
     _box(ax, 0.045, y["intake"], 0.91, 0.085, "任务受理层 intake",
-         ["结构化任务规约 · 决策 run / ask / reject"], COLORS["intake"])
+         ["结构化任务规约 · 决策 run / ask / reject"], COLORS["intake"], pad=0.003)
     _arrow(ax, (0.5, y["users"]), (0.5, y["intake"] + 0.085), color=COLORS["intake"])
 
     _box(ax, 0.045, y["coord"], 0.91, 0.092, "整体协调 Agent",
-         ["决定执行环节与顺序 · 汇总结果 · 定制报告"], COLORS["agent"], title_size=15)
+         ["决定执行环节与顺序 · 汇总结果 · 定制报告"], COLORS["agent"], title_size=15, pad=0.003)
     _arrow(ax, (0.5, y["intake"]), (0.5, y["coord"] + 0.092), color=COLORS["agent"])
 
     _box(ax, 0.045, y["govern"], 0.91, 0.085, "执行治理（对每次模型调用生效）",
          ["中间件：重试 · 模型/工具限额 · 长对话摘要 · 工具调用序列自愈",
           "步数预算：跑满自动放宽 120→240→480，到顶让主管 Agent 用已有结果收尾（不报错）"],
-         COLORS["share"], title_size=13, line_size=10)
+         COLORS["share"], title_size=13, line_size=10, pad=0.003)
 
     workers = [("口袋分析 Agent", "P2Rank · 几何法"),
                ("属性评估 Agent", "RDKit 物化性质"),
@@ -132,34 +135,34 @@ def render_architecture(out: Path) -> Path:
     widths = [0.219, 0.219, 0.219, 0.229]
     for (title, line), wx, ww in zip(workers, xs, widths):
         _box(ax, wx, y["workers"], ww, 0.090, title, [line], COLORS["worker"],
-             title_size=12.5, line_size=10.0)
+             title_size=12.5, line_size=10.0, pad=0.003)
         _arrow(ax, (wx + ww / 2, y["govern"]), (wx + ww / 2, y["workers"] + 0.090),
                color=COLORS["agent"])
-    ax.text(0.5, y["workers"] - 0.019, "子 Agent：无状态执行器 · 每次调用独立线程",
-            ha="center", va="top", fontsize=CAPTION_SIZE, color=COLORS["agent"])
+    # 「子 Agent 是无状态执行器、每次独立线程」写在 README 正文里，图上不再加一条横在两个带
+    # 之间的标注 —— 它会与向下箭头互相穿插（真实排版问题）。
 
     _box(ax, 0.045, y["share"], 0.445, 0.085, "共享黑板 + 运行事实",
-         ["受体 · 位点盒 · 分子库 · 阳性对照 · 溯源"], COLORS["share"])
+         ["受体 · 位点盒 · 分子库 · 阳性对照 · 溯源"], COLORS["share"], pad=0.003)
     _box(ax, 0.510, y["share"], 0.445, 0.085, "运行产物文件（按路径交接）",
-         ["分子库 · 性质 · 对接明细 JSON"], COLORS["share"])
+         ["分子库 · 性质 · 对接明细 JSON"], COLORS["share"], pad=0.003)
     _arrow(ax, (0.30, y["workers"]), (0.30, y["share"] + 0.085), color=COLORS["share"], style="<|-|>")
     _arrow(ax, (0.70, y["workers"]), (0.70, y["share"] + 0.085), color=COLORS["share"], style="<|-|>")
 
     _box(ax, 0.045, y["core"], 0.91, 0.085, "真实计算核心",
-         ["AutoDock Vina · RDKit · Meeko · P2Rank · pdb2pqr"], COLORS["engine"])
+         ["AutoDock Vina · RDKit · Meeko · P2Rank · pdb2pqr"], COLORS["engine"], pad=0.003)
     _arrow(ax, (0.30, y["share"]), (0.30, y["core"] + 0.085), color=COLORS["engine"])
     _arrow(ax, (0.70, y["share"]), (0.70, y["core"] + 0.085), color=COLORS["engine"])
 
     _box(ax, 0.045, y["store"], 0.91, 0.090, "运行记录与交付：var/runs/<run_id>/",
-         ["报告 · 排序 CSV · 图表 · 位姿 · 受体结构 · 整包 ZIP"], COLORS["store"], title_size=13)
+         ["报告 · 排序 CSV · 图表 · 位姿 · 受体结构 · 整包 ZIP"], COLORS["store"], title_size=13, pad=0.003)
     _arrow(ax, (0.5, y["core"]), (0.5, y["store"] + 0.090), color=COLORS["store"])
 
-    caption_y = y["store"] - 0.020
+    caption_y = 0.118
     ax.text(0.045, caption_y,
             "协调 Agent 工具：import_molecule_library · run_pocket_analysis · run_property_assessment · "
             "run_docking · run_binding_mode_analysis ·",
             ha="left", va="top", fontsize=CAPTION_SIZE, color="#6b7280")
-    ax.text(0.045, caption_y - 0.019,
+    ax.text(0.045, caption_y - 0.030,
             "recommend_compounds · submit_recommendations · customize_report · "
             "generate_screening_report · fetch_protein_structure · fetch_molecule_record",
             ha="left", va="top", fontsize=CAPTION_SIZE, color="#6b7280")
@@ -214,24 +217,28 @@ def render_lifecycle(out: Path) -> Path:
 
 
 def render_layers(out: Path) -> Path:
-    """分层与依赖方向：接入层 → 编排层 → 计算层 → 产物层（依赖单向向下）。"""
-    fig = plt.figure(figsize=(13.0, 8.2), dpi=160)
+    """分层与依赖方向：接入 → 受理 → 编排 → 运行支撑 → 计算 → 记录（依赖单向向下）。
+
+    排版：每层一行「左侧层名 + 右侧两行说明」。行高与间距按可用高度**算出来**，标题、副标题、
+    脚注各占独立区域 —— 旧版写死坐标，层数从四层增到六层后就压到脚注上了（文字重叠）。
+    """
+    fig = plt.figure(figsize=(13.2, 9.2), dpi=160)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
-    ax.text(0.5, 0.975, "系统分层与依赖方向", ha="center", va="top",
+    ax.text(0.5, 0.980, "系统分层与依赖方向", ha="center", va="top",
             fontsize=21, fontweight="bold", color="#1f2733")
-    ax.text(0.5, 0.936, "依赖单向向下：上层可以调用下层，下层不感知上层",
+    ax.text(0.5, 0.940, "依赖单向向下：上层可以调用下层，下层不感知上层",
             ha="center", va="top", fontsize=11.5, color="#5a6472")
 
     bands = [
-        ("接入层", "简易模式（默认首页） · 高级模式 · 标准 Agent Protocol 接口 · 命令行 · LangGraph Studio",
+        ("接入层", "两套网页界面（简易模式为默认首页 / 高级模式）· 标准 Agent Protocol 接口 · 命令行 · LangGraph Studio",
          "api/（routers/*） · web/ · cli.py", COLORS["user"]),
-        ("受理层", "自然语言 / 表单 + 会话历史 → 结构化任务规约与执行决策（run / ask / reject）",
+        ("受理层", "自然语言与表单 + 会话历史 → 结构化任务规约与执行决策（run / ask / reject）",
          "intake.py · 在线解析（UniProt / RCSB / AlphaFold / PubChem）", COLORS["intake"]),
-        ("编排层", "整体协调 Agent 与 4 个子 Agent：决策、分发、汇总、报告定制；中间件统一治理",
-         "agents/（coordinator · dispatch · middleware · prompt_blocks · threads）", COLORS["agent"]),
+        ("编排层", "协调 Agent 与四个子 Agent：决策、分发、汇总、报告定制；中间件统一治理",
+         "agents/（coordinator · dispatch · workers · middleware · prompt_blocks · threads）", COLORS["agent"]),
         ("运行支撑层", "共享黑板 · 产物落盘 · 运行事实 · 步数预算 · 事件流 · 检查点",
          "runtime/（blackboard · tool_io · run_facts · limits · streaming）", COLORS["share"]),
         ("计算层", "对接、性质、口袋、质子化、结合模式：真实计算，不依赖大模型",
@@ -239,22 +246,34 @@ def render_layers(out: Path) -> Path:
         ("记录层", "运行目录：请求、结果、报告、图表、位姿、受体结构与产物清单",
          "runs.py · reporting/", COLORS["store"]),
     ]
-    y = 0.845
-    for label, detail, modules, color in bands:
-        _box(ax, 0.06, y, 0.88, 0.108, label, [detail, modules], color,
-             title_size=14, line_size=10)
-        if y > 0.20:
-            _arrow(ax, (0.5, y), (0.5, y - 0.048), color="#5a6472")
-        y -= 0.155
+    x0, x1 = 0.055, 0.945
+    top, bottom, gap = 0.902, 0.198, 0.024
+    band_h = (top - bottom - gap * (len(bands) - 1)) / len(bands)
+    label_w = 0.150
+    for i, (label, detail, modules, color) in enumerate(bands):
+        y = top - band_h - i * (band_h + gap)
+        ax.add_patch(patches.FancyBboxPatch(
+            (x0, y), x1 - x0, band_h, boxstyle="round,pad=0.006,rounding_size=0.014",
+            linewidth=1.4, edgecolor=color, facecolor=color + "10"))
+        # 左侧色条标出「这是哪一层」
+        ax.add_patch(patches.Rectangle((x0 + 0.009, y + 0.012), 0.005, band_h - 0.024,
+                                       facecolor=color, edgecolor="none"))
+        ax.text(x0 + 0.032, y + band_h / 2, label, ha="left", va="center",
+                fontsize=13.5, color=color, fontweight="bold")
+        ax.text(x0 + label_w, y + band_h * 0.70, detail, ha="left", va="center",
+                fontsize=10.5, color="#2f3743")
+        ax.text(x0 + label_w, y + band_h * 0.28, modules, ha="left", va="center",
+                fontsize=9.5, color="#6b7280")
+        if i < len(bands) - 1:                      # 层间依赖方向
+            ax.annotate("", xy=(x0 + 0.020, y - gap + 0.002), xytext=(x0 + 0.020, y - 0.001),
+                        arrowprops={"arrowstyle": "-|>", "color": "#9aa3af", "lw": 1.2})
 
-    ax.text(0.06, 0.048,
-            "边界：模型只负责选择与措辞，数值一律来自计算层；外部工具（P2Rank / pdb2pqr / AutoDock4 / "
-            "GPU 对接引擎）由用户提供，缺失时按既定策略降级并在报告中说明。",
-            ha="left", va="top", fontsize=10, color="#6b7280")
-    ax.text(0.06, 0.022,
-            "打扰最小化：只有影响对接本身的问题（受体不可用/歧义、多组分代表结构、共晶配体作对照）"
-            "才请用户决定；执行细节（重试、步数上限、同问题重复）一律自动处理。",
-            ha="left", va="top", fontsize=10, color="#6b7280")
+    ax.text(x0, 0.162,
+            "边界：模型只负责选择与措辞，数值一律来自计算层；外部工具（P2Rank / pdb2pqr / AutoDock4 / GPU 对接引擎）由用户提供，缺失时按既定策略降级并在报告中说明。",
+            ha="left", va="top", fontsize=9.5, color="#6b7280")
+    ax.text(x0, 0.122,
+            "打扰最小化：只有影响对接本身的问题（受体不可用/歧义、多组分代表结构、共晶配体作对照）才请用户决定；执行细节（重试、步数上限、同问题重复）一律自动处理。",
+            ha="left", va="top", fontsize=9.5, color="#6b7280")
     fig.savefig(out, facecolor="white")
     plt.close(fig)
     return out
