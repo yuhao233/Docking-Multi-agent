@@ -107,8 +107,18 @@ jobs:
       - name: 安装部署层测试依赖
         run: uv pip install --python langgraph-deploy/.venv/bin/python pytest pytest-asyncio
 
+      # CI 没有模型端点：用**占位 key** 让图构建真跑（LangChain 实例构建不会发请求），
+      # 端点显式指向不可达地址，避免误发请求；自检脚本对「未配置 key」按 [SKIP] 处理。
       - name: 部署自检 —— 依赖清单一致性 + 每张图真实加载
+        env:
+          LLM_API_KEY: ci-graph-build-only
+          LLM_BASE_URL: http://127.0.0.1:9/v1
+          LLM_MODEL: ci-graph-build-only
         run: bash langgraph-deploy/scripts/check.sh
 
       - name: 部署层用例
+        env:
+          LLM_API_KEY: ci-graph-build-only
+          LLM_BASE_URL: http://127.0.0.1:9/v1
+          LLM_MODEL: ci-graph-build-only
         run: bash langgraph-deploy/scripts/test.sh

@@ -124,6 +124,12 @@ Studio 是浏览器里的托管前端，通过 `baseUrl` 直连你本机 2024 �
 # 自检（依赖一致性 + 图加载 + 工具集 + 工作区 + LLM + 计算引擎）
 bash scripts/check.sh
 
+# 无模型端点时（干净检出 / CI）：图构建与模型实例检查会标 [SKIP] 而不是失败。
+# 若要让「图加载 + 工具集核对」在没有真实密钥的环境里也真跑，给一个**占位 key** 即可 ——
+# LangChain 实例构建不会发起请求（CI 的 deploy job 就是这么做的）：
+LLM_API_KEY=ci-graph-build-only LLM_BASE_URL=http://127.0.0.1:9/v1 LLM_MODEL=ci-graph-build-only \
+  bash scripts/check.sh
+
 # 冒烟：对**已启动**的服务真实调一次 coordinator（需要可用的 LLM）
 .venv/bin/python scripts/smoke.py
 # 再带上 coordinator（真实 LLM 多 Agent + 真实对接，约 30–60 秒）
@@ -165,7 +171,7 @@ bash scripts/test.sh --live   # 离线 + 真实服务集成：8 项（自起隔�
 
 | 验证项 | 结果 |
 | --- | --- |
-| `scripts/check.sh` | 依赖清单与 `../projects` 完全一致；6 个图全部加载成功且**无 checkpointer** |
+| `scripts/check.sh` | 依赖清单与 `../projects` 完全一致；6 个图全部加载成功且**无 checkpointer**；结果分级 `[FAIL]`（不可用，退出码 1）/ `[WARN]`（降级可运行）/ `[SKIP]`（缺少前置条件，例如未配置模型端点，**不计失败**） |
 | 工具集一致性 | 协调 Agent 12 个工具、property 2 / pocket 5 / docking 3 / binding 3 个工具，全部来自项目源码 |
 | 运行环境 | 工作区解析到 `projects/`，可对接受体 2 个（thrombin_1DWC / trypsin_1PTU），LLM 6 个角色实例可构建 |
 | ~~`pipeline` 图~~（该图已移除，见 ADR-0001 与 projects/README 记录 60） | 历史实测：2 分子 + Vina，4 秒完成，22 项产物 |

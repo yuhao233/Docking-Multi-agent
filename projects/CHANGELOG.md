@@ -2296,6 +2296,30 @@ scripts/check_web.py / browser_check.py  前端只多了一行状态文案的显
 回归口径：**任何执行类失败都不该变成用户要回答的问题**；只有「影响对接本身」的歧义
 （受体不可用/歧义、代表结构、阳性对照）才中断并请用户决定。
 
+---
 
+# 2026-09-23 · 修 CI：部署自检在无密钥的 runner 上假失败
 
+GitHub Actions 的 `deploy` job 首次运行即红：`coordinator/property/pocket/docking/binding`
+五个图构建失败（`LLMConfigError: 未配置 LLM API Key`）、`var/runs` 不存在、LLM 配置项失败。
 
+根因：`langgraph-deploy/scripts/verify_graphs.py` 是给**本机**写的自检 —— 把「本机没有模型端点」
+当成部署不可用；而干净检出既没有 `projects/.env`（已 gitignore），也没有 `var/`（运行时才创建）。
+
+改法（不放松真正该拦的东西）：
+- **分级**：新增 `[SKIP]`，与 `[FAIL]`（退出码 1）/ `[WARN]` 区分。缺少前置条件（没有 key）时
+  图构建与模型实例检查标 `[SKIP]`，**不计失败**，并在结尾逐条列出跳过了什么 —— 不把「没检查」说成「通过」。
+- **CI 用占位 key 真跑**：`gate.yml` 的 deploy job 设 `LLM_API_KEY=ci-graph-build-only`
+  （端点指向不可达地址），LangChain 实例构建不发请求，因此「图加载 + 工具集核对」在 CI 里仍然真跑。
+- `var/runs` 缺失时按运行时行为**创建**（干净检出也能过），权限问题才判失败。
+- 另一处 CI 会红的用例：`tests/test_security_boundary.py::test_legacy_run_accepts_wellformed_x_run_id`
+  断言 200，但请求会构建 Agent 图 → 无 key 时 500。改为把图替换成**最小假图**（并断言请求确实走到图），
+  用例只验证 id 白名单与运行目录落盘，不再依赖本机是否配置密钥。
+
+验证（本机模拟 CI）：
+```
+LLM_API_KEY= OPENAI_API_KEY= DOCKING_ENGINE_TESTS=0 pytest -q      # 563 passed, 248 skipped
+bash langgraph-deploy/scripts/check.sh                              # 无 key：全部通过，7 项跳过
+LLM_API_KEY=ci-graph-build-only ... bash langgraph-deploy/scripts/check.sh   # 全部通过（图真加载）
+LLM_API_KEY=ci-graph-build-only ... bash langgraph-deploy/scripts/test.sh    # 46 passed, 4 skipped
+```

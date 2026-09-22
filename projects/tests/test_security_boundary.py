@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -93,12 +93,39 @@ def test_legacy_run_rejects_traversal_in_x_run_id(client: TestClient, tmp_path: 
     assert not (runs_dir() / ".." / "escaped-run").exists()
 
 
-def test_legacy_run_accepts_wellformed_x_run_id(client: TestClient) -> None:
-    """正常 id 不受影响（兼容入口必须继续可用）；用完即清理，避免污染运行目录。"""
+def test_legacy_run_accepts_wellformed_x_run_id(client: TestClient,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """正常 id 不受影响（兼容入口必须继续可用）；用完即清理，避免污染运行目录。
+
+    本用例只验证 id 白名单与运行目录落盘，因此把图替换成**最小假图**：
+    真图会把请求打到模型端点，既慢又依赖本机是否配置了 API Key（干净检出/CI 上曾因此假失败）。
+    """
     import shutil
     import uuid
 
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from docking_agent.api import support
     from docking_agent.runs import get_run_store
+
+    class _StubGraph:
+        """只回一条 AI 消息；记录调用以便断言请求确实走到图这一步。"""
+
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        async def ainvoke(self, payload: Any, config: Any = None, context: Any = None,
+                          **kwargs: Any) -> Any:
+            self.calls.append(payload)
+            return {"messages": [AIMessage(content="收到（测试桩）", id="a1")]}
+
+        async def aget_state(self, config: Any = None) -> Any:
+            values = {"messages": [HumanMessage("hi", id="h1"),
+                                   AIMessage("收到（测试桩）", id="a1")]}
+            return type("_Snapshot", (), {"values": values})()
+
+    stub = _StubGraph()
+    monkeypatch.setattr(support.state, "get_graph", lambda: stub)
 
     rid = f"audit-xrun-{uuid.uuid4().hex[:8]}"
     store = get_run_store()
@@ -108,6 +135,7 @@ def test_legacy_run_accepts_wellformed_x_run_id(client: TestClient) -> None:
         assert resp.status_code == 200, resp.text
         assert json.loads(resp.text)["run_id"] == rid
         assert (store.root / rid / "request.json").is_file()
+        assert stub.calls, "请求没有走到图执行"
     finally:
         shutil.rmtree(store.root / rid, ignore_errors=True)
 

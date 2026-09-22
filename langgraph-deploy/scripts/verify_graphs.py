@@ -11,7 +11,10 @@
   4) 工作区 / 资产 / 配置目录可达（决定对接能否真的跑起来）；
   5) LLM 配置齐备（只打印是否配置与模型名，**不打印密钥**）；
   6) 真实计算引擎可导入（rdkit / vina / meeko）与 pdb2pqr 是否可用（仅提示）。
-退出码非 0 表示部署不可用。
+
+分级：`[FAIL]` 影响部署可用性（退出码 1）；`[WARN]` 能力降级但可运行；`[SKIP]` 本机/CI 缺少
+前置条件（例如没有模型端点），跳过相应检查且**不计失败** —— 干净检出与无密钥的 CI 因此也能跑完，
+但不会把「没检查」说成「通过」。CI 用占位 key（见 `.github/workflows/gate.yml`）让图构建真跑。
 """
 from __future__ import annotations
 
@@ -26,6 +29,11 @@ sys.path.insert(0, str(HERE))
 
 FAIL: list[str] = []
 WARN: list[str] = []
+SKIP: list[str] = []
+
+#: CI/无密钥环境用的占位 key：LangChain 实例**构建**只需要非空字符串，不会发起请求。
+#: 图加载自检因此仍能真跑（工具集核对同理）；端点由 workflow 指向不可达地址，避免误发请求。
+CI_PLACEHOLDER_KEY = "ci-graph-build-only"
 
 
 def ok(msg: str) -> None:
@@ -40,6 +48,20 @@ def bad(msg: str) -> None:
 def warn(msg: str) -> None:
     WARN.append(msg)
     print(f"  \033[33m[WARN]\033[0m {msg}")
+
+
+def skip(msg: str) -> None:
+    """缺少前置条件（没有模型端点等）→ 明确跳过，不计失败，也不冒充通过。"""
+    SKIP.append(msg)
+    print(f"  \033[36m[SKIP]\033[0m {msg}")
+
+
+def api_key() -> str:
+    return os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+
+
+def is_placeholder_key(key: str) -> bool:
+    return key == CI_PLACEHOLDER_KEY
 
 
 def section(title: str) -> None:
@@ -69,6 +91,11 @@ def load_graphs() -> dict:
         try:
             graph = factory()
         except Exception as e:  # noqa: BLE001
+            from docking_agent.runtime.llm import LLMConfigError
+
+            if isinstance(e, LLMConfigError) and not api_key():
+                skip(f"{name}: 未配置 LLM API Key → 跳过图构建（设置 key 或按 CI 用占位 key 可检查）")
+                continue
             bad(f"{name}: 构建失败 → {type(e).__name__}: {e}")
             continue
         if not hasattr(graph, "get_graph"):
@@ -88,7 +115,7 @@ def check_coordinator_tools(built: dict) -> None:
     section("2) 协调 Agent 工具集（部署图 vs 项目源码）")
     graph = built.get("coordinator")
     if graph is None:
-        warn("coordinator 未加载成功，跳过工具集核对")
+        skip("coordinator 未加载成功 → 跳过工具集核对（与上一节的 [SKIP] 同因）")
         return
     node = getattr(graph, "nodes", {}).get("agent")
     # 外层包装节点：真正的 create_agent 工具在运行作用域里构建，这里用项目源码静态核对
@@ -135,10 +162,19 @@ def check_environment() -> None:
     for label, path in (("assets", assets_dir()), ("assets/receptors", assets_dir() / "receptors"),
                         ("config", workspace_dir() / "config"),
                         ("var/runs", workspace_dir() / "var" / "runs")):
-        if Path(path).exists():
-            ok(f"{label:18s} {path}")
-        else:
-            bad(f"{label:18s} 不存在：{path}")
+        target = Path(path)
+        if target.exists():
+            ok(f"{label:18s} {target}")
+            continue
+        if label == "var/runs":
+            # 干净检出（CI）没有 var/：运行时按需创建，这里也建出来，避免把「尚未产生运行」判成失败
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+                ok(f"{label:18s} 原不存在 → 已创建（首次运行时自动生成）")
+            except OSError as e:  # noqa: BLE001
+                bad(f"{label:18s} 不存在且无法创建：{target}（{e}）")
+            continue
+        bad(f"{label:18s} 不存在：{target}")
     registries = sorted(p.name for p in (assets_dir() / "receptors" / "registry").glob("*"))
     if registries:
         ok(f"可对接受体 {len(registries)} 个：{', '.join(registries[:8])}"
@@ -159,17 +195,21 @@ def check_llm() -> None:
         bad("未配置模型（LLM_MODEL / config/agent_llm_config.json）")
     base = os.getenv("LLM_BASE_URL") or (cfg.get("config") or {}).get("base_url") or ""
     ok(f"端点：{base or '（默认 api.openai.com）'}")
-    key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
-    if key:
-        ok(f"API Key：已配置（{key[:4]}…{key[-2:]}，长度 {len(key)}）")
+    key = api_key()
+    if not key:
+        skip("未配置 API Key（LLM_API_KEY / OPENAI_API_KEY）→ 跳过模型实例构建；"
+             "真实调用会失败，此处不计入部署自检失败（本机请配 .env，CI 用占位 key）")
+        return
+    if is_placeholder_key(key):
+        ok(f"API Key：占位（{CI_PLACEHOLDER_KEY}，仅用于构建实例，不发起请求）")
     else:
-        bad("未配置 API Key（LLM_API_KEY / OPENAI_API_KEY）—— Agent 图会构建成功但调用时报错")
+        ok(f"API Key：已配置（{key[:4]}…{key[-2:]}，长度 {len(key)}）")
     try:
         for role in ROLES:
             llm = build_chat_llm(None, role=role)
             if llm is None:
                 bad(f"角色 {role} 的模型构建返回 None")
-        ok(f"6 个角色模型实例均可构建：{', '.join(ROLES)}")
+        ok(f"{len(ROLES)} 个角色模型实例均可构建：{', '.join(ROLES)}")
     except Exception as e:  # noqa: BLE001
         bad(f"角色模型构建失败：{type(e).__name__}: {e}")
 
@@ -211,8 +251,13 @@ def main() -> int:
         print(f"\033[31m结果：{len(FAIL)} 项失败\033[0m")
         for f in FAIL:
             print(f"  - {f}")
+        if SKIP:
+            print(f"（另有 {len(SKIP)} 项因缺少前置条件被跳过）")
         return 1
-    print(f"\033[32m结果：全部通过\033[0m" + (f"（{len(WARN)} 条提示）" if WARN else ""))
+    tail = "".join([f"，{len(WARN)} 条提示" if WARN else "", f"，{len(SKIP)} 项跳过" if SKIP else ""])
+    print(f"\033[32m结果：全部通过\033[0m{tail}")
+    for item in SKIP:
+        print(f"  - 跳过：{item}")
     return 0
 
 
