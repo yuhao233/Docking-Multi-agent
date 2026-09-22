@@ -95,18 +95,21 @@ def render_architecture(out: Path) -> Path:
     ax.text(0.5, 0.982, "分子对接多 Agent 协作系统 · 协作架构",
             ha="center", va="top", fontsize=21, fontweight="bold", color="#1f2733")
 
-    bands = [("users", 0.085), ("intake", 0.085), ("coord", 0.092), ("workers", 0.090),
-             ("share", 0.085), ("core", 0.085), ("store", 0.090)]
-    top, gap = 0.868, 0.034
+    bands = [("users", 0.085), ("intake", 0.085), ("coord", 0.092), ("govern", 0.093),
+             ("workers", 0.090), ("share", 0.085), ("core", 0.085), ("store", 0.090)]
+    top, gap = 0.868, 0.026
     y: Dict[str, float] = {}
     cursor = top
     for name, height in bands:
         y[name] = cursor - height
         cursor = y[name] - gap
 
-    _box(ax, 0.045, y["users"], 0.28, 0.085, "对话模式", ["网页 · 自然语言指令"], COLORS["user"])
-    _box(ax, 0.360, y["users"], 0.28, 0.085, "参数模式", ["网页 · 表单参数权威"], COLORS["user"])
-    _box(ax, 0.675, y["users"], 0.28, 0.085, "Studio / SDK", ["LangGraph 平台面"], COLORS["user"])
+    _box(ax, 0.045, y["users"], 0.28, 0.085, "简易模式（默认首页）",
+         ["一句话即可跑 · 零参数表单"], COLORS["user"])
+    _box(ax, 0.360, y["users"], 0.28, 0.085, "高级模式",
+         ["参数表单 · 对话 · 运行详情"], COLORS["user"])
+    _box(ax, 0.675, y["users"], 0.28, 0.085, "Studio / SDK",
+         ["标准 Agent Protocol"], COLORS["user"])
 
     _box(ax, 0.045, y["intake"], 0.91, 0.085, "任务受理层 intake",
          ["结构化任务规约 · 决策 run / ask / reject"], COLORS["intake"])
@@ -115,6 +118,11 @@ def render_architecture(out: Path) -> Path:
     _box(ax, 0.045, y["coord"], 0.91, 0.092, "整体协调 Agent",
          ["决定执行环节与顺序 · 汇总结果 · 定制报告"], COLORS["agent"], title_size=15)
     _arrow(ax, (0.5, y["intake"]), (0.5, y["coord"] + 0.092), color=COLORS["agent"])
+
+    _box(ax, 0.045, y["govern"], 0.91, 0.085, "执行治理（对每次模型调用生效）",
+         ["中间件：重试 · 模型/工具限额 · 长对话摘要 · 工具调用序列自愈",
+          "步数预算：跑满自动放宽 120→240→480，到顶让主管 Agent 用已有结果收尾（不报错）"],
+         COLORS["share"], title_size=13, line_size=10)
 
     workers = [("口袋分析 Agent", "P2Rank · 几何法"),
                ("属性评估 Agent", "RDKit 物化性质"),
@@ -125,16 +133,14 @@ def render_architecture(out: Path) -> Path:
     for (title, line), wx, ww in zip(workers, xs, widths):
         _box(ax, wx, y["workers"], ww, 0.090, title, [line], COLORS["worker"],
              title_size=12.5, line_size=10.0)
-        _arrow(ax, (wx + ww / 2, y["coord"]), (wx + ww / 2, y["workers"] + 0.090),
+        _arrow(ax, (wx + ww / 2, y["govern"]), (wx + ww / 2, y["workers"] + 0.090),
                color=COLORS["agent"])
-    label_y = (y["coord"] + y["workers"] + 0.090) / 2
-    ax.text(0.5, label_y, "无状态执行器 · 每次独立线程", ha="center", va="center",
-            fontsize=CAPTION_SIZE, color=COLORS["agent"],
-            bbox={"facecolor": "white", "edgecolor": "none", "pad": 2.0}, zorder=5)
+    ax.text(0.5, y["workers"] - 0.019, "子 Agent：无状态执行器 · 每次调用独立线程",
+            ha="center", va="top", fontsize=CAPTION_SIZE, color=COLORS["agent"])
 
-    _box(ax, 0.045, y["share"], 0.445, 0.085, "共享黑板",
-         ["受体 · 位点盒 · 分子库 · 阳性对照"], COLORS["share"])
-    _box(ax, 0.510, y["share"], 0.445, 0.085, "运行产物文件",
+    _box(ax, 0.045, y["share"], 0.445, 0.085, "共享黑板 + 运行事实",
+         ["受体 · 位点盒 · 分子库 · 阳性对照 · 溯源"], COLORS["share"])
+    _box(ax, 0.510, y["share"], 0.445, 0.085, "运行产物文件（按路径交接）",
          ["分子库 · 性质 · 对接明细 JSON"], COLORS["share"])
     _arrow(ax, (0.30, y["workers"]), (0.30, y["share"] + 0.085), color=COLORS["share"], style="<|-|>")
     _arrow(ax, (0.70, y["workers"]), (0.70, y["share"] + 0.085), color=COLORS["share"], style="<|-|>")
@@ -188,12 +194,17 @@ def render_lifecycle(out: Path) -> Path:
         (0.66, 0.84, 0.515, "④ 真实计算"),
         (0.84, 0.96, 0.435, "⑤ 明细落盘"),
         (0.66, 0.47, 0.355, "⑥ 摘要回传"),
-        (0.47, 0.09, 0.275, "⑦ 流式帧"),
+        (0.47, 0.09, 0.275, "⑦ 流式帧（文本 · 思考 · 进展 · 候选）"),
         (0.47, 0.96, 0.195, "⑧ 报告与产物"),
         (0.96, 0.09, 0.115, "⑨ 下载与回看"),
     ]
     for x1, x2, y_pos, label in steps:
         _arrow(ax, (x1, y_pos), (x2, y_pos), color=COLORS["line"], label=label)
+
+    ax.text(0.5, 0.045,
+            "步数预算：跑满递归上限自动放宽并从检查点继续，到顶让主管 Agent 用已有结果收尾 —— "
+            "不把执行错误抛给用户；只有影响对接本身的问题才中断询问。",
+            ha="center", va="top", fontsize=10, color="#6b7280")
 
     fig.savefig(out, facecolor="white")
     plt.close(fig)
@@ -215,26 +226,34 @@ def render_layers(out: Path) -> Path:
             ha="center", va="top", fontsize=11.5, color="#5a6472")
 
     bands = [
-        ("接入层", "网页（对话 / 参数表单） · 标准 Agent Protocol 接口 · 命令行 · LangGraph Studio",
-         "api/ · web/ · cli.py", COLORS["user"]),
-        ("编排层", "整体协调 Agent 与 4 个子 Agent：决策、分发、汇总、报告定制",
-         "agents/ · tools/", COLORS["agent"]),
-        ("计算层", "对接、性质、口袋、结合模式：真实计算，不依赖大模型",
-         "core/", COLORS["engine"]),
+        ("接入层", "简易模式（默认首页） · 高级模式 · 标准 Agent Protocol 接口 · 命令行 · LangGraph Studio",
+         "api/（routers/*） · web/ · cli.py", COLORS["user"]),
+        ("受理层", "自然语言 / 表单 + 会话历史 → 结构化任务规约与执行决策（run / ask / reject）",
+         "intake.py · 在线解析（UniProt / RCSB / AlphaFold / PubChem）", COLORS["intake"]),
+        ("编排层", "整体协调 Agent 与 4 个子 Agent：决策、分发、汇总、报告定制；中间件统一治理",
+         "agents/（coordinator · dispatch · middleware · prompt_blocks · threads）", COLORS["agent"]),
+        ("运行支撑层", "共享黑板 · 产物落盘 · 运行事实 · 步数预算 · 事件流 · 检查点",
+         "runtime/（blackboard · tool_io · run_facts · limits · streaming）", COLORS["share"]),
+        ("计算层", "对接、性质、口袋、质子化、结合模式：真实计算，不依赖大模型",
+         "core/ · tools/", COLORS["engine"]),
         ("记录层", "运行目录：请求、结果、报告、图表、位姿、受体结构与产物清单",
          "runs.py · reporting/", COLORS["store"]),
     ]
-    y = 0.80
+    y = 0.845
     for label, detail, modules, color in bands:
-        _box(ax, 0.06, y, 0.88, 0.125, label, [detail, modules], color,
-             title_size=15, line_size=11)
+        _box(ax, 0.06, y, 0.88, 0.108, label, [detail, modules], color,
+             title_size=14, line_size=10)
         if y > 0.20:
-            _arrow(ax, (0.5, y), (0.5, y - 0.055), color="#5a6472")
-        y -= 0.185
+            _arrow(ax, (0.5, y), (0.5, y - 0.048), color="#5a6472")
+        y -= 0.155
 
-    ax.text(0.06, 0.055,
+    ax.text(0.06, 0.048,
             "边界：模型只负责选择与措辞，数值一律来自计算层；外部工具（P2Rank / pdb2pqr / AutoDock4 / "
             "GPU 对接引擎）由用户提供，缺失时按既定策略降级并在报告中说明。",
+            ha="left", va="top", fontsize=10, color="#6b7280")
+    ax.text(0.06, 0.022,
+            "打扰最小化：只有影响对接本身的问题（受体不可用/歧义、多组分代表结构、共晶配体作对照）"
+            "才请用户决定；执行细节（重试、步数上限、同问题重复）一律自动处理。",
             ha="left", va="top", fontsize=10, color="#6b7280")
     fig.savefig(out, facecolor="white")
     plt.close(fig)
@@ -252,8 +271,8 @@ def render_dataflow(out: Path) -> Path:
             fontsize=20, fontweight="bold", color="#1f2733")
 
     steps = [
-        ("分子库导入", "归一化 · 去重 · 结构校验", "molecules.json", COLORS["user"]),
-        ("性质评估", "RDKit 物化性质与类药性", "properties.json", COLORS["worker"]),
+        ("分子库导入", "归一化 · 身份去重（canonical）", "molecules.json", COLORS["user"]),
+        ("性质评估", "RDKit 性质 · 按目标 pH 质子化", "properties.json", COLORS["worker"]),
         ("口袋与定盒", "P2Rank 或几何法 · 盒子溯源", "pockets.json", COLORS["worker"]),
         ("真实对接", "Vina / AutoDock4 · 两阶段漏斗", "docking.json · poses/", COLORS["engine"]),
         ("结合模式", "指纹与阳性对照比较", "binding.json", COLORS["worker"]),

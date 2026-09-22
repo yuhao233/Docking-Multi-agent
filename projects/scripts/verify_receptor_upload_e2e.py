@@ -193,7 +193,7 @@ def verify_c2(base: str) -> None:
             body="data: {\"type\":\"start\",\"run_id\":\"C2\"}\n\n"
                  "data: {\"type\":\"final\",\"content\":\"ok\"}\n\n"
                  "data: {\"type\":\"done\",\"run_id\":\"C2\",\"summary\":{\"status\":\"ok\"}}\n\n"))
-        page.goto(f"{base}/#chat", wait_until="domcontentloaded")
+        page.goto(f"{base}/advanced#chat", wait_until="domcontentloaded")
         page.wait_for_function("window.__dshReady === true", timeout=60000)
         page.set_input_files("#chat-file-input", str(ent))
         page.wait_for_selector(".chat-attachment", timeout=120000)

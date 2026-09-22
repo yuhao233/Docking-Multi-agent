@@ -5,8 +5,9 @@
     .venv/bin/python scripts/capture_readme_shots.py --run-id 20260921-095530-0405
     .venv/bin/python scripts/capture_readme_shots.py --base http://127.0.0.1:5106 --out ../docs/images
 
-四张图（写入 docs/images/，WebP 压缩，宽度统一 1400）：
-    ui-chat.webp       对话模式：运行参数条 + 气泡（含参数小票）+ 运行详情
+五张图（写入 docs/images/，WebP 压缩，宽度统一 1400）：
+    ui-simple.webp     简易模式（默认首页）：一句话 + 推荐结果（桩数据）
+    ui-chat.webp       高级模式对话：运行参数条 + 气泡（含参数小票）+ 运行详情
     ui-results.webp    结果总览：KPI + 排序推荐表（含分子 ID 列）
     ui-report.webp     报告：协调 Agent 的「0. 本次要求与响应」+ 分子的 2D 结构卡
     ui-artifacts.webp  中间数据：产物清单（报告 / 排序 CSV / 图表 / 位姿 / 受体结构）
@@ -150,7 +151,7 @@ def capture(base: str, run_id: str, out_dir: Path, *, live_chat_run: str = "") -
         page.route("**/runs/stream", handle_stream)
         page.route("**/api/runs/SHOT-1*", handle_run)
 
-        page.goto(base + "/#chat", wait_until="domcontentloaded")
+        page.goto(base + "/advanced#chat", wait_until="domcontentloaded")
         page.wait_for_selector("#chat-input")
         page.fill("#chat-input", CHAT_USER)
         page.click("#chat-send")
@@ -173,7 +174,7 @@ def capture(base: str, run_id: str, out_dir: Path, *, live_chat_run: str = "") -
                 page.unroute(pattern)
 
         clear_routes()
-        page.goto(base + "/#chat", wait_until="domcontentloaded")
+        page.goto(base + "/advanced#chat", wait_until="domcontentloaded")
         page.wait_for_selector("#chat-input")
         page.evaluate(f"loadRun('{run_id}', {{silent: true}})")
         page.wait_for_timeout(1800)
@@ -222,6 +223,54 @@ def capture(base: str, run_id: str, out_dir: Path, *, live_chat_run: str = "") -
         page.screenshot(path=str(png))
         _compress(png, out_dir / "ui-artifacts.webp")
         written.append(out_dir / "ui-artifacts.webp")
+
+        # ---------- 5) 简易模式（默认首页）：一句话 → 推荐结果 ----------
+        # 用同一批桩数据渲染（不消耗模型额度）：左侧对话 + 右侧榜单，与 README「两套界面」一节对应
+        def handle_simple_threads(route: Any) -> None:
+            route.fulfill(status=200, headers={"Content-Type": "application/json"},
+                          body=json.dumps({"thread_id": "shot-simple"}))
+
+        def handle_simple_stream(route: Any) -> None:
+            route.fulfill(status=200, headers={"Content-Type": "text/event-stream"},
+                          body=_sse([
+                              {"type": "start", "run_id": "SHOT-SIMPLE"},
+                              {"type": "stage", "message": "解析任务"},
+                              {"type": "final", "content": CHAT_REPLY},
+                              {"type": "done", "run_id": "SHOT-SIMPLE", "summary": {"status": "ok"}},
+                          ]))
+
+        def handle_simple_run(route: Any) -> None:
+            route.fulfill(status=200, headers={"Content-Type": "application/json"},
+                          body=json.dumps({
+                              "run": {"run_id": "SHOT-SIMPLE", "status": "ok", "molecule_count": 2,
+                                      "kind": "agent", "conversation_id": "shot-simple"},
+                              "result": {"aggregates": {"total": 2}, "ranking_total": 2,
+                                         "ranking": [
+                                             {"rank": 1, "id": "PGR042", "name": "布洛芬",
+                                              "affinity_kcal_mol": -5.97},
+                                             {"rank": 2, "id": "PGR137", "name": "阿司匹林",
+                                              "affinity_kcal_mol": -5.73}],
+                                         "molecules": []},
+                              "artifacts": [{"name": "report.pdf", "label": "分析报告（PDF）"}],
+                              "downloads": {}, "log": [], "collaboration": {}}, ensure_ascii=False))
+
+        page.route("**/threads", handle_simple_threads)
+        page.route("**/runs/stream", handle_simple_stream)
+        page.route("**/api/runs/SHOT-SIMPLE*", handle_simple_run)
+        page.goto(base + "/", wait_until="domcontentloaded")
+        page.wait_for_selector("#s-input")
+        page.fill("#s-input", "用示例库对接凝血酶，报告里带上小分子 ID")
+        page.click("#s-send")
+        page.wait_for_function(
+            "() => { const b = document.querySelector('#s-log .s-msg-bot .s-body');"
+            " return b && b.textContent.indexOf('筛选结论') >= 0; }", timeout=25000)
+        page.wait_for_timeout(1200)
+        page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(300)
+        png = tmp / "ui-simple.png"
+        page.screenshot(path=str(png))
+        _compress(png, out_dir / "ui-simple.webp")
+        written.append(out_dir / "ui-simple.webp")
 
         browser.close()
     tmp.rmdir()
