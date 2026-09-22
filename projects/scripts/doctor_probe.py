@@ -67,7 +67,7 @@ def check_dependencies() -> List[Dict[str, Any]]:
         version = _module_version(name)
         out.append(_item(f"dep:{name}", label, version is not None,
                          version or "缺失",
-                         hint=f"bash start.sh --setup（或 .venv/bin/pip install -e .）"))
+                         hint="bash start.sh --setup（或 .venv/bin/pip install -e .）"))
     return out
 
 
@@ -150,6 +150,25 @@ def check_pdb2pqr() -> Dict[str, Any]:
                  required=False, degrade="受体不按目标 pH 重算质子化态（报告如实告警）")
 
 
+def check_ligand_pka() -> Dict[str, Any]:
+    """配体质子化的专业 pKa 引擎（Dimorphite-DL）；缺了会回退内置规则表。"""
+    try:
+        from docking_agent.core import ligand_pka
+
+        status = ligand_pka.engine_status()
+    except Exception as e:  # noqa: BLE001
+        return _item("ligand_pka", "配体 pKa 引擎（Dimorphite-DL）", False, f"探测失败：{e}",
+                     required=False, degrade="配体 pH 处理回退内置规则表（近似）")
+    if status.get("available"):
+        return _item("ligand_pka", "配体 pKa 引擎（Dimorphite-DL）", True,
+                     f"{status.get('engine')} {status.get('version')}"
+                     f"（LIGAND_PKA_ENGINE={status.get('active') and 'auto' or 'rules'}）",
+                     required=False)
+    return _item("ligand_pka", "配体 pKa 引擎（Dimorphite-DL）", False, "未安装",
+                 hint=str(status.get("install") or ""), required=False,
+                 degrade="配体 pH 处理回退内置 pKa 规则表（近似，非 pKa 预测；报告会注明）")
+
+
 def check_autodock() -> Dict[str, Any]:
     try:
         from docking_agent.core.docking import _autodock_bin
@@ -226,12 +245,12 @@ def check_llm() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         return _item("llm", "LLM 配置（多 Agent 模式）", False, f"读取配置失败：{e}",
                      hint="cp .env.example .env 并填 LLM_API_KEY / LLM_BASE_URL",
-                     required=False, degrade="只有确定性流水线可用（参数模式·流水线）")
+                     required=False, degrade="无法执行任何任务（Agent 模式是唯一执行链路）")
     configured = bool(key and base)
     return _item("llm", "LLM 配置（多 Agent 模式）", configured,
                  f"key={'已配置' if key else '缺失'} base={base or '缺失'}",
                  hint="cp .env.example .env 并填 LLM_API_KEY / LLM_BASE_URL",
-                 required=False, degrade="只有确定性流水线可用（参数模式·流水线）")
+                 required=False, degrade="无法执行任何任务（Agent 模式是唯一执行链路）")
 
 
 def check_llm_reachable() -> Dict[str, Any]:
@@ -278,7 +297,8 @@ def collect(*, online: bool = False) -> Dict[str, Any]:
     items += check_dependencies()
     items += check_workspace()
     items.append(check_port(default_port()))
-    items += [check_java(), check_p2rank(), check_pdb2pqr(), check_autodock(),
+    items += [check_java(), check_p2rank(), check_pdb2pqr(), check_ligand_pka(),
+              check_autodock(),
               check_external_engine(), check_cjk_font(), check_llm()]
     if online:
         items.append(check_llm_reachable())

@@ -165,7 +165,7 @@ def _standard_call(calls: List[Dict[str, Any]], assistant: str) -> Optional[Dict
 
 def run_report(page: Any, rep: Report, run_id: str) -> None:
     """报告版式验收（真实渲染）：结构卡在数据旁、备注折叠、失败占位不误报。"""
-    page.goto(BASE + "/#chat", wait_until="domcontentloaded")
+    page.goto(BASE + "/advanced#chat", wait_until="domcontentloaded")
     page.wait_for_selector("#chat-input")
     page.evaluate(f"loadRun('{run_id}', {{silent: true}})")
     page.wait_for_timeout(1500)
@@ -224,7 +224,7 @@ def run_report(page: Any, rep: Report, run_id: str) -> None:
 
 def run_layout(page: Any, rep: Report) -> None:
     """布局验收（只有真实浏览器能测）：对话居中放大、首屏无空控件、设置页能返回。"""
-    page.goto(BASE + "/#chat", wait_until="domcontentloaded")
+    page.goto(BASE + "/advanced#chat", wait_until="domcontentloaded")
     page.wait_for_selector("#chat-input")
     page.wait_for_timeout(600)
     metrics = page.evaluate(
@@ -247,7 +247,6 @@ def run_layout(page: Any, rep: Report) -> None:
         }""")
     vh = metrics["vh"]
     stream = metrics["stream"] or {"height": 0}
-    layout = metrics["layout"] or {"left": 0, "right": 0, "width": 0}
     rep.check(stream["height"] >= vh * 0.4,
               "对话区占首屏 ≥40%（对话框大一些）",
               f"{round(stream['height'])}px / 视口 {vh}px")
@@ -275,7 +274,7 @@ def run_layout(page: Any, rep: Report) -> None:
               f"no-run={metrics['noRun']} toolbar={metrics['toolbarDisplay']}")
     page.screenshot(path=str(SHOT_DIR / "layout_chat.png"), full_page=False)
 
-    page.goto(BASE + "/#/settings", wait_until="domcontentloaded")
+    page.goto(BASE + "/advanced#/settings", wait_until="domcontentloaded")
     page.wait_for_selector("#btn-settings-back")
     page.click("#btn-settings-back")
     page.wait_for_timeout(500)
@@ -286,7 +285,7 @@ def run_layout(page: Any, rep: Report) -> None:
 
 
 def run_chat(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
-    page.goto(BASE + "/#chat", wait_until="domcontentloaded")
+    page.goto(BASE + "/advanced#chat", wait_until="domcontentloaded")
     page.wait_for_selector("#chat-input")
     page.fill("#chat-input", "用上传的受体跑一次对接筛选")
     page.click("#chat-send")
@@ -299,14 +298,10 @@ def run_chat(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
     body_text = page.inner_text(".chat-msg.assistant .chat-body")
     rep.check("对接结果" in body_text, "标准 messages/complete 正文渲染进助手气泡",
               body_text[:60].replace("\n", " "))
-    rep.check(bool(page.query_selector(".chat-fold-toggle")),
-              "长回执出现「展开」折叠按钮")
-    if page.query_selector(".chat-fold-toggle"):
-        page.click(".chat-fold-toggle")
-        page.wait_for_timeout(120)
-        rep.check(page.inner_text(".chat-fold-toggle") == "收起" and
-                  not page.query_selector(".chat-body.chat-fold"),
-                  "点「展开」后折叠类移除、按钮变「收起」")
+    # 用户要求：对话气泡**不再默认折叠** → 长回执必须全文直接显示，且没有折叠按钮
+    rep.check(not page.query_selector(".chat-fold-toggle") and not page.query_selector(".chat-body.chat-fold"),
+              "长回执默认全文显示（不再有「展开」折叠按钮）")
+    rep.check(len(body_text) > 800, f"正文确实很长但未被截断（{len(body_text)} 字符）")
     rep.check(any(c["method"] == "POST" and c["url"].rstrip("/").endswith("/threads") for c in calls),
               "先建线程（POST /threads）", _urls(calls))
     call = _standard_call(calls, "coordinator")
@@ -352,6 +347,9 @@ def run_chat(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
         "els => els.length ? els[els.length - 1].textContent : ''").replace("\n", " ")
     rep.check("exhaustiveness=24" in chips and "位点" not in chips and "受体 " not in chips,
               "小票列出改动过的项、且不含未下发的受体/位点", chips[:140])
+    assistant_text = page.eval_on_selector(".chat-msg.assistant .chat-body", "el => el.textContent")
+    rep.check(page.locator(".chat-msg.assistant .md-root h2").count() >= 1, "高级模式回执按 Markdown 渲染")
+    rep.check("##" not in assistant_text, "高级模式正文不再显示 Markdown 源码符号", assistant_text[:80])
     page.screenshot(path=str(SHOT_DIR / "chat.png"), full_page=False)
 
 
@@ -366,7 +364,7 @@ def run_no_op(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
                                     "molecules": []},
                          "artifacts": [], "report_markdown": "", "downloads": {},
                          "log": [], "collaboration": {}}, ensure_ascii=False)))
-    page.goto(BASE + "/#chat", wait_until="domcontentloaded")
+    page.goto(BASE + "/advanced#chat", wait_until="domcontentloaded")
     page.wait_for_selector("#chat-input")
     page.fill("#chat-input", "你好")
     page.click("#chat-send")
@@ -391,14 +389,13 @@ def run_no_op(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
 
 
 def run_manual(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
-    page.goto(BASE + "/#manual", wait_until="domcontentloaded")
+    page.goto(BASE + "/advanced#manual", wait_until="domcontentloaded")
     page.wait_for_selector("#btn-start")
-    select = page.query_selector("#receptor-select")
-    if select is not None:
-        options = [o.get_attribute("value") for o in select.query_selector_all("option")]
-        values = [v for v in options if v]
-        if values:
-            page.select_option("#receptor-select", values[0])
+    # 用户面已经没有预置受体下拉：受体只能由 PDB/UniProt/名称/上传指定。
+    # 这里填一个 PDB 编号（4HHB = 血红蛋白，非注册表预置受体）。
+    if page.query_selector("#receptor-source") is not None:
+        page.fill("#receptor-source", "4HHB")
+        page.dispatch_event("#receptor-source", "input")
     # 参数模式至少要有一个分子来源：用 SMILES 文本框，避免依赖示例库解析
     page.fill("#ligands-text", "CCO,CCN,CCC")
     page.dispatch_event("#ligands-text", "input")
@@ -420,9 +417,176 @@ def run_manual(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
     page.screenshot(path=str(SHOT_DIR / "manual.png"), full_page=False)
 
 
+def run_simple(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
+    """简易模式（/simple）：只有对话与结果，且必须走同一套标准 Agent Protocol。
+
+    用户要求：简易模式要「新手也能直接用」——因此这里断言的是**可操作性**而不是外观：
+    背景不挡点击、发送按钮能跑、选项能点、结果区能载入；外观另存截图供人工复核。
+    """
+    calls.clear()
+    # **默认首页就是简易模式**（/ 直出 simple.html）；/advanced 才是高级模式
+    page.goto(BASE + "/", wait_until="networkidle")
+    rep.check(page.locator("#s-log").count() == 1, "默认首页是简易模式")
+    # 刷新 = 干净一页：结果区不得残留上一次运行（用户反馈）
+    page.evaluate("() => localStorage.setItem('dsa.simple.lastRun', '20260922-171953-2502')")
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(600)
+    rep.check(page.locator("#s-hits .s-hit").count() == 0 and page.locator("#s-actions").is_hidden(),
+              "刷新后结果区保持空态（不自动载入上一次结果）")
+    rep.check(page.locator("#s-runs").input_value() == "", "「历史运行」下拉默认停在占位项")
+    page.goto(BASE + "/simple", wait_until="networkidle")
+    rep.check(page.locator("#s-log").count() == 1, "别名 /simple 仍可用")
+    page.goto(BASE + "/advanced", wait_until="networkidle")
+    rep.check(page.locator("#view-workbench").count() == 1, "高级模式迁到 /advanced")
+    page.goto(BASE + "/", wait_until="networkidle")
+    rep.check(page.locator("#s-hits").count() == 1 and page.locator("#s-kpi").count() == 1, "简易模式有结果区")
+
+    # 顶栏双向导航：简易 ⇄ 高级
+    links = page.eval_on_selector_all(".s-nav-link", "els => els.map(e => e.getAttribute('href'))")
+    rep.check("/" in links and "/advanced" in links, f"简易模式顶栏可切换两套界面：{links}")
+    rep.check(page.locator('a[href="/advanced"][title]').count() >= 1, "高级模式入口带用途说明")
+
+    # 动态背景：存在、不拦截点击（新手点不动按钮是最致命的可用性缺陷）
+    rep.check(page.locator(".bg-anim .bg-blob").count() >= 3, "动态背景含多个光斑层")
+    bg_pointer = page.eval_on_selector(".bg-anim", "el => getComputedStyle(el).pointerEvents")
+    rep.check(bg_pointer == "none", f"动态背景不吃点击（pointer-events={bg_pointer}）")
+    hit = page.evaluate("""() => {
+        const b = document.getElementById('s-send');
+        const r = b.getBoundingClientRect();
+        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return top ? (top.id || top.className) : '';
+    }""")
+    rep.check("s-send" in str(hit), f"发送按钮在最上层（实际命中 {hit}）")
+
+    # 参数：简易模式不暴露任何参数控件，请求体必须是 chat + advanced=false
+    rep.check(page.locator("#exhaustiveness, #protonation-select, #site-center").count() == 0, "简易模式没有参数表单")
+
+    page.fill("#s-input", "筛选阿司匹林和布洛芬对 EGFR 的结合")
+    page.click("#s-send")
+    page.wait_for_timeout(900)
+    stream_calls = _standard_calls(calls, "coordinator")
+    rep.check(bool(stream_calls), "简易模式走标准端点 POST /threads/{tid}/runs/stream")
+    rep.check(any(c["url"].rstrip("/").endswith("/threads") for c in calls), "首次运行前注册线程")
+    if stream_calls:
+        payload = stream_calls[0]["body"]
+        fields = payload.get("input") or {}
+        rep.check(fields.get("mode") == "chat" and fields.get("advanced") is False,
+                  f"请求固定 chat + advanced=false（实际 mode={fields.get('mode')}, "
+                  f"advanced={fields.get('advanced')}）")
+        leaked = [k for k in ("exhaustiveness", "protonation", "site_center", "site_size",
+                              "engine", "max_ligands")
+                  if fields.get(k) not in (None, "", [])]
+        rep.check(leaked == [], f"请求不注入任何参数（实际带了 {leaked}）")
+
+    # 回执与结果：桩里给了长文本与一份运行记录 → 对话区有内容、结果区有推荐榜
+    page.wait_for_timeout(1200)
+    log_text = page.inner_text("#s-log")
+    rep.check("MOL1" in log_text or "对接结果" in log_text,
+              f"助手回执渲染到对话区（{len(log_text)} 字符）")
+    # 交互逻辑（用户反馈「Markdown 没渲染」）：回执按 Markdown 渲染，正文里不得再出现源码符号
+    rep.check(page.locator("#s-log .s-msg-bot .md-root h2").count() >= 1,
+              "简易模式助手回执按 Markdown 渲染（## → <h2>）")
+    rep.check(page.locator("#s-log .s-msg-bot .md-root ul li").count() >= 5, "Markdown 列表渲染成 <ul><li>")
+    rep.check("##" not in log_text and "**" not in log_text, "对话区不再显示 Markdown 源码符号")
+    page.wait_for_timeout(800)
+    rep.check(page.locator("#s-hits .s-hit").count() >= 1, "结果区渲染出推荐分子")
+    rep.check(page.locator("#s-report").get_attribute("href", timeout=2000)
+              and "report.pdf" in (page.locator("#s-report").get_attribute("href") or ""),
+              "结果区给出「查看完整报告」链接")
+    page.screenshot(path=str(SHOT_DIR / "simple.png"), full_page=True)
+
+    # ---- 回归：思考（thinking）必须**折叠**在气泡里，绝不混进正文（避免刷屏） ----
+    calls.clear()
+    def handle_think_stream(route: Any) -> None:
+        calls.append({"method": route.request.method, "url": route.request.url, "body": {}})
+        route.fulfill(status=200, headers={"Content-Type": "text/event-stream"}, body=sse([
+            {"type": "start", "run_id": "E2E-THINK"},
+            {"type": "thinking", "content": "先看靶点口袋，再决定盒子；" * 6},
+            {"type": "token", "content": "结论：推荐 MOL1。"},
+            {"type": "final", "content": "结论：推荐 MOL1。"},
+            {"type": "done", "run_id": "E2E-THINK", "summary": {"status": "ok"}},
+            {"type": "end"}]))
+    page.route("**/runs/stream", handle_think_stream)
+    page.fill("#s-input", "带思考再跑一次")
+    page.click("#s-send")
+    page.wait_for_timeout(1200)
+    think = page.locator(".s-think")
+    rep.check(think.count() >= 1, "思考内容渲染成独立的「思考」块")
+    if think.count():
+        body_hidden = page.eval_on_selector(".s-think .s-think-body", "el => el.classList.contains('hidden')")
+        rep.check(body_hidden, "思考块收起成一行（不占屏）")
+        toggle = page.locator(".s-think .s-think-toggle").first
+        label = toggle.inner_text() or ''
+        rep.check("思考" in label, f"折叠按钮标注「思考」：{label!r}")
+        rep.check("用时" in label, f"正文到达后自动收起并记下用时：{label!r}")
+        toggle.click()
+        page.wait_for_timeout(200)
+        rep.check(not page.eval_on_selector(".s-think .s-think-body",
+                                           "el => el.classList.contains('hidden')"),
+                  "点一下能展开看推理全文")
+        answer = page.inner_text("#s-log")
+        rep.check("先看靶点口袋" not in answer.split("结论：推荐 MOL1。")[0].replace(
+            page.inner_text(".s-think .s-think-body"), ""), "推理不得出现在正文里")
+
+    # ---- 回归：长回答**不再默认折叠**（用户要求：气泡直接全文显示） ----
+    rep.check(page.locator(".s-fold-toggle, .s-body.s-folded").count() == 0,
+              "简易模式长回答不再折叠（没有「展开全文」按钮 / 折叠类）")
+    long_len = page.eval_on_selector_all(
+        "#s-log .s-msg-bot .s-body",
+        "els => els.map(e => e.textContent.replace(/\\s/g, '').length)")
+    rep.check(long_len and max(long_len) > 800, f"长回执确实完整显示（最长 {max(long_len) if long_len else 0} 字符）")
+
+    # ---- 回归：多组分分子的「代表结构」点选必须作为**请求字段**续跑 ----
+    # 真实缺陷（用户反馈「我选择了，但没有正常工作」）：点选只把选项文案当普通消息发回，
+    # 后端于是按名称重新查询、又是多组分 → 再问一次；追问若丢了受体还会被判 ask。
+    calls.clear()
+    state = {"streams": 0}
+
+    def handle_choice_stream(route: Any) -> None:
+        body = json.loads(route.request.post_data or "{}")
+        calls.append({"method": route.request.method, "url": route.request.url, "body": body})
+        state["streams"] += 1
+        if state["streams"] == 1:
+            route.fulfill(status=200, headers={"Content-Type": "text/event-stream"},
+                          body=sse([{"type": "start", "run_id": "E2E-CHOICE"},
+                                    {"type": "choices",
+                                     "choices": [{"id": "molecule:3034368:raw", "kind": "molecule",
+                                                  "label": "Mancozeb（CID 3034368）· 原始多组分结构",
+                                                  "value": "CCO.[Zn+2]", "prompt": "按原始多组分继续",
+                                                  "detail": {"mode": "raw-mixture"}}],
+                                     "note": "需要确认："},
+                                    {"type": "final", "content": "请在下方选项中点选代表结构。"},
+                                    {"type": "done", "run_id": "E2E-CHOICE",
+                                     "summary": {"status": "needs_user_input"}},
+                                    {"type": "end"}]))
+            return
+        route.fulfill(status=200, headers={"Content-Type": "text/event-stream"},
+                      body=_chat_frames("E2E-CHOICE", "已按你选定的代表结构继续。"))
+
+    page.route("**/runs/stream", handle_choice_stream)
+    page.fill("#s-input", "代森锰锌")
+    page.click("#s-send")
+    page.wait_for_timeout(900)
+    rep.check(page.locator(".s-choice-btn").count() >= 1, "多组分选项渲染成按钮")
+    page.locator(".s-choice-btn").first.click()
+    page.wait_for_timeout(1200)
+    followups = [c["body"].get("input") or {} for c in calls if "/runs/stream" in c["url"]]
+    rep.check(len(followups) >= 2, f"点选后确实发起了续跑（{len(followups)} 次）")
+    if len(followups) >= 2:
+        last = followups[-1]
+        rep.check(last.get("molecule_choice") == "CCO.[Zn+2]",
+                  f"续跑带上所选代表结构的 SMILES：{last.get('molecule_choice')!r}")
+        rep.check(last.get("molecule_choice_decision") == "raw-mixture",
+                  f"续跑带上取法（raw-mixture）：{last.get('molecule_choice_decision')!r}")
+        rep.check(bool(last.get("molecule_choice_label")),
+                  "续跑带上展示名（报告可追溯）")
+        rep.check(not last.get("molecule_choice") == ""
+                  and last.get("conversation_id") is not None, "续跑仍在同一会话里")
+
+
 def run_live(page: Any, rep: Report, calls: List[Dict[str, Any]]) -> None:
     """不打桩：真跑一次后端（含真实 LLM），只验证链路与最终渲染。"""
-    page.goto(BASE + "/#chat", wait_until="domcontentloaded")
+    page.goto(BASE + "/advanced#chat", wait_until="domcontentloaded")
     page.wait_for_selector("#chat-input")
     page.fill("#chat-input", "用预置受体 thrombin、对接盒 center=31.5,13.74,24.36 / size=22,22,22，对乙醇 CCO 做一次完整筛选：导入 → 属性评估 → 对接 → 推荐排行 → 生成报告。exhaustiveness=1、n_poses=1，直接执行，不要问我。")
     page.click("#chat-send")
@@ -494,6 +658,8 @@ def main(argv: List[str]) -> int:
                 "method": req.method, "url": req.url, "body": _json_or_empty(req.post_data)}))
         if not live:
             no_op = [False]
+            from browser_choice_checks import (choices_are_deferred, limit_event_is_informational,
+                                               simple_choice_guard, two_kinds_coexist)
             _install_stubs(page, calls, LONG_REPLY, "E2E-BROWSER-CHAT", no_op)
             print("--- 真实浏览器 · 布局（居中 / 放大 / 首屏无空控件 / 返回） ---")
             run_layout(page, rep)
@@ -504,8 +670,16 @@ def main(argv: List[str]) -> int:
             run_no_op(page, rep, calls)
             no_op[0] = False
             calls.clear()
+            print("--- 真实浏览器 · 简易模式（标准帧桩） ---")
+            run_simple(page, rep, calls)
+            calls.clear()
             print("--- 真实浏览器 · 参数模式（标准帧桩） ---")
             run_manual(page, rep, calls)
+            print("--- 真实浏览器 · 候选选择交互（两问互不覆盖 / 运行中点不动） ---")
+            two_kinds_coexist(page, rep, calls, BASE)
+            simple_choice_guard(page, rep, BASE)
+            choices_are_deferred(page, rep, BASE)
+            limit_event_is_informational(page, rep, BASE)
             report_run = os.environ.get("BROWSER_CHECK_REPORT_RUN") or ""
             if report_run:
                 print("--- 真实浏览器 · 报告版式（结构卡 / 备注 / 图片） ---")

@@ -44,7 +44,9 @@ CASES: List[Tuple[str, Dict[str, Any], Dict[str, Any], bool]] = [
      {"authority": "chat", "ligands.source": "library", "needs_llm": True}, True),
     ("对话折叠·表单被忽略", {"mode": "chat", "advanced": False, "message": "筛一下",
                       "ligands_text": "A:CCO", "exhaustiveness": 9},
-     {"ligands.source": "library", "params.exhaustiveness": 6}, True),
+     # 折叠时表单**完全不生效**：分子来源回落到示例库，搜索强度取系统默认 16
+     # （v0.24 起默认值由 6 改为 16；这里曾长期留在 6，导致用例静默失效 —— 见 tests/test_intake.py）
+     {"ligands.source": "library", "params.exhaustiveness": 16}, True),
     ("对话展开·指令提到受体", {"mode": "chat", "advanced": True, "message": "用 trypsin 做筛选",
                        "ligands_text": "A:CCO"},
      {"receptor.name": "trypsin", "receptor.source": "user"}, True),

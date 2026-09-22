@@ -84,6 +84,9 @@ else
 fi
 
 # 加载 .env（LLM 配置等）
+# PYTHONPATH 只是**兜底**：正常路径是 setup.sh 的 `pip install -e .`（依赖单一事实来源）。
+# 保留它是为了「依赖已装、但 editable 安装缺失」的旧 venv 仍能起服务；
+# 服务入口另有 `paths.assert_runtime_layout(strict=True)` 做布局自检。
 export PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 export DOCKING_WORKSPACE="$SCRIPT_DIR"
 if [ -f "$SCRIPT_DIR/.env" ]; then
@@ -96,7 +99,8 @@ else
   echo "[2/3] 未找到 .env（可复制 .env.example）；多 Agent 模式需要 LLM_API_KEY"
 fi
 
-LLM_STATE="未配置（多 Agent 模式不可用，确定性流水线可用）"
+# 确定性流水线已随 1e15fad 整体移除：Agent 模式是唯一执行入口，没有 LLM 就跑不了。
+LLM_STATE="未配置（多 Agent 模式不可用 —— 本系统只有这一条执行链路，请先在 .env 配置 LLM_API_KEY）"
 if [ -n "${LLM_API_KEY:-}" ]; then
   LLM_STATE="已配置（模型 ${LLM_MODEL:-未指定}）"
 fi

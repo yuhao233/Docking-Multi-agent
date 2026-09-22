@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>分子对接多 Agent 协作系统</title>
+<title>多Agent协作分子对接筛选工作台 · 高级模式</title>
 <!-- 所有资源均为本地相对路径，禁止任何外部 CDN / 字体 / JS 库（离线可用） -->
 <link rel="stylesheet" href="/static/styles.css">
+<script src="/static/markdown.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -24,13 +25,18 @@
         <line x1="11.4" y1="18.1" x2="20.9" y2="22.4"></line>
       </svg>
       <div class="brand-text">
-        <h1>分子对接多 Agent 协作系统</h1>
-        <p class="brand-sub">对话下达指令，或手动填写参数</p>
+        <h1>多Agent协作分子对接筛选工作台</h1>
+        <p class="brand-sub">Multi-Agent Collaborative Molecular Docking Screening Workbench</p>
       </div>
     </div>
 
     <!-- 主导航：工作台 / 设置（两个顶层页面，hash 深链接 #/settings） -->
     <nav class="topnav" id="topnav" role="tablist" aria-label="主导航">
+      <!-- 默认首页是简易模式（独立页面 `/`）：同一份后端契约的轻量视图，用普通链接切换 -->
+      <a class="nav-btn" id="nav-simple" href="/"
+        title="只要对话与结果：参数全部走默认与自动规划">
+        <span class="nav-idx">00</span><span class="nav-label">简易模式</span>
+      </a>
       <button type="button" class="nav-btn active" id="nav-workbench" data-view="workbench"
         role="tab" aria-selected="true" title="运行任务与查看结果">
         <span class="nav-idx">01</span><span class="nav-label">工作台</span>
@@ -42,7 +48,7 @@
       </button>
     </nav>
 
-    <div class="health" id="health-box">
+    <div class="health">
       <div class="health-row">
         <span class="dot dot-unknown" id="health-dot"></span>
         <span class="health-text" id="health-text">正在检查后端服务…</span>
@@ -64,7 +70,7 @@
   <aside class="panel panel-config motion-in" id="config-panel">
     <div class="panel-head">
       <h2 class="panel-title">任务配置</h2>
-      <span class="hint" id="config-head-hint"><span class="req">*</span> 必填</span>
+      <span class="hint"><span class="req">*</span> 必填</span>
     </div>
     <button type="button" class="col-toggle" id="btn-toggle-params"
             aria-expanded="true" title="收起/展开参数侧栏">收起</button>
@@ -83,12 +89,12 @@
       </div>
 
       <!-- 两个子页叠放在同一容器中，通过 .is-active 切换 opacity/transform（不使用 display:none 硬切） -->
-      <div class="mode-panels" id="mode-panels">
+      <div class="mode-panels">
 
       <!-- ------------------------- 子页一：对话模式 ------------------------- -->
       <section class="page-pane is-active" id="chat-pane" role="tabpanel" aria-labelledby="mode-tab-chat">
         <div class="chat-toolbar">
-        <p class="hint chat-hint-line" id="chat-hint">
+        <p class="hint chat-hint-line">
           描述任务目标即可；参数只下发你改动过的项。
           <span class="tip-icon" tabindex="0" role="button" aria-label="对话模式说明"
             data-tip-html="协调 Agent 会自行调度分子属性评估 / 分子对接 / 结合模式检测子 Agent，并出具排序结论。<br>下方的「运行参数」<b>只把你改动过的项作为默认值下发</b>；未改动的走系统默认，指令里明确写到的（如「搜索强度用 32」）优先。<br><b>受体与位点盒在对话模式不发送</b>：由指令内容或口袋分析决定（需要指定就先上传受体文件、或在指令里写清楚）。<br>上传的附件属于明确意图，会作为 <code>receptor_file</code> / <code>molecule_file</code> 一并下发；指令与参数不会冲突。">?</span>
@@ -100,7 +106,7 @@
             运行参数
             <span class="tip-icon" tabindex="0" role="button" aria-label="运行参数说明"
               data-tip-html="这里的参数<b>直接对本次运行生效</b>（作为默认值下发）；<br>指令里明确写到的（例如「搜索强度用 32」）仍然优先于这里。<br>未改动时使用系统默认值：引擎 vina、质子化 ph(7.4)、n_poses 1、搜索强度 16。">?</span>
-            <span class="hint-inline" id="chat-quick-hint">只下发改动过的项 · 未改动 = 自动/系统默认</span>
+            <span class="hint-inline">只下发改动过的项 · 未改动 = 自动/系统默认</span>
           </p>
         </div>
 
@@ -122,7 +128,7 @@
 
       <!-- ------------------------- 子页二：参数模式 ------------------------- -->
       <section class="page-pane" id="manual-pane" role="tabpanel" aria-labelledby="mode-tab-manual">
-        <p class="hint" id="manual-hint">
+        <p class="hint">
           表单参数即权威参数。
           <span class="tip-icon" tabindex="0" role="button" aria-label="参数模式说明"
             data-tip-html="本模式下<b>上方表单参数为权威参数</b>，服务端会将其作为「本次运行参数（权威）」追加到指令中；<br>下方的「目标描述」只补充要求，<b>不会覆盖任何参数</b>。">?</span>
@@ -166,28 +172,28 @@
           <span id="btn-stop-label">■ 停止</span>
         </button>
       </div>
-      <p class="hint" id="run-hint">尚未运行。</p>
+      <p class="hint" id="run-hint" aria-live="polite">尚未运行。</p>
     </div>
   </aside>
 
   <!-- ============ 中栏：对话 + 结果与产物（三栏布局：左参数 / 中主内容 / 右运行详情）============ -->
   <section class="center-col" id="workbench-center">
-      <section class="chat-panel chat-dock" id="chat-history-panel">
+      <section class="chat-panel chat-dock">
         <h3 class="sub-head chat-head">
           <span>对话</span>
-          <span class="hint-inline" id="chat-history-hint">Markdown 渲染 · 长回复自动折叠</span>
+          <span class="hint-inline">Markdown 渲染 · 长回复自动折叠</span>
         </h3>
         <div class="chat-stream" id="chat-history"></div>
         <p class="empty" id="chat-history-empty">在下方输入指令，按 Enter 或点「发送」开始。</p>
 
         <form class="chat-form" id="chat-form" autocomplete="off">
           <div class="chat-attachments" id="chat-attachments"></div>
-          <textarea id="chat-input" rows="4" spellcheck="false"
+          <textarea id="chat-input" rows="4" spellcheck="false" aria-label="给协调 Agent 的自然语言指令"
             placeholder="描述任务目标；可点「附件」上传受体/分子文件，或输入 @ 引用已上传的文件"></textarea>
           <div class="chat-attach-row">
             <button type="button" class="btn btn-ghost btn-sm" id="chat-attach-btn"
-                    title="上传受体（.pdb/.ent/.cif/.pdbqt）或小分子库（.sdf/.smi/.csv/.mol2）">附件</button>
-            <input type="file" id="chat-file-input" class="hidden" multiple
+                    title="上传受体结构或分子库文件">附件</button>
+            <input type="file" id="chat-file-input" class="hidden" multiple aria-label="上传附件（受体结构或小分子库）"
                    accept=".pdb,.ent,.pdb1,.cif,.mmcif,.pdbqt,.sdf,.sd,.smi,.smiles,.txt,.csv,.mol2,.mol">
             <button type="button" class="btn btn-ghost btn-sm hidden" id="chat-mention-btn"
                     title="引用已上传的文件">@ 引用</button>
@@ -288,7 +294,7 @@
             </div>
           </div>
 
-          <div class="alert alert-error hidden" id="exec-error"></div>
+          <div class="alert alert-error hidden" id="exec-error" role="alert"></div>
         </div>
       </div>
         </div>
@@ -321,12 +327,12 @@
         <span class="download-name" id="download-name-hint" title="当前运行的文件命名前缀"></span>
       </div>
     </div>
-    <div class="tabs" id="tabs" role="tablist" aria-label="结果视图">
-      <button type="button" class="tab-btn active" data-tab="overview" role="tab">结果总览</button>
-      <button type="button" class="tab-btn" data-tab="molecules" role="tab">分子详情</button>
-      <button type="button" class="tab-btn" data-tab="report" role="tab">报告</button>
-      <button type="button" class="tab-btn" data-tab="artifacts" role="tab">中间数据</button>
-      <button type="button" class="tab-btn" data-tab="history" role="tab">历史运行</button>
+    <div class="tabs" role="tablist" aria-label="结果视图">
+      <button type="button" class="tab-btn active" data-tab="overview" role="tab" aria-selected="true">结果总览</button>
+      <button type="button" class="tab-btn" data-tab="molecules" role="tab" aria-selected="false">分子详情</button>
+      <button type="button" class="tab-btn" data-tab="report" role="tab" aria-selected="false">报告</button>
+      <button type="button" class="tab-btn" data-tab="artifacts" role="tab" aria-selected="false">中间数据</button>
+      <button type="button" class="tab-btn" data-tab="history" role="tab" aria-selected="false">历史运行</button>
     </div>
 
     <div class="tab-body">
@@ -460,7 +466,7 @@
         </div>
         <div class="alert alert-info hidden" id="zip-message"></div>
         <div class="artifact-grid" id="artifact-grid"></div>
-        <p class="empty" id="artifacts-empty">尚无中间数据产物。运行结束后，molecules/properties/docking/binding/ranking.csv/图表/报告/位姿 等清单会显示在这里。</p>
+        <p class="empty" id="artifacts-empty">尚无中间数据产物。运行结束后，分子库、性质、对接、结合模式、排序、图表、报告与位姿等清单会显示在这里。</p>
 
         <!-- 结合位点与口袋预测（工具定盒的溯源） -->
         <h3 class="sub-head">
@@ -501,21 +507,21 @@
       <!-- 历史运行 -->
       <div class="tab-pane" id="tab-history" role="tabpanel">
         <!-- 历史检索：关掉页面后仍可按关键词/状态/受体/时间找回旧运行（服务端持久化） -->
-        <div class="btn-row history-search" id="history-search-bar">
-          <input type="search" id="history-q" class="input" autocomplete="off"
+        <div class="btn-row history-search">
+          <input type="search" id="history-q" class="input" autocomplete="off" aria-label="搜索历史运行"
                  placeholder="搜 run_id / 受体 / 分子名或 ID（空格分词为「与」）">
-          <select id="history-status">
+          <select id="history-status" aria-label="按状态筛选历史运行">
             <option value="">全部状态</option>
             <option value="ok">成功</option>
             <option value="no_op">无操作</option>
             <option value="error">失败</option>
           </select>
-          <select id="history-kind">
+          <select id="history-kind" aria-label="按类型筛选历史运行">
             <option value="">全部类型</option>
             <option value="agent">多 Agent</option>
             <option value="studio">Studio</option>
           </select>
-          <input type="text" id="history-receptor" class="input" placeholder="受体（模糊匹配）">
+          <input type="text" id="history-receptor" class="input" aria-label="按受体筛选历史运行" placeholder="受体（模糊匹配）">
           <label class="hint-inline" for="history-since">从</label>
           <input type="date" id="history-since">
           <label class="hint-inline" for="history-until">到</label>
@@ -581,7 +587,7 @@
                 <div class="orch-node" id="orch-node-coordinator" data-state="wait">
                   <span class="orch-name">整体协调 Agent</span>
                   <span class="tag tag-wait" id="orch-tag-coordinator">[ WAIT ]</span>
-                  <span class="orch-note" id="orch-note-coordinator">dispatching</span>
+                  <span class="orch-note">dispatching</span>
                 </div>
               </div>
               <div class="orch-edge" aria-hidden="true"></div>
@@ -589,22 +595,22 @@
                 <div class="orch-node" id="orch-node-properties" data-state="wait">
                   <span class="orch-name">分子属性评估</span>
                   <span class="tag tag-wait" id="orch-tag-properties">[ WAIT ]</span>
-                  <span class="orch-note" id="orch-note-properties">properties</span>
+                  <span class="orch-note">properties</span>
                 </div>
                 <div class="orch-node" id="orch-node-pocket" data-state="wait">
                   <span class="orch-name">口袋分析</span>
                   <span class="tag tag-wait" id="orch-tag-pocket">[ WAIT ]</span>
-                  <span class="orch-note" id="orch-note-pocket">pocket</span>
+                  <span class="orch-note">pocket</span>
                 </div>
                 <div class="orch-node" id="orch-node-docking" data-state="wait">
                   <span class="orch-name">Docking 执行</span>
                   <span class="tag tag-wait" id="orch-tag-docking">[ WAIT ]</span>
-                  <span class="orch-note" id="orch-note-docking">docking</span>
+                  <span class="orch-note">docking</span>
                 </div>
                 <div class="orch-node" id="orch-node-binding" data-state="wait">
                   <span class="orch-name">结合模式检测</span>
                   <span class="tag tag-wait" id="orch-tag-binding">[ WAIT ]</span>
-                  <span class="orch-note" id="orch-note-binding">binding</span>
+                  <span class="orch-note">binding</span>
                 </div>
               </div>
               <div class="orch-edge" aria-hidden="true"></div>
@@ -612,7 +618,7 @@
                 <div class="orch-node" id="orch-node-report" data-state="wait">
                   <span class="orch-name">报告生成</span>
                   <span class="tag tag-wait" id="orch-tag-report">[ WAIT ]</span>
-                  <span class="orch-note" id="orch-note-report">report</span>
+                  <span class="orch-note">report</span>
                 </div>
               </div>
             </div>
@@ -669,7 +675,7 @@
         <div class="alert alert-error hidden" id="settings-error"></div>
         <div class="alert alert-info hidden" id="settings-info"></div>
 
-        <p class="hint" id="settings-priority-hint">
+        <p class="hint">
           每项右侧标注生效来源；留空 = 继承上一级。
           <span class="tip-icon" tabindex="0" role="button" aria-label="优先级说明"
             data-tip-html="每项右侧标注当前生效值的来源（界面设置 / 环境变量 / 内置默认）。<br>留空表示继承上一级：角色级字段留空即跟随全局设置。">?</span>
@@ -698,7 +704,7 @@
   <div class="param-common" id="param-common">
 
   <!-- 一键预设 + 恢复系统默认：只改界面值，不写任何设置文件（设置页已保存的配置不受影响） -->
-  <div class="preset-bar" id="param-presets">
+  <div class="preset-bar">
     <span class="preset-bar-label">一键预设</span>
     <button type="button" class="btn btn-ghost btn-sm preset-btn" id="preset-fast"
       data-exhaustiveness="4" data-n-poses="1"
@@ -714,22 +720,21 @@
     <span class="preset-note" id="preset-note" role="status" aria-live="polite"></span>
   </div>
 
-    <!-- 注册表受体下拉 + 信息卡：参数模式保留；对话模式通过 .chat-mode 隐藏（受体由指令/系统默认决定） -->
-    <div class="receptor-manual-block" id="receptor-manual-block">
+    <!-- 受体来源（自由文本）+ 静态指引卡：参数模式保留；对话模式通过 .chat-mode 隐藏（受体由指令决定） -->
+    <div class="receptor-manual-block">
       <label class="field">
-        <span class="field-label">受体 <span class="req">*</span>
-          <span class="tip-icon" tabindex="0" role="button" aria-label="受体说明"
-            data-tip-html="从注册表选择受体。<br>留空则由指令或系统默认决定；也可在「更多参数」里上传 <code>.pdb</code> / <code>.pdbqt</code> 覆盖它。">?</span>
+        <span class="field-label">受体来源 <span class="req">*</span>
+          <span class="tip-icon" tabindex="0" role="button" aria-label="受体来源说明"
+            data-tip-html="受体结构由系统<b>自动到在线数据库检索</b>（UniProt → RCSB 实验结构 / AlphaFold 预测结构），不必自己找文件。支持四种写法：<br>· <b>PDB 编号</b>（如 <code>4HHB</code>）<br>· <b>UniProt accession</b>（如 <code>P08922</code>）<br>· <b>蛋白 / 基因名称</b>（中英文均可，如 <code>凝血酶</code> / <code>thrombin</code>）<br>· 或在「更多参数」里<b>上传结构文件</b>。<br>系统<b>绝不会</b>用内置默认受体顶替：留空且未上传时，点「开始运行」会被拦下并提示你指定受体。">?</span>
         </span>
-        <select id="receptor-select">
-          <option value="">正在加载受体列表…</option>
-        </select>
+        <input type="text" id="receptor-source" spellcheck="false"
+          placeholder="PDB 编号（4HHB）/ UniProt accession（P08922）/ 受体名称">
       </label>
 
       <div class="site-card" id="receptor-info">
-        <p class="site-empty" id="receptor-meta">尚未加载受体信息。</p>
+        <p class="site-empty" id="receptor-meta">受体在运行时在线解析（PDB 编号 / UniProt accession / 蛋白或基因名称，中英文均可），也可上传结构文件。绑定盒默认由口袋分析确定，除非你显式给出坐标；系统不会用内置默认受体顶替。</p>
       </div>
-      <p class="hint" id="site-hint">中心/尺寸留空时使用该受体注册的已知结合位点。</p>
+      <p class="hint">中心/尺寸留空时由口袋分析自动定盒。</p>
     </div>
 
     <label class="field">
@@ -804,7 +809,7 @@
         <button type="button" class="btn btn-ghost btn-sm" id="btn-fill-positive">填入示例对照（苯甲脒）</button>
         <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-positive">清空（不做对照分析）</button>
       </div>
-      <p class="hint" id="positive-hint">留空则不做阳性对照分析。</p>
+      <p class="hint">留空则不做阳性对照分析。</p>
     </label>
 
     <label class="field">
@@ -823,14 +828,14 @@
   <details class="field-group" open>
     <summary>配体来源
       <span class="tip-icon" tabindex="0" role="button" aria-label="配体来源说明"
-        data-tip-html="四种来源任选其一：直接粘贴 SMILES、上传小分子库文件、服务端路径 / URL、内置示例库。<br>留空则由指令或系统默认决定。">?</span>
+        data-tip-html="四种来源任选其一：直接粘贴 SMILES、上传小分子库文件、服务端路径 / URL、内置示例库。<br>只写<b>名称或 PubChem CID</b> 也可以：分子结构会自动从<b>在线数据库（PubChem）</b>解析，无需先准备文件。<br>留空则由指令或系统默认决定。">?</span>
     </summary>
 
     <div class="segmented" id="ligand-source" role="tablist" aria-label="配体来源">
-      <button type="button" class="seg-btn active" data-source="text" role="tab">SMILES 文本</button>
-      <button type="button" class="seg-btn" data-source="upload" role="tab">上传文件</button>
-      <button type="button" class="seg-btn" data-source="file" role="tab">服务端路径 / URL</button>
-      <button type="button" class="seg-btn" data-source="library" role="tab">使用示例库</button>
+      <button type="button" class="seg-btn active" data-source="text" role="tab" aria-selected="true">SMILES 文本</button>
+      <button type="button" class="seg-btn" data-source="upload" role="tab" aria-selected="false">上传文件</button>
+      <button type="button" class="seg-btn" data-source="file" role="tab" aria-selected="false">服务端路径 / URL</button>
+      <button type="button" class="seg-btn" data-source="library" role="tab" aria-selected="false">使用示例库</button>
     </div>
 
     <div class="source-pane" id="pane-text">
@@ -854,7 +859,7 @@
       <div class="upload-zone" id="ligand-upload-zone" role="button" tabindex="0"
         aria-label="拖拽或点击上传小分子库文件">
         <span class="upload-zone-title">拖拽小分子库文件到此处，或点击选择</span>
-        <span class="upload-zone-sub mono">支持 .sdf / .sd / .smi / .smiles / .txt / .csv / .mol2 / .mol · 上限 200MB</span>
+        <span class="upload-zone-sub mono">支持常见分子库格式 · 单文件上限 200MB</span>
       </div>
       <div class="upload-status" id="ligand-upload-status"></div>
     </div>
@@ -863,10 +868,10 @@
       <label class="field">
         <span class="field-label">服务端文件路径或 URL
           <span class="tip-icon" tabindex="0" role="button" aria-label="文件路径说明"
-            data-tip="支持服务端可读的 CSV / SDF / SMI 路径，也支持可下载的 URL。留空则由指令或系统默认决定。">?</span>
+            data-tip="支持服务端可读的文件路径，也支持可下载的 URL。留空则由指令或系统默认决定。">?</span>
         </span>
         <input type="text" id="molecule-file" spellcheck="false"
-          placeholder="例如：assets/libraries/mol_library.csv 或 assets/ligands_user.sdf">
+          placeholder="填写服务端已有的文件路径或 URL">
       </label>
       <label class="check-row">
         <input type="checkbox" id="allow-example-fallback">
@@ -896,7 +901,7 @@
       <div class="receptor-manual-block field-wide">
         <p class="field-label">结合位点盒（中心 / 尺寸，Å）
           <span class="tip-icon" tabindex="0" role="button" aria-label="结合位点盒说明"
-            data-tip-html="手工指定对接盒的中心与边长（Å）。<br>留空 = 使用受体注册的已知位点，未注册时由口袋预测引擎自动定盒。<br>实验位点（共晶配体 / 注册表）优先，工具预测作为独立验证。">?</span>
+            data-tip-html="手工指定对接盒的中心与边长（Å）。<br>留空 = 由口袋预测引擎自动定盒（也可上传带位点盒的受体结构）。<br>你显式填写的坐标 / 尺寸优先；工具预测作为独立验证。">?</span>
         </p>
         <div class="field-row-3">
           <label class="field">
@@ -929,8 +934,7 @@
         </div>
 
         <div class="btn-row">
-          <button type="button" class="btn btn-ghost btn-sm" id="btn-fill-site">填入注册位点</button>
-          <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-site">清空（用默认）</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-site">清空（自动定盒）</button>
         </div>
       </div>
 
@@ -947,28 +951,28 @@
         </select>
       </label>
 
-      <p class="hint field-wide" id="pocket-engine-hint">未显式指定位点盒时，由该引擎真实预测口袋来确定盒子。</p>
+      <p class="hint field-wide">未显式指定位点盒时，由该引擎真实预测口袋来确定盒子。</p>
 
       <label class="check-row field-wide">
         <input type="checkbox" id="save-poses" checked>
         <span>保存对接位姿文件（可在分子详情中下载）
           <span class="tip-icon" tabindex="0" role="button" aria-label="保存位姿说明"
-            data-tip="保存每个分子的位姿文件（.pdbqt），可在「分子详情」下载。关闭可省磁盘与打包时间。">?</span>
+            data-tip="保存每个分子的位姿文件，可在「分子详情」下载。关闭可省磁盘与打包时间。">?</span>
         </span>
       </label>
 
-      <!-- 上传受体文件（.pdb / .ent / .cif / .pdbqt）：两种模式都保留；提交时 receptor_file 优先于 receptor -->
-      <div class="upload-block field-wide" id="receptor-upload-block">
+      <!-- 上传受体结构文件：两种模式都保留；提交时 receptor_file = 原始上传文件 -->
+      <div class="upload-block field-wide">
         <p class="field-label">上传受体文件（可选）
           <span class="tip-icon" tabindex="0" role="button" aria-label="上传受体说明"
-            data-tip-html="上传的受体文件会现场准备为 PDBQT，并<b>优先于</b>注册表受体（请求字段 <code>receptor_file</code> &gt; <code>receptor</code>）。<br>支持 .pdb / .ent / .pdb1 / .cif / .mmcif / .pdbqt，上限 200MB。">?</span>
+            data-tip-html="上传的结构文件<b>就是本次运行的受体</b>，运行时自动准备为对接可用的受体（请求字段 <code>receptor_file</code>）。<br><b>上传即等于显式指定受体</b>，此时无需再填「受体来源」。<br>支持常见结构文件，单文件上限 200MB。">?</span>
         </p>
         <input type="file" class="upload-input" id="receptor-file-input"
           accept=".pdb,.ent,.pdb1,.cif,.mmcif,.pdbqt" aria-label="选择受体文件">
         <div class="upload-zone" id="receptor-upload-zone" role="button" tabindex="0"
-          aria-label="拖拽或点击上传受体文件（.pdb / .ent / .pdbqt）">
+          aria-label="拖拽或点击上传受体文件">
           <span class="upload-zone-title">拖拽受体文件到此处，或点击选择</span>
-          <span class="upload-zone-sub mono">支持 .pdb / .ent / .cif / .pdbqt · 上限 200MB</span>
+          <span class="upload-zone-sub mono">支持常见结构文件 · 单文件上限 200MB</span>
         </div>
         <div class="upload-status" id="receptor-upload-status"></div>
       </div>

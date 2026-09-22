@@ -58,6 +58,11 @@ __pycache__/
 var/
 .uv-cache/
 .pytest_cache/
+# 覆盖率产物（COVERAGE=1 bash scripts/check.sh / CI 的 --cov）：只报告，不入库
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 docking-agent-local.tar.gz
 
 # 示例资产需要纳入版本管理（上面的 *.csv 规则会误伤）

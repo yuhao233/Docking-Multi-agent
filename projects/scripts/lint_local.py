@@ -37,29 +37,29 @@ BASELINE = PROJECT_ROOT / "scripts" / "lint_baseline.json"
 # 报告排版脚本是"一次性/按需运行"的工具脚本，行数偏大属可接受（写进豁免并留理由）
 SCRIPT_BIG_FILE_EXEMPT = {"scripts/build_report_docx.py"}
 BIG_FILE_EXEMPT = {
-    "src/docking_agent/api/app.py",
+    # api/app.py 原先 700+ 行（create_app 闭包注册 ~36 条路由），第 2 波已按
+    # routers/* + support.py + agent_flow.py 拆分（各自 < 700 行），故从本表删除。
     "src/docking_agent/core/docking.py",
     "src/docking_agent/core/pockets.py",
     "src/docking_agent/settings.py",
     "src/docking_agent/intake.py",
     "src/docking_agent/core/receptors.py",
-    # 报告模板与输入归一化：固定格式报告/多格式解析本就是长函数集合，
-    # 本轮新增「推荐排行/质子化溯源」两节后超过 700 行；拆分需单独一轮（见 README 待办）。
-    "src/docking_agent/reporting/report.py",
+    # 报告模板原先是一个 900+ 行的巨型函数，第 2 波已按「上下文 + 章节」拆成
+    # report_context / report_sections_setup / report_sections_results（各自 < 700 行），
+    # 因此 report.py 不再需要豁免（拆分后从本表删除，回归常规阈值）。
     "src/docking_agent/core/normalize.py",
     # 运行记录仓库：本轮加入「历史检索索引」与「被中断运行收尾」后超过 700 行；
     # 检索索引应拆到独立模块（core/run_index.py）是独立一轮的事，先登记豁免。
     "src/docking_agent/runs.py",
-    # 协调 Agent 的分发工具集合：P2-b 把 runtime 显式透传到每个工具（去掉隐式 ContextVar），
-    # 每个工具多出一行参数与一处 data bus 传参后超过 700 行；按角色拆模块是独立一轮的事。
-    "src/docking_agent/tools/dispatch.py",
 }
 # 允许直接读环境变量的位置（各有明确理由）：
-#   config.py       —— 环境变量读取的唯一底层实现
+#   envs.py         —— 环境变量读取的唯一底层实现（从 config.py 拆出，见 audit SCC-1）
+#   config.py       —— 运行时环境 bootstrap（MPLCONFIGDIR / 设置注入）
 #   settings.py     —— 设置覆盖层本身（要读 LOCAL_SETTINGS_PATH 与判断 env_priority）
 #   paths.py        —— 工作区根目录早于 config 可用（避免循环依赖）
 #   logging_setup.py —— 日志级别需要在配置完成前读取
 GETENV_WHITELIST = {
+    "src/docking_agent/envs.py",
     "src/docking_agent/config.py",
     "src/docking_agent/settings.py",
     "src/docking_agent/paths.py",

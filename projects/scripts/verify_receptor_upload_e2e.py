@@ -18,7 +18,8 @@
       抓取浏览器**实际发出的请求体**，断言含 `receptor_file` 且等于上传产物。
       （为不重复烧一次多 Agent 运行，仅对 `/api/agent/stream` 的**响应**做桩；
         请求体本身是页面真实构造并真实发出的。）
-  C3  回归：不带附件、不指定受体 → 仍走默认凝血酶，并在 notes 里明确写「未指定受体 ...」。
+  C3  回归：不带附件、不指定受体 → **受理层判 ask，零工具调用**（系统没有默认受体，
+      不会再回退凝血酶；必需项不齐就只提问）。
 
 用法：
     export PLAYWRIGHT_BROWSERS_PATH=$PWD/var/cache/ms-playwright
@@ -110,7 +111,6 @@ def verify_c1(base: str, timeout_sec: int = 3600) -> Optional[str]:
     print(f"         请求体 receptor_file={prepared}")
     run_id: Optional[str] = None
     start_request: Dict[str, Any] = {}
-    notes: List[str] = []
     t0 = time.time()
     with requests.post(f"{base}/api/agent/stream", json=payload, stream=True,
                        timeout=(30, timeout_sec)) as resp:
@@ -121,9 +121,7 @@ def verify_c1(base: str, timeout_sec: int = 3600) -> Optional[str]:
                 run_id = event.get("run_id")
                 start_request = event.get("request") or {}
             elif etype == "tool_result":
-                data = event.get("data")
-                if isinstance(data, dict) and data.get("notes"):
-                    notes = list(data["notes"])
+                pass          # notes 从 docking.json 读（下面的 all_notes），SSE 里那份不再收集
             elif etype == "error":
                 check(False, "运行过程中出现 error 事件", json.dumps(event, ensure_ascii=False)[:200])
             elif etype == "done":
@@ -243,31 +241,69 @@ def _capture_request(req: Any, sink: List[Dict[str, Any]]) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# C3：回归——不带附件、未指定受体仍走默认血栓素，且明确标注
+# C3：回归——不带附件、未指定受体 → 受理层判 ask，零工具调用
 # --------------------------------------------------------------------------- #
 def verify_c3(base: str) -> None:
-    """C3：未指定受体时，运行记录必须写明「未指定受体 → 默认凝血酶」。
+    """C3：未指定受体时**不执行任何计算**（零工具调用、无报告），多轮追问也不许替用户挑。
 
-    原实现走已下线的确定性流水线端点；现在改为读**最近一次真实运行**的记录
-    （由调用方在跑过 C1 之后调用），语义不变：只断言运行记录里的事实。
+    旧契约是「未指定 → 回退默认凝血酶并写 note」；用户已明确删除该回退，
+    现在是「必需项不齐 → 只提问」。这里发两次真实的对话运行来取证：
+      C3-a 首轮：受理结论必须是 `decision=ask`、`missing` 含 `receptor`，全程零工具调用；
+      C3-b 追问后：用户只回「好的，继续」时，**不得**把上一轮助手回复里的示例编号
+            （如提问文案里的 PDB 号 / UniProt accession）当成用户指定的受体。
     """
     import requests
+    import time as _time
 
-    print("\n--- C3 回归：未指定受体 → 默认凝血酶，且 notes 明确标注 ---")
-    rows = requests.get(f"{base}/api/runs", params={"limit": 20}, timeout=60).json()
-    runs = rows.get("runs") if isinstance(rows, dict) else rows
-    candidates = [r for r in (runs or []) if r.get("molecule_count")]
-    check(bool(candidates), "存在已完成且含分子的运行记录", f"{len(candidates or [])} 条")
-    hit = ""
-    for row in candidates[:10]:
-        detail = requests.get(f"{base}/api/runs/{row.get('run_id')}", timeout=120).json()
-        notes = " ".join((detail.get("result", {}).get("docking") or {}).get("notes") or [])
-        if notes:
-            hit = notes
-            break
-    check("未指定受体" in hit and "thrombin" in hit,
-          "notes 明确标注「未指定受体，已默认使用 凝血酶(thrombin, 1DWC)」",
-          next((n for n in hit.split("  ") if "未指定受体" in n), hit[:120]))
+    conversation = f"no-receptor-{int(_time.time())}"
+    print("\n--- C3 回归：未指定受体 → decision=ask，零工具调用（系统无默认受体）---")
+
+    def send(message: str) -> Dict[str, Any]:
+        payload = {"mode": "chat", "advanced": False, "message": message,
+                   "conversation_id": conversation}
+        task_spec: Dict[str, Any] = {}
+        calls: List[str] = []
+        docked = False
+        with requests.post(f"{base}/api/agent/stream", json=payload, stream=True,
+                           timeout=(30, 600)) as resp:
+            check(resp.status_code == 200, f"POST /api/agent/stream 已接受（{message[:12]}…）",
+                  f"HTTP {resp.status_code}")
+            for event in _sse_events(resp) if resp.status_code == 200 else []:
+                etype = event.get("type")
+                if etype == "start":
+                    task_spec = event.get("task_spec") or {}
+                elif etype == "tool_call":
+                    calls.append(str((event.get("data") or {}).get("tool")
+                                     or event.get("tool") or "?"))
+                elif etype == "tool_result":
+                    data = event.get("data")
+                    if isinstance(data, dict) and (data.get("receptors") or data.get("report")):
+                        docked = True
+                elif etype == "done":
+                    break
+        return {"task_spec": task_spec, "calls": calls, "docked": docked}
+
+    first = send("帮我筛这两个分子 CCO、CCN，未指定受体")
+    task_spec, tool_calls = first["task_spec"], first["calls"]
+    check(task_spec.get("decision") == "ask",
+          "首轮：未指定受体 → 受理层判 decision=ask", str(task_spec.get("decision")))
+    check("receptor" in (task_spec.get("missing") or []),
+          "missing 里如实列出 receptor",
+          json.dumps(task_spec.get("missing"), ensure_ascii=False))
+    check(not tool_calls, "零工具调用（不跑口袋分析 / 对接 / 报告）",
+          ",".join(tool_calls[:5]) or "（无）")
+    check(not first["docked"], "没有任何对接/报告产物")
+
+    second = send("好的，继续")
+    spec2 = second["task_spec"]
+    check(spec2.get("decision") == "ask",
+          "追问后仍未给出受体 → 仍判 decision=ask（不得继承助手回复里的示例编号）",
+          str(spec2.get("decision")))
+    check(not (spec2.get("receptor") or {}).get("name"),
+          "第二轮不得把助手提问里的示例编号当成用户指定的受体",
+          json.dumps(spec2.get("receptor"), ensure_ascii=False))
+    check(not second["calls"], "第二轮同样零工具调用",
+          ",".join(second["calls"][:5]) or "（无）")
 
 
 def main() -> int:

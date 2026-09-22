@@ -24,6 +24,8 @@ try {
 }
 
 const BASE = (process.argv[2] || 'http://127.0.0.1:5000').replace(/\/$/, '');
+/* 默认首页是简易模式；本脚本驱动的是高级模式（工作台 / 设置），因此固定走 /advanced */
+const ADVANCED = '/advanced';
 
 /* 场景结束会 `window.close()`，但页面里仍可能有未完成的异步续体（startRun 收尾的
  * loadRun → refreshHistory）。jsdom 关窗后 document 失效，这类续体会抛
@@ -124,7 +126,7 @@ function putSettings(settings) {
 }
 
 async function openPage(hash, storage) {
-  const dom = await JSDOM.fromURL(BASE + '/' + (hash || ''), {
+  const dom = await JSDOM.fromURL(BASE + ADVANCED + (hash || ''), {
     runScripts: 'dangerously',
     resources: 'usable',
     pretendToBeVisual: true,
@@ -242,7 +244,11 @@ async function runParallelScenario(dom, check, sleep) {
   const doc = window.document;
   const $ = (sel) => doc.querySelector(sel);
   stubAgentStream(window, parallelEvents(), Date.now());
-  // 参数模式恒为多 Agent（运行方式选择器已随流水线移除）；给一个有效分子库后点「开始运行」
+  // 参数模式恒为多 Agent（运行方式选择器已随流水线移除）；给受体来源与一个有效分子库后点「开始运行」
+  if ($('#receptor-source')) {
+    $('#receptor-source').value = '1DWC';
+    $('#receptor-source').dispatchEvent(new window.Event('input', { bubbles: true }));
+  }
   const ligands = $('#ligands-text');
   ligands.value = '乙醇:CCO';
   ligands.dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -312,6 +318,11 @@ async function runLiveMoleculesScenario(dom, check, sleep) {
   const doc = window.document;
   const $ = (sel) => doc.querySelector(sel);
   stubAgentStream(window, liveMoleculeEvents(), Date.now());
+  // 受体是必需项：先给出受体来源（没有预置受体下拉了），再给分子库
+  if ($('#receptor-source')) {
+    $('#receptor-source').value = '1DWC';
+    $('#receptor-source').dispatchEvent(new window.Event('input', { bubbles: true }));
+  }
   const ligands = $('#ligands-text');
   ligands.value = '乙醇:CCO';
   ligands.dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -584,12 +595,11 @@ async function runManualChoicesScenario(check, sleep) {
       status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
   };
 
-  // 参数模式要求选定受体：选第一个可用受体
-  const receptor = $('#receptor-select');
-  if (receptor) {
-    const values = Array.from(receptor.querySelectorAll('option'))
-      .map((o) => o.getAttribute('value')).filter((v) => v);
-    if (values.length) receptor.value = values[0];
+  // 参数模式要求指定受体来源（**没有**预置受体下拉了）：填一个 PDB 编号即可
+  const receptorSource = $('#receptor-source');
+  if (receptorSource) {
+    receptorSource.value = '1DWC';
+    receptorSource.dispatchEvent(new window.Event('input', { bubbles: true }));
   }
   $('#ligands-text').value = '代森锰锌';
   $('#ligands-text').dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -1185,21 +1195,14 @@ async function runChatAttachmentRequestScenario(check, sleep) {
     '② chip 悬停 title 里有完整路径（正文里没有）',
     (fileChips[0] ? String(fileChips[0].title) : '').slice(0, 80));
 
-  // ④ 长助手消息折叠：超过 N 行 → 有「展开/收起」，点一下能展开
+  // ④ 长助手消息**不再默认折叠**（用户要求）：全文直接显示、没有折叠按钮
 
   const foldBtn = doc.querySelector('.chat-msg.assistant .chat-fold-toggle');
-  check(!!foldBtn, '④ 长助手消息出现「展开」按钮（不再占满一屏）',
-    foldBtn ? foldBtn.textContent : '缺失');
   const foldBody = doc.querySelector('.chat-msg.assistant .chat-body.chat-fold');
-  check(!!foldBody, '④ 长助手正文默认处于折叠态（.chat-fold）');
-  if (foldBtn) {
-    check(foldBtn.textContent === '展开', '④ 折叠态按钮文案为「展开」', foldBtn.textContent);
-    foldBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    await sleep(30);
-    check(foldBtn.textContent === '收起'
-      && !doc.querySelector('.chat-msg.assistant .chat-body.chat-fold'),
-      '④ 点击后展开（按钮变「收起」、折叠类移除）', foldBtn.textContent);
-  }
+  const assistantBody = doc.querySelector('.chat-msg.assistant .chat-body');
+  check(!foldBtn && !foldBody, '④ 长助手正文默认全文显示（无折叠按钮 / 无 .chat-fold）');
+  check(!!assistantBody && (assistantBody.textContent || '').length > 800,
+    '④ 长正文确实很长但未被截断', assistantBody ? String(assistantBody.textContent.length) : '缺失');
   check(/开始运行 · 受体文件 .*pdb2gs3\.ent/.test(logText()),
     '运行日志显示「受体文件 <用户上传的原始文件>」', logText().slice(-160));
   check(logText().indexOf('受体 thrombin') < 0,
@@ -1207,10 +1210,11 @@ async function runChatAttachmentRequestScenario(check, sleep) {
   dom.window.close();
 }
 
-/* 场景：未指定受体时运行日志必须如实写「未指定受体（回退默认 thrombin）」；
-   用户点名注册表受体时才显示「受体 <名字>」。
- * 背景：AgentRequest.receptor 的 schema 默认值就是 "thrombin"，前端照抄 request.receptor
-   会把默认值当成用户指定（真实缺陷）。受理层用 task_spec.receptor.source 区分。 */
+/* 场景：未指定受体时运行日志必须如实写「未指定受体（系统无默认受体，需用户指定）」；
+   用户点名受体时才显示「受体 <名字>」。
+ * 背景：AgentRequest.receptor 曾经有 schema 默认值 "thrombin"，前端照抄 request.receptor
+   会把默认值当成用户指定（真实缺陷）。受理层用 task_spec.receptor.source 区分；
+   现在 schema 默认值已删除，且系统**没有**任何默认受体。 */
 async function runRunLogReceptorScenario(check, sleep) {
   const dom = await openPage('#chat');
   const { window } = dom;
@@ -1227,13 +1231,13 @@ async function runRunLogReceptorScenario(check, sleep) {
     round += 1;
     let body = {};
     try { body = JSON.parse((init && init.body) || '{}'); } catch (error) { body = {}; }
-    // 第 1 轮：用户什么都没指定（请求体里的 receptor 只是 schema 默认值 thrombin）
-    // 第 2 轮：用户点名了注册表受体 trypsin（source=user）
+    // 第 1 轮：用户什么都没指定（请求体里不携带任何受体字段）
+    // 第 2 轮：用户点名了受体 trypsin（source=user）
     const request = round === 1
-      ? { mode: 'chat', advanced: false, receptor: 'thrombin', engine: 'vina' }
+      ? { mode: 'chat', advanced: false, engine: 'vina' }
       : { mode: 'chat', advanced: true, receptor: 'trypsin', engine: 'vina' };
     const taskSpec = round === 1
-      ? { receptor: { name: 'thrombin', file: '', source: 'default' } }
+      ? { receptor: { name: '', file: '', source: 'default' } }
       : { receptor: { name: 'trypsin', file: '', source: 'user' } };
     const runId = 'E2E-LOG-' + round;
     const events = [
@@ -1273,8 +1277,8 @@ async function runRunLogReceptorScenario(check, sleep) {
   };
 
   const firstLog = await send('帮我筛这两个分子 CCO');
-  check(/开始运行 · 未指定受体（回退默认 thrombin）/.test(firstLog),
-    '未指定受体时日志写「未指定受体（回退默认 thrombin）」',
+  check(/开始运行 · 未指定受体（系统无默认受体，需用户指定）/.test(firstLog),
+    '未指定受体时日志如实写「未指定受体（系统无默认受体，需用户指定）」',
     (firstLog.match(/开始运行[^\n]*/) || [''])[0].slice(0, 90));
   check(firstLog.indexOf('受体 thrombin') < 0,
     '未指定受体时绝不显示成「受体 thrombin」（不再把 schema 默认值当用户指定）');
@@ -1307,7 +1311,11 @@ async function main() {
   const $$ = (sel) => Array.from(doc.querySelectorAll(sel));
 
   // 1) 导航栏与视图
-  check($$('#topnav .nav-btn').length === 2, '导航栏有两个页面入口');
+  // 顶栏：工作台 / 设置两个**视图按钮** + 一个指向独立页面的「简易模式」链接
+  // （`data-view` 是视图切换按钮的标记，链接没有它 —— 按它计数才不会把两套界面混为一谈）
+  check($$('#topnav .nav-btn[data-view]').length === 2, '导航栏有两个视图入口（工作台 / 设置）');
+  check($$('#topnav a.nav-btn[href="/"]').length === 1,
+        '导航栏提供默认首页「简易模式」的入口链接');
   check(doc.body.dataset.view === 'settings', 'URL hash #/settings 直接进入设置页', doc.body.dataset.view);
   check($('#view-settings').classList.contains('is-active'), '设置视图处于激活状态');
   check(!$('#view-workbench').classList.contains('is-active'), '工作台视图此时隐藏');
@@ -1394,7 +1402,11 @@ async function main() {
     const withPh = dom.window.collectParamForm();
     check(withPh.protonation === 'ph' && withPh.protonation_ph === 5.5,
       'ph 策略下目标 pH 随表单一起提交', JSON.stringify([withPh.protonation, withPh.protonation_ph]));
-    /* 校验要过「分子库非空」这一关，先给一个分子，才能单独验证 pH 规则 */
+    /* 校验要过「受体来源 + 分子库非空」两关，先给受体与一个分子，才能单独验证 pH 规则 */
+    if ($('#receptor-source')) {
+      $('#receptor-source').value = '1DWC';
+      $('#receptor-source').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    }
     $('#ligands-text').value = '乙醇:CCO';
     $('#ligands-text').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     check(dom.window.validateManualForm(dom.window.collectParamForm()) === null,
@@ -1410,6 +1422,10 @@ async function main() {
     $('#protonation-ph').value = '7.4';
     $('#ligands-text').value = '';
     $('#ligands-text').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    if ($('#receptor-source')) {
+      $('#receptor-source').value = '';
+      $('#receptor-source').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    }
     sel.value = 'neutralize';
     sel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   }
@@ -1610,8 +1626,30 @@ async function main() {
 
   clickTab('history');
   await waitFor('#history-tbody tr', 60);
-  /* 列表按时间倒序，最上面可能是「正在运行 / 已取消」的记录（没有 report/ranking 产物）。
-     这里显式挑一条已完成（[ OK ]）的记录来验证导出条契约；没有已完成记录时退回第一行。 */
+  /* 历史列表默认只显示最近 20 条，而工作区里可能**全是 0 分子的 no_op 运行**
+     （门禁/审计脚本自己也会产生运行记录）——那样"挑一条有分子数的已完成记录"会挑空，
+     导出条断言就会随机变红（此前正是这么脆）。这里先用 API 找一条**有分子数且已完成**
+     的运行，再用搜索框把它筛出来点开，使该场景不依赖环境里恰好有一条真跑过的运行。 */
+  let targetRunId = '';
+  try {
+    const listing = await api('/api/runs?limit=200');
+    const candidates = (listing.data && listing.data.runs) || [];
+    const hit = candidates.find((r) => (r.molecule_count || 0) > 0 && String(r.status) === 'ok');
+    if (hit) targetRunId = String(hit.run_id);
+  } catch (error) { /* 取不到候选就退回下面的启发式 */ }
+  if (targetRunId) {
+    const search = rdoc.querySelector('#history-q');
+    if (search) {
+      search.value = targetRunId;
+      search.dispatchEvent(new rwin.Event('input', { bubbles: true }));
+      for (let i = 0; i < 60; i += 1) {
+        if (rdoc.querySelector('#history-tbody tr[data-run-id="' + targetRunId + '"]')) break;
+        await sleep(150);
+      }
+      check(!!rdoc.querySelector('#history-tbody tr[data-run-id="' + targetRunId + '"]'),
+        '历史检索能把「有分子数的已完成运行」筛出来（导出条断言不依赖环境）', targetRunId);
+    }
+  }
   const historyRows = Array.from(rdoc.querySelectorAll('#history-tbody tr'));
   /* no_op 运行（受理层未受理，例如用户只说了句「你好」）状态同样是"完成"、分子数为 0、
      且没有 report/ranking 产物 → 导出条本来就该是禁用的，不能拿它验证导出契约。
@@ -1796,6 +1834,41 @@ async function main() {
       host.textContent);
   } else {
     check(false, 'data-tip-html 白名单函数可被调用（tipNodesFromHtml）');
+  }
+
+  /* 报告 Markdown 的 URL 方案白名单：四类绕过是审计实测出来的（大小写变体、
+     data:、vbscript:、图片分支零校验），必须逐条钉住 —— 旧实现只挡小写 javascript:。 */
+  if (typeof swin.renderInline === 'function') {
+    const md = (text) => swin.renderInline(text);
+    check(!/javascript:/i.test(md('[a](javascript:alert(1))')),
+      'XSS：小写 javascript: 被挡', md('[a](javascript:alert(1))'));
+    check(!/javascript:/i.test(md('[a](JaVaScRiPt:alert(1))')),
+      'XSS：混合大小写 JaVaScRiPt: 被挡（旧实现漏掉）', md('[a](JaVaScRiPt:alert(1))'));
+    check(!/href="data:/i.test(md('[a](data:text/html,x)')),
+      'XSS：data: 链接被挡（旧实现完全未过滤）', md('[a](data:text/html,x)'));
+    check(!/vbscript:/i.test(md('[a](vbscript:msgbox(1))')),
+      'XSS：vbscript: 被挡', md('[a](vbscript:msgbox(1))'));
+    check(!/javascript:/i.test(md('![a](javascript:alert(1))')),
+      'XSS：图片分支同样校验 scheme（旧实现零校验）', md('![a](javascript:alert(1))'));
+    check(md('[a](//evil.example/x)').indexOf('//evil.example') < 0,
+      'XSS：协议相对 //host 被挡', md('[a](//evil.example/x)'));
+    check(!/onmouseover="/.test(md('[a](x" onmouseover="alert(1))')),
+      'XSS：属性逃逸被转义', md('[a](x" onmouseover="alert(1))'));
+    check(md('[a](/api/runs/x/report.pdf)').indexOf('href="/api/runs/x/report.pdf"') >= 0,
+      '正常站内链接仍可用', md('[a](/api/runs/x/report.pdf)'));
+    check(md('![图](http://127.0.0.1:5001/files/a.png)')
+      .indexOf('src="http://127.0.0.1:5001/files/a.png"') >= 0,
+      '正常图片链接仍可用（报告里的绝对 URL）', md('![图](http://127.0.0.1:5001/files/a.png)'));
+  } else {
+    check(false, 'renderInline 可被调用（XSS 方案白名单）');
+  }
+  if (typeof swin.imageHtml === 'function' && typeof swin.installImageFallback === 'function') {
+    check(swin.imageHtml('/api/x.png', 'a').indexOf('onerror') < 0,
+      '图片降级不再用内联 onerror（CSP script-src self 兼容）', swin.imageHtml('/api/x.png', 'a').slice(0, 60));
+    check(typeof swin.safeUrl === 'function' && swin.safeUrl('javascript:alert(1)') === '#',
+      'safeUrl 是显式白名单（非法方案落到 #）', String(swin.safeUrl));
+  } else {
+    check(false, '图片降级已改为委托实现（installImageFallback）');
   }
   presetDom.window.close();
 

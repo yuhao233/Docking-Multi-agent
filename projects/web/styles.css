@@ -397,6 +397,8 @@ th[data-order="desc"] .sort-mark::after { content: "▼"; color: var(--accent); 
 .tag-skip { border-color: var(--st-skip-line); background: var(--st-skip-soft); color: var(--st-skip); }
 .tag-fail { border-color: var(--st-fail-line); background: var(--st-fail-soft); color: var(--st-fail); }
 .tag-cancel { border-color: var(--st-cancel-line); background: var(--st-cancel-soft); color: var(--st-cancel); }
+/* 「等用户点选」：不是成功也不是失败，用警示色提示需要人介入 */
+.tag-ask { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
 
 /* 徽标（类药性合格 / 缺失） */
 .badge {
@@ -1044,6 +1046,9 @@ input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); box-sh
   transition: transform var(--dur-fast) var(--ease), color var(--dur) var(--ease),
     background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
+/* 简易模式是独立页面，用 <a class="nav-btn"> 链接过去：去掉下划线、保持同样的悬停手感 */
+a.nav-btn { text-decoration: none; }
+a.nav-btn:hover { color: var(--text); background: var(--panel-2); transform: translateY(-1px); }
 .nav-btn:hover:not(.active) { color: var(--text); background: var(--panel-2); transform: translateY(-1px); }
 .nav-btn.active {
   border-color: var(--accent-line);
@@ -1307,7 +1312,7 @@ input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); box-sh
 .adv-hint { margin-top: var(--sp-2); }
 
 /* 对话模式下隐藏「手动受体」块（受体由指令 / 系统默认决定） */
-/* 对话模式：隐藏「注册表受体下拉 + 位点编辑」（受体由指令/系统默认决定）。
+/* 对话模式：隐藏「受体来源 + 位点编辑」（受体由指令决定）。
    运行参数块在对话模式下挂在 #chat-quick-params 里，因此类名加在 #param-common 上；
    旧选择器（.params-body.chat-mode）保留，避免历史样式/测试失效。 */
 .params-body.chat-mode .receptor-manual-block,
@@ -1352,6 +1357,10 @@ input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); box-sh
   overflow-wrap: anywhere;
 }
 .site-empty { color: var(--text-faint); font-size: var(--fs-sm); }
+
+/* 受体来源：自由文本输入，与其它 .field 输入同款；指引卡是长句，用正文行距别挤成一团 */
+#receptor-source { font-family: var(--font-mono); }
+#receptor-info #receptor-meta { line-height: 1.55; }
 
 /* 配体来源子页 */
 .source-pane { margin-top: var(--sp-2); min-width: 0; }
@@ -1857,29 +1866,38 @@ input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); box-sh
 }
 .chat-file[data-file-kind="receptor"] .chat-file-kind { color: var(--text); }
 
-/* 长助手消息折叠：超过阈值只显示一屏，按钮「展开 / 收起」 */
-.chat-body.chat-fold {
-  max-height: 22em;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(180deg, #000 76%, transparent);
-  mask-image: linear-gradient(180deg, #000 76%, transparent);
-}
-.chat-fold-toggle {
-  margin-top: var(--sp-1);
-  padding: 2px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
+/* 思考/推理：折叠进「思考」气泡（默认收起，只显示字数）——避免大段推理刷屏 */
+.chat-think { margin: 2px 0 8px; }
+.chat-think-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-xs);
   background: var(--panel-2);
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
+  color: var(--text-mute);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
-.chat-fold-toggle:hover {
-  color: var(--accent);
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
+.chat-think-toggle:hover { color: var(--text-dim); border-color: var(--border-strong); }
+.chat-think-toggle[aria-expanded="true"] { color: var(--accent); border-color: var(--accent-line); }
+.chat-think-caret { font-family: var(--font-mono); }
+.chat-think-count { color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2xs); }
+.chat-think-body {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-strong);
+  background: rgba(255, 255, 255, .015);
+  color: var(--text-mute);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  max-height: 260px;
+  overflow: auto;
 }
+
 /* 规范报告（report.md）块：与模型正文区分开，标题走等宽小字 + 强调色 */
 .chat-report {
   margin-top: var(--sp-3);

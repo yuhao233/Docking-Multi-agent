@@ -17,7 +17,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC = PROJECT_ROOT / "src"

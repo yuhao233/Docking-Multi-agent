@@ -358,7 +358,12 @@ def plain_text(text: str) -> str:
 # --------------------------------------------------------------------------- #
 # 插图映射（章节 → 图片）
 # --------------------------------------------------------------------------- #
-LATEST_RUN = "var/runs/20260916-085944-4688"   # 2026-09-16 最近一次含 3 分子 + 阳性对照的成功运行
+# 配图**入库**在 `docs/report-media/`（审计 3.5）：此前 13/13 张都指向被 gitignore 的
+# `var/` 运行产物，干净克隆上重跑生成器只会得到 13 个红色「［缺图］」占位符，
+# 而提交的 DOCX 里却有真图 —— 属于「产物无法从仓库复现」。
+# 图片是界面截图与报告图表的**副本**，与运行目录解耦；重新截图后用
+# `scripts/ui_shot.py` / `scripts/browser_check.py` 覆盖同名文件即可。
+# 缺图时生成器**默认拒绝出文档**（见 main 的 --allow-missing-figures）。
 
 
 @dataclass
@@ -371,33 +376,43 @@ class Figure:
 
 
 FIGURE_MAP: list[Figure] = [
-    Figure(r"^2\.\s*总体架构", 1, "var/tmp/shot/newchat.png",
+    Figure(r"^2\.\s*总体架构", 1, "docs/report-media/ui-workbench-chat.png",
            "工作台全貌（对话模式首屏：左「任务配置」、中「多 Agent 编排」实时编排图、下「执行区」）"),
-    Figure(r"^3\.1\s", 1, "var/diag/live_agent_running.png",
+    Figure(r"^3\.1\s", 1, "docs/report-media/ui-agent-running.png",
            "一次真实运行中的编排时间轴、实时分子结果与工具调用轨迹（SSE 推送渲染）"),
-    Figure(r"^4\.5\s", 1, "var/tmp/shot/chat-attached.png",
+    Figure(r"^4\.5\s", 1, "docs/report-media/ui-chat-attached.png",
            "对话模式下的附件上传与 @ 引用（点选附件后以同一 conversation_id 续问）"),
-    Figure(r"^7\.2\s", 1, "var/tmp/shot/newmanual.png",
+    Figure(r"^7\.2\s", 1, "docs/report-media/ui-manual-params.png",
            "参数模式：受体与对接盒（center / size）的显式指定；留空则走工具定盒"),
-    Figure(r"^7\.3\s", 1, "var/tmp/shot/more-params.png",
+    Figure(r"^7\.3\s", 1, "docs/report-media/ui-more-params.png",
            "「更多参数」面板：结合位点中心 X / Y / Z 的显式输入（留空即由口袋工具确定）"),
-    Figure(r"^8\.3\s", 1, "var/tmp/shot/preset.png",
+    Figure(r"^8\.3\s", 1, "docs/report-media/ui-exhaustiveness-preset.png",
            "搜索强度一键预设（快速初筛 / 平衡 / 高精度 / 恢复系统默认）与自动规划出的 EXHAUSTIVENESS: 24"),
-    Figure(r"^9\.\s*评估与报告", 1, f"{LATEST_RUN}/charts/docking_chart.png",
-           "对接亲和力对比图（含阳性对照；来源：实测运行 20260916-085944-4688）"),
-    Figure(r"^9\.1\s", 1, f"{LATEST_RUN}/charts/property_chart.png",
+    Figure(r"^9\.\s*评估与报告", 1, "docs/report-media/chart-docking.png",
+           "对接亲和力对比图（含阳性对照；来自实测运行 20260916-085944-4688 的报告产物）"),
+    Figure(r"^9\.1\s", 1, "docs/report-media/chart-property.png",
            "理化性质空间（横轴分子量、纵轴 logP、颜色/点大小 = 对接强度，虚线为 Lipinski 边界）"),
-    Figure(r"^9\.4\s", 1, "var/tmp/shot/pdfcover-1.png",
+    Figure(r"^9\.4\s", 1, "docs/report-media/ui-pdf-cover.png",
            "系统自动生成的 PDF 报告第 1 页：封面、工具版本、任务与参数（真实运行产物）"),
-    Figure(r"^9\.5\s", 1, f"{LATEST_RUN}/charts/structure_grid.png",
+    Figure(r"^9\.5\s", 1, "docs/report-media/chart-structure-grid.png",
            "候选分子结构网格（按对接亲和力排序，左一为阳性对照）"),
-    Figure(r"^9\.5\s", 2, f"{LATEST_RUN}/charts/affinity_histogram.png",
+    Figure(r"^9\.5\s", 2, "docs/report-media/chart-affinity-histogram.png",
            "亲和力分布直方图（绿色 / 紫色 / 红色虚线分别为均值、中位数与阳性对照）"),
-    Figure(r"^12\.3\s", 1, "var/tmp/report_media/settings_crop.png",
+    Figure(r"^12\.3\s", 1, "docs/report-media/ui-settings-crop.png",
            "设置页：模型与部署级参数（局部视图；含 API 地址与密钥的字段已裁去）"),
-    Figure(r"^12\.5\s", 1, "var/tmp/ui_baseline/run-detail.png",
+    Figure(r"^12\.5\s", 1, "docs/report-media/ui-run-detail.png",
            "运行详情页：阶段日志、结果总览与产物下载（报告 PDF / MD / CSV / 位姿 ZIP）"),
 ]
+
+
+def missing_figure_files(repo: Path, figures: list[Figure] | None = None) -> list[str]:
+    """返回 `FIGURE_MAP` 中在仓库里**不存在**的配图路径。
+
+    这是「干净克隆能否复现 DOCX/PDF」的判据：配图必须入库（`docs/report-media/`），
+    不能指向被 gitignore 的 `var/` 运行产物。缺图时 `main()` 默认拒绝出文档。
+    """
+    return [fig.path for fig in (figures if figures is not None else FIGURE_MAP)
+            if not (repo / fig.path).is_file()]
 
 
 def insert_figures(blocks: list[Block], figures: list[Figure], dry_run: bool = False) -> list[Block]:
@@ -1276,12 +1291,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-pdf", action="store_true", help="只生成 docx")
     ap.add_argument("--plain-toc", action="store_true", help="目录不用 TOC 域，改为静态目录")
     ap.add_argument("--dry-run", action="store_true", help="只打印插图位置，不生成文件")
+    ap.add_argument("--allow-missing-figures", action="store_true",
+                    help="配图缺失时仍出文档（会在正文里留下红色「［缺图］」占位符）")
     args = ap.parse_args(argv)
 
     md_path = Path(args.md)
     out_path = Path(args.out)
     md_text = md_path.read_text(encoding="utf-8")
     summary = extract_summary(md_text)
+
+    # 配图必须入库（docs/report-media/）：否则干净克隆上重跑只会得到「［缺图］」占位符，
+    # 而提交的 DOCX 里却有真图 —— 产物无法从仓库复现（审计 3.5）。
+    missing_files = missing_figure_files(REPO)
+    if missing_files and not args.allow_missing_figures:
+        print(f"❌ 配图缺失（{len(missing_files)}/{len(FIGURE_MAP)}）：{missing_files}", file=sys.stderr)
+        print("   请把配图提交到 docs/report-media/，或修 FIGURE_MAP 的路径；"
+              "确需出「带占位符」的文档时加 --allow-missing-figures。", file=sys.stderr)
+        return 2
 
     blocks = parse_markdown(md_text)
     attach_table_captions(blocks)
@@ -1320,14 +1346,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"   ⚠️ 缺图：{builder.missing_images}")
 
     # ---- PDF ----
+    outputs = [out_path]
     if not args.no_pdf:
         pdf = soffice_pdf(out_path, out_path.parent, work / "lo_profile")
         if pdf:
             print(f"✅ 生成 {pdf.relative_to(REPO)} ｜ {pdf_pages(pdf)} 页 ｜ "
                   f"{pdf.stat().st_size / 1024:.1f} KB")
+            outputs.append(pdf)
         else:
             print("   ⚠️ PDF 转换失败（可手动用 Word / LibreOffice 导出）")
+    _stamp_outputs(md_path, outputs)
     return 0
+
+
+def _stamp_outputs(source: Path, outputs: list[Path]) -> None:
+    """记录「产物 ← 源」的内容哈希（`docs/.generated.json`），供文档一致性测试校验。
+
+    源改了却忘记重出 PDF/DOCX 是真实发生过的事故：旧产物会被一起提交，
+    而 PDF 恰恰是评审最先读的形态。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from doc_stamp import write_stamp  # noqa: PLC0415
+
+    write_stamp(source.parent / ".generated.json", source, [p for p in outputs if p])
 
 
 def _blocks(md_text: str) -> list[Block]:

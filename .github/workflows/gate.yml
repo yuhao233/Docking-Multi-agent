@@ -1,0 +1,114 @@
+name: gate
+
+# 把项目里**已经写好但没人跑**的门禁接上自动化。
+#
+# 背景（2026-09-21 审计）：仓内有 4 套真实有效的门禁 —— pytest（本机全量 800+ 项）、
+# `scripts/lint_local.py`（手写 AST 检查 + 基线棘轮）、`scripts/check_web.py`（静态前端契约）、
+# `langgraph-deploy/scripts/check.sh`（部署自检）—— 但 `.github/workflows/` 一直是空的，
+# 于是安全回归、生成物陈旧、部署契约漂移都只能靠人记得跑。
+#
+# 两个 job：
+#   projects —— 静态门禁 + **离线/快**用例（跳过 engine 组，约 20 s）
+#   deploy   —— 部署包自检与部署层用例（editable 安装 projects，单一事实来源）
+#
+# 为什么跳过 engine 组：那批用例需要本机真实引擎（Vina / P2Rank / pdb2pqr / meeko）或
+# 完整工作区（pack.sh、doctor.sh 的能力矩阵）。托管 runner 上它们会失败或静默少跑，
+# 因此显式跳过而不是"看起来 800 全绿"。有引擎的机器请跑全量：
+#   cd projects && .venv/bin/python -m pytest -q          # 本机全量（约 6 min）
+#   cd projects && DOCKING_ENGINE_TESTS=0 ... pytest -q   # 与 CI 等价的快跑
+#
+# 本地等价命令（写这个文件时逐条跑过）：
+#   cd projects
+#   .venv/bin/python scripts/lint_local.py            # 通过（新增 0 项）
+#   .venv/bin/python scripts/check_web.py             # 239/239
+#   DOCKING_ENGINE_TESTS=0 .venv/bin/python -m pytest -q   # 563 passed, 248 skipped
+#   cd ../langgraph-deploy && bash scripts/check.sh && bash scripts/test.sh
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  projects:
+    name: projects（静态门禁 + 离线用例）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: projects/requirements-local.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r projects/requirements-local.txt pytest pytest-asyncio pytest-cov ruff mypy
+
+      - name: 静态门禁 —— lint（AST 检查 + 基线棘轮）
+        working-directory: projects
+        run: python scripts/lint_local.py
+
+      - name: 静态门禁 —— ruff（未定义名 / 未使用导入 / 重复定义）
+        working-directory: projects
+        run: python -m ruff check src/ scripts/ tests/
+
+      - name: 静态门禁 —— mypy（渐进白名单）
+        working-directory: projects
+        run: python -m mypy
+
+      - name: 静态门禁 —— 前端契约 + 安全姿态
+        working-directory: projects
+        run: python scripts/check_web.py
+
+      - name: 用例 —— 离线/快（跳过需要本机引擎的 engine 组）
+        working-directory: projects
+        env:
+          DOCKING_ENGINE_TESTS: "0"
+          MPLCONFIGDIR: ${{ github.workspace }}/projects/var/cache/matplotlib
+        run: |
+          python -m pytest -q --durations=15 \
+            --cov=docking_agent --cov-report=term-missing:skip-covered --cov-report=xml:coverage.xml
+
+      - name: 覆盖率报告（只报告，不设阈值）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: projects/coverage.xml
+          if-no-files-found: ignore
+
+  deploy:
+    name: langgraph-deploy（部署自检 + 部署层用例）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: 建部署 venv（editable 安装 projects，单一事实来源）
+        run: bash langgraph-deploy/scripts/install.sh
+
+      - name: 安装部署层测试依赖
+        run: uv pip install --python langgraph-deploy/.venv/bin/python pytest pytest-asyncio
+
+      - name: 部署自检 —— 依赖清单一致性 + 每张图真实加载
+        run: bash langgraph-deploy/scripts/check.sh
+
+      - name: 部署层用例
+        run: bash langgraph-deploy/scripts/test.sh

@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
 
 from docx import Document
-from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
@@ -349,6 +348,18 @@ def verify(pdf: Path) -> None:
 REPO_URL = "https://github.com/yuhao233/Docking-Multi-agent"
 
 
+def _stamp_outputs(source: Path, outputs: List[Path]) -> None:
+    """记录「产物 ← 源」的内容哈希（`docs/.generated.json`）。
+
+    供 `tests/test_docs_consistency.py` 校验产物是否与源同步 —— 源改了却忘记重出
+    PDF/DOCX 是真实发生过的事故（旧产物会被一起提交）。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from doc_stamp import write_stamp  # noqa: PLC0415
+
+    write_stamp(source.parent / ".generated.json", source, [p for p in outputs if p])
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="把技术文档渲染为 Word 与 PDF")
     parser.add_argument("--source", default=str(DEFAULT_SOURCE))
@@ -366,12 +377,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     build_docx(source, docx_path, title=title, subtitle=subtitle)
     print(f"  已生成 {docx_path}（{docx_path.stat().st_size // 1024} KB）")
     if args.no_pdf:
+        _stamp_outputs(source, [docx_path])
         return 0
     pdf = soffice_pdf(docx_path, source.parent)
     if pdf is None:
         print("  未生成 PDF（只保留 docx）")
+        _stamp_outputs(source, [docx_path])
         return 1
     verify(pdf)
+    _stamp_outputs(source, [docx_path, pdf])
     return 0
 
 

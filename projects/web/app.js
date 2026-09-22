@@ -45,7 +45,8 @@ const ORCH_TAG_TEXT = {
   ok: '[ OK ]',
   skip: '[ SKIP ]',
   fail: '[ FAIL ]',
-  cancel: '[ CANCEL ]'
+  cancel: '[ CANCEL ]',
+  ask: '[ ASK ]'
 };
 /* 确定性流水线：stage → 节点（import→协调 Agent、properties→属性评估…） */
 const ORCH_STAGE_NODE = {
@@ -70,14 +71,11 @@ const ORCH_TOOL_NODE = {
   binding_mode_analysis: 'binding',
   positive_control_similarity: 'binding',
   generate_screening_report: 'report',
-  import_molecule_library: 'coordinator',
-  list_known_receptors: 'coordinator'
+  import_molecule_library: 'coordinator'
 };
 
 const state = {
   health: null,
-  receptors: [],
-  defaultReceptor: '',
   libraries: [],
   positiveControl: '',
   ligandSource: 'text',
@@ -102,6 +100,9 @@ const state = {
      首次进入生成并写入 localStorage，刷新后继续聊；点「新对话」才换新 id。 */
   conversationId: '',
   running: false,
+  /* 本轮收到但**还没到模型输出结束**的候选：先缓冲，等本轮结束再挂出来
+     （用户反馈：模型还在输出时按钮就出现，提前点选会与进行中的运行抢跑） */
+  deferredChoices: [],
   /* stopping：已点击停止、正在等待后端取消确认（按钮显示「正在停止…」） */
   stopping: false,
   /* cancelled：本次运行已被取消（收到 cancelled 事件或 done.summary.status == cancelled） */
@@ -187,6 +188,7 @@ const state = {
   historyShown: 0,
   /* 对话历史 */
   chatMessages: [],
+  thinkingBuffer: '',
   chatSeq: 0,
   chatActiveId: null
 };
@@ -217,13 +219,10 @@ function clear(node) {
 function hide(node) { if (node) node.classList.add('hidden'); }
 function show(node) { if (node) node.classList.remove('hidden'); }
 
+/* Markdown 渲染与 HTML 转义**只有一份实现**：web/markdown.js（两套界面共用）。
+   这里保留同名薄封装，调用点与外部契约（`swin.renderInline` 等）不变。 */
 function escapeHtml(value) {
-  return String(value === undefined || value === null ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return window.DockingMarkdown.escapeHtml(value);
 }
 
 function isBlank(value) {
@@ -926,271 +925,51 @@ function createThrottled(handler, intervalMs) {
  * ------------------------------------------------------------------------ */
 
 /**
+ * URL 方案白名单：只放行站内相对路径、锚点与 http(s)。
+ *
+ * **为什么必须是白名单**：黑名单写法（例如只挡小写 `javascript:`）能被
+ * `JaVaScRiPt:`、`data:`、`vbscript:` 绕过 —— 报告 Markdown 一旦被外部内容影响，
+ * 就是可注入的存储型 XSS（真实漏洞，已用 node 复现四种绕过）。
+ * 报告里的图片来自 `/api/runs/.../artifacts/...` 或 `/files/...`，绝对 URL 是
+ * 生成期的 `http://127.0.0.1:<port>/...`，都在白名单内。
+ */
+function safeUrl(url) {
+  return window.DockingMarkdown.safeUrl(url);
+}
+
+/**
  * 报告里的内嵌图片：![alt](url) → 图片容器 + 原图链接 + 失败占位。
  * - 容器 max-width:100% + overflow:hidden（见 styles.css），大图绝不撑破布局；
  * - 图片本体 display:block、max-width:100%、loading=lazy/decoding=async；
  * - 点击在新标签打开原图（target=_blank + rel=noopener）；
- * - onerror 时隐藏图片并显示「图片加载失败」占位文案，不出现破图。
- * 注意：只通过内联 onerror 做降级（不引入任何外部依赖）。
+ * - 加载失败时隐藏图片并显示「图片加载失败」占位文案，不出现破图。
+ * 降级走 `installImageFallback()` 的**捕获阶段委托**，不用内联 onerror：
+ * 内联事件处理器会被 CSP 的 `script-src 'self'` 拦掉。
  */
 function imageHtml(url, alt) {
-  const safeUrl = escapeHtml(url);
-  const safeAlt = escapeHtml(alt || '图片');
-  const fallback = escapeHtml(alt ? ('图片加载失败：' + alt) : '图片加载失败（资源不可用）');
-  const onError = "this.style.display='none';var f=this.parentNode.querySelector('.md-img-fallback');if(f){f.hidden=false;}";
-  return '<span class="md-img-box">' +
-    '<a class="md-img-link" href="' + safeUrl + '" target="_blank" rel="noopener">' +
-    '<img class="md-img" src="' + safeUrl + '" alt="' + safeAlt + '" loading="lazy" decoding="async"' +
-    ' onerror="' + onError + '">' +
-    '<span class="md-img-fallback" hidden>' + fallback + '</span>' +
-    '</a></span>';
+  return window.DockingMarkdown.imageHtml(url, alt);
+}
+
+/** 图片加载失败降级（捕获阶段委托；`error` 不冒泡但会被捕获）。只需装一次。 */
+function installImageFallback(doc) {
+  return window.DockingMarkdown.installImageFallback(doc);
 }
 
 function renderInline(text) {
-  let out = escapeHtml(text);
-  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
-  /* 图片必须先于链接处理，否则 ![alt](url) 会被链接规则截成 !<a> */
-  out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;([^&]*)&quot;)?\)/g,
-    (match, alt, url) => imageHtml(url, alt));
-  /* 站内锚点链接：保持原有行为 */
-  out = out.replace(/\[([^\]]+)\]\((#[^)\s]*)\)/g, '<a href="$2">$1</a>');
-  /* 其它链接（报告里指向 run 产物等）：新标签打开 */
-  out = out.replace(/\[([^\]]+)\]\(((?!javascript:)[^)\s]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  return out;
-}
-
-function splitTableRow(line) {
-  let text = line.trim();
-  if (text.startsWith('|')) text = text.slice(1);
-  if (text.endsWith('|')) text = text.slice(0, -1);
-  const cells = [];
-  let current = '';
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === '\\' && text[i + 1] === '|') {
-      current += '|';
-      i += 1;
-    } else if (char === '|') {
-      cells.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  cells.push(current.trim());
-  return cells;
-}
-
-function isTableSeparator(line) {
-  if (!line || line.indexOf('-') === -1) return false;
-  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
-}
-
-function buildMarkdownTable(header, aligns, bodyRows) {
-  const wrap = el('div', 'table-wrap');
-  const table = el('table', 'md-table');
-  const thead = el('thead');
-  const headRow = el('tr');
-  header.forEach((cell, index) => {
-    const th = el('th');
-    th.innerHTML = renderInline(cell);
-    if (aligns[index]) th.style.textAlign = aligns[index];
-    headRow.appendChild(th);
-  });
-  thead.appendChild(headRow);
-  table.appendChild(thead);
-
-  const tbody = el('tbody');
-  bodyRows.forEach((cells) => {
-    const tr = el('tr');
-    const numeric = aligns.every((a) => !a) && cells.length > 1 &&
-      cells.slice(1).every((c) => c === '' || /^[-+]?[\d.,%eE\s]+$/.test(c));
-    cells.forEach((cell, index) => {
-      const td = el('td');
-      td.innerHTML = renderInline(cell);
-      if (aligns[index]) td.style.textAlign = aligns[index];
-      else if (numeric && index > 0) td.classList.add('md-num');
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  wrap.appendChild(table);
-  return wrap;
+  return window.DockingMarkdown.renderInline(text);
 }
 
 function renderMarkdown(markdown) {
-  const source = String(markdown || '');
-  const lines = source.split(/\r?\n/);
-  const root = el('div', 'md-root');
-  let i = 0;
+  return window.DockingMarkdown.renderMarkdown(markdown);
+}
 
-  const listStack = [];
-  const openList = (ordered) => {
-    const list = el(ordered ? 'ol' : 'ul');
-    const top = listStack[listStack.length - 1];
-    if (top) {
-      const host = top.lastElementChild || top;
-      host.appendChild(list);
-    } else {
-      root.appendChild(list);
-    }
-    listStack.push(list);
-  };
-  const closeList = () => {
-    listStack.forEach((list) => {
-      if (!list.childElementCount) list.remove();
-    });
-    listStack.length = 0;
-  };
+/* 报告抬头表（表 1）解析复用同一套表格切分规则 */
+function splitTableRow(line) {
+  return window.DockingMarkdown.splitTableRow(line);
+}
 
-  while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    // 代码块
-    if (/^```/.test(trimmed)) {
-      closeList();
-      const lang = trimmed.slice(3).trim();
-      const codeLines = [];
-      i += 1;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) {
-        codeLines.push(lines[i]);
-        i += 1;
-      }
-      i += 1;
-      const pre = el('pre');
-      const code = el('code');
-      if (lang) code.className = 'lang-' + lang.replace(/[^a-zA-Z0-9_-]/g, '');
-      code.textContent = codeLines.join('\n');
-      pre.appendChild(code);
-      root.appendChild(pre);
-      continue;
-    }
-
-    // 分隔线
-    if (/^\s*([-*_])\s*(\1\s*){2,}$/.test(line)) {
-      closeList();
-      root.appendChild(el('hr'));
-      i += 1;
-      continue;
-    }
-
-    // 空行
-    if (!trimmed) {
-      closeList();
-      i += 1;
-      continue;
-    }
-
-    // 标题
-    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
-    if (heading) {
-      closeList();
-      const level = Math.min(4, heading[1].length);
-      const node = el('h' + level);
-      node.innerHTML = renderInline(heading[2].replace(/\s*#+\s*$/, ''));
-      root.appendChild(node);
-      i += 1;
-      continue;
-    }
-
-    // 表格（当前行含 |，下一行是分隔行）
-    if (trimmed.indexOf('|') !== -1 && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
-      closeList();
-      const header = splitTableRow(line);
-      const aligns = splitTableRow(lines[i + 1]).map((cell) => {
-        const left = cell.startsWith(':');
-        const right = cell.endsWith(':');
-        if (left && right) return 'center';
-        if (right) return 'right';
-        if (left) return 'left';
-        return '';
-      });
-      i += 2;
-      const bodyRows = [];
-      while (i < lines.length && lines[i].trim() && lines[i].indexOf('|') !== -1) {
-        if (isTableSeparator(lines[i])) break;
-        bodyRows.push(splitTableRow(lines[i]));
-        i += 1;
-      }
-      // 统一列数，避免表格错位
-      const width = Math.max(header.length, aligns.length);
-      for (let r = 0; r < bodyRows.length; r += 1) {
-        while (bodyRows[r].length < width) bodyRows[r].push('');
-      }
-      root.appendChild(buildMarkdownTable(header, aligns, bodyRows));
-      continue;
-    }
-
-    // 引用
-    if (/^>\s?/.test(trimmed)) {
-      closeList();
-      const quoteLines = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-        quoteLines.push(lines[i].replace(/^\s*>\s?/, ''));
-        i += 1;
-      }
-      const quote = el('blockquote');
-      quote.innerHTML = quoteLines.map((text) => renderInline(text)).join('<br>');
-      root.appendChild(quote);
-      continue;
-    }
-
-    // 列表
-    const orderedMatch = /^(\s*)(\d{1,9})[.)]\s+(.*)$/.exec(line);
-    const bulletMatch = /^(\s*)[-*+]\s+(.*)$/.exec(line);
-    if (orderedMatch || bulletMatch) {
-      const ordered = Boolean(orderedMatch);
-      const content = ordered ? orderedMatch[3] : bulletMatch[2];
-      const top = listStack[listStack.length - 1];
-      if (!top || (ordered && top.tagName !== 'OL') || (!ordered && top.tagName !== 'UL')) {
-        if (listStack.length && top && top.childElementCount) {
-          // 同级列表类型切换：先关闭当前层
-          listStack.pop();
-        }
-        openList(ordered);
-      }
-      const current = listStack[listStack.length - 1];
-      const li = el('li');
-      li.innerHTML = renderInline(content);
-      current.appendChild(li);
-      i += 1;
-      continue;
-    }
-
-    // 段落
-    closeList();
-    const paragraphLines = [];
-    while (i < lines.length) {
-      const candidate = lines[i].trim();
-      if (!candidate) break;
-      if (/^(#{1,6})\s+/.test(candidate)) break;
-      if (/^```/.test(candidate)) break;
-      if (/^>\s?/.test(candidate)) break;
-      if (/^(\s*)(\d{1,9})[.)]\s+/.test(lines[i])) break;
-      if (/^(\s*)[-*+]\s+/.test(lines[i])) break;
-      if (/^\s*([-*_])\s*(\1\s*){2,}$/.test(lines[i])) break;
-      if (candidate.indexOf('|') !== -1 && isTableSeparator(candidate)) break;
-      paragraphLines.push(candidate);
-      i += 1;
-      if (i < lines.length && lines[i].indexOf('|') !== -1 && isTableSeparator(lines[i])) {
-        // 下一行可能是表格分隔行，结束段落以便表格解析
-        if (paragraphLines.length) { i -= 1; }
-        break;
-      }
-    }
-    if (!paragraphLines.length) { i += 1; continue; }
-    const p = el('p');
-    p.innerHTML = renderInline(paragraphLines.join(' '));
-    root.appendChild(p);
-  }
-
-  closeList();
-  return root;
+function isTableSeparator(line) {
+  return window.DockingMarkdown.isTableSeparator(line);
 }
 
 /* --------------------------------------------------------------------------
@@ -1313,18 +1092,7 @@ function siteValues(site) {
   };
 }
 
-function fillSite(receptor) {
-  const site = (receptor && receptor.site) || {};
-  const values = siteValues(site);
-  const pairs = [
-    ['center-x', values.cx], ['center-y', values.cy], ['center-z', values.cz],
-    ['size-x', values.sx], ['size-y', values.sy], ['size-z', values.sz]
-  ];
-  pairs.forEach(([id, value]) => { $(id).value = value === null ? '' : String(value); });
-  /* 来自注册表受体的自动填充：不算用户手填 */
-  state.siteTouched = false;
-  state.uploadSiteFilled = false;
-}
+
 
 function clearSite() {
   /* 清空位点盒 = 回到"自动定盒"：不再下发坐标 */
@@ -1335,75 +1103,8 @@ function clearSite() {
   state.uploadSiteFilled = false;
 }
 
-function currentReceptor() {
-  const key = $('receptor-select').value;
-  return state.receptors.find((item) => item.key === key) || null;
-}
-
-function renderReceptorInfo(receptor) {
-  const box = $('receptor-info');
-  clear(box);
-  if (!receptor) {
-    box.appendChild(el('p', 'site-empty', '尚未选择受体。'));
-    $('site-hint').textContent = '中心/尺寸留空时使用该受体注册的已知结合位点。';
-    return;
-  }
-  const site = receptor.site || {};
-  const values = siteValues(site);
-  const title = el('p', 'site-title', fmtText(receptor.name || receptor.key) +
-    (receptor.pdb ? '（PDB ' + receptor.pdb + '）' : ''));
-  box.appendChild(title);
-  if (receptor.protein) box.appendChild(el('p', 'site-desc', receptor.protein));
-  if (site.description) box.appendChild(el('p', 'site-desc', '结合位点：' + site.description));
-  if (site.source) box.appendChild(el('p', 'site-desc', '来源：' + site.source));
-  const centerText = [values.cx, values.cy, values.cz].map((v) => fmtNum(v, 2)).join(', ');
-  const sizeText = [values.sx, values.sy, values.sz].map((v) => fmtNum(v, 2)).join(', ');
-  box.appendChild(el('p', 'site-kv', 'center = [' + centerText + ']'));
-  box.appendChild(el('p', 'site-kv', 'size = [' + sizeText + ']'));
-  if (Array.isArray(site.residues) && site.residues.length) {
-    box.appendChild(el('p', 'site-kv', '关键残基：' + site.residues.join(', ')));
-  }
-  if (receptor.available === false) {
-    box.appendChild(el('p', 'site-desc', '⚠ 该受体的对接文件当前不可用。'));
-  }
-  $('site-hint').textContent = '已填入注册位点，可按需修改；留空则使用默认位点。';
-}
-
-async function loadReceptors() {
-  const select = $('receptor-select');
-  try {
-    const data = await getJson('/api/receptors');
-    state.receptors = Array.isArray(data.receptors) ? data.receptors : [];
-    state.defaultReceptor = data.default || (state.receptors[0] && state.receptors[0].key) || '';
-    clear(select);
-    if (!state.receptors.length) {
-      const option = el('option', null, '未找到可用受体');
-      option.value = '';
-      select.appendChild(option);
-      renderReceptorInfo(null);
-      setRunHint('后端未返回任何受体，请检查资产目录配置。', 'warn');
-      return;
-    }
-    state.receptors.forEach((receptor) => {
-      const option = el('option', null, fmtText(receptor.name || receptor.key) +
-        (receptor.pdb ? '  [' + receptor.pdb + ']' : '') +
-        (receptor.available === false ? '（不可用）' : ''));
-      option.value = receptor.key;
-      select.appendChild(option);
-    });
-    select.value = state.defaultReceptor;
-    const active = currentReceptor();
-    renderReceptorInfo(active);
-    fillSite(active);
-  } catch (error) {
-    clear(select);
-    const option = el('option', null, '受体加载失败');
-    option.value = '';
-    select.appendChild(option);
-    renderReceptorInfo(null);
-    setRunHint('加载受体列表失败：' + shortError(error), 'err');
-  }
-}
+/* 受体来源是自由文本（PDB 编号 / UniProt accession / 名称）或上传文件，
+   没有可查询的本地注册表；#receptor-info 是纯静态指引卡，绑定盒由口袋分析决定。 */
 
 /* --------------------------------------------------------------------------
  * 8. 示例分子库
@@ -1484,7 +1185,7 @@ async function loadLibraries() {
  * 8.5 文件上传（POST /api/uploads，见 docs/api.md 9.1）
  *   状态机：空(empty) → 上传中(uploading) → 成功(ok) / 失败(error)
  *   - 小分子：返回 path，提交时作为 molecule_file 下发；
- *   - 受体：后端现场准备为 PDBQT 并标定位点盒，提交时作为 receptor_file 下发（优先于 receptor）。
+ *   - 受体：后端现场准备为 PDBQT 并标定位点盒，提交时作为 receptor_file 下发（上传即指定受体）。
  *   仅用原生 XMLHttpRequest 以获取上传进度，不引入任何外部依赖。
  * ------------------------------------------------------------------------ */
 
@@ -1841,7 +1542,7 @@ async function handleUploadFile(kind, file) {
   }
 }
 
-/** 移除已上传文件：小分子切回「SMILES 文本」；受体回退到注册表受体 */
+/** 移除已上传文件：小分子切回「SMILES 文本」；受体回到「受体来源」填写值（未填则视为未指定） */
 function removeUpload(kind) {
   const slot = state.upload[kind];
   slot.seq += 1;
@@ -1863,9 +1564,9 @@ function removeUpload(kind) {
   if (state.uploadSiteFilled && !state.siteTouched) {
     clearSite();
     state.uploadSiteFilled = false;
-    setRunHint('已移除上传的受体文件，并清空由它自动填入的位点；运行将使用注册表受体。');
+    setRunHint('已移除上传的受体文件，并清空由它自动填入的位点；受体将按「受体来源」填写的内容解析。');
   } else {
-    setRunHint('已移除上传的受体文件；你手填的位点保持不变，运行将使用注册表受体。');
+    setRunHint('已移除上传的受体文件；你手填的位点保持不变，受体将按「受体来源」填写的内容解析。');
   }
 }
 
@@ -2005,7 +1706,9 @@ function setLigandSource(source) {
   const next = allowed.indexOf(source) === -1 ? 'text' : source;
   state.ligandSource = next;
   document.querySelectorAll('#ligand-source .seg-btn').forEach((button) => {
-    button.classList.toggle('active', button.dataset.source === next);
+    const active = button.dataset.source === next;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   $('pane-text').classList.toggle('hidden', next !== 'text');
   $('pane-upload').classList.toggle('hidden', next !== 'upload');
@@ -2091,10 +1794,11 @@ function receptorLogText(request, taskSpec) {
   if (source === 'named' || source === 'unresolved') {
     return name ? ('受体 ' + name + '（待在线解析，来源 ' + source + '）') : '受体来源待解析';
   }
-  if (source === 'default') return '未指定受体（回退默认 ' + (name || 'thrombin') + '）';
-  /* 没有 task_spec = 参数模式流水线：表单强制选了受体，request.receptor 即用户选择 */
+  if (source === 'default') return '未指定受体（系统无默认受体，需用户指定）';
+  /* 没有 task_spec = 参数模式流水线：表单要求必填受体，request.receptor 即用户输入；
+     用户没填时如实说「未指定」，绝不用任何内置默认受体名顶替。 */
   if (req.receptor) return '受体 ' + req.receptor;
-  return '未指定受体（回退默认 thrombin）';
+  return '受体未指定';
 }
 
 function handleStartEvent(data) {
@@ -2326,9 +2030,104 @@ const flushToken = createThrottled(() => {
   box.scrollTop = box.scrollHeight;
 }, 120);
 
+/**
+ * 思考/推理增量：**折叠进「思考」气泡**，绝不混进正文（避免大段推理刷屏）。
+ * 服务端把它单独下发（`thinking` 事件，标准面走 custom 帧），因此这里只负责收纳与展示。
+ */
+function handleThinkingEvent(data) {
+  const piece = pick(data, ['content', 'thinking', 'reasoning', 'text', 'delta'], '');
+  if (!piece) return;
+  state.thinkingBuffer += String(piece);
+  renderThinking(state.chatActiveId, state.thinkingBuffer, { live: true });
+}
+
+/** 正文开始到达：把还处于「思考中」的块收起（只在状态迁移时执行一次） */
+function finishThinking() {
+  const message = state.chatActiveId ? findChatMessage(state.chatActiveId) : null;
+  if (!message || !message.thinkingLive) return;
+  renderThinking(message.id, message.thinking, { live: false });
+}
+
+/**
+ * 思考块（气泡内、正文之前）。交互照市面通行做法：**推理流式期间展开可见**
+ * （`live=true`，标题「思考中」），**正文一开始就自动收起**成「思考 · N 字 · 用时 X 秒」，
+ * 任何时候点一下都能展开看推理全文。推理永不进正文。
+ */
+function renderThinking(messageId, text, opts) {
+  const message = messageId ? findChatMessage(messageId) : null;
+  if (!message) return;
+  const live = Boolean(opts && opts.live);
+  message.thinking = String(text || '');
+  message.thinkingLive = live;
+  const box = chatHistoryNode();
+  const bubble = box ? box.querySelector('[data-chat-bubble="' + messageId + '"]') : null;
+  if (!bubble) return;
+  let block = bubble.querySelector('.chat-think');
+  if (!message.thinking) {
+    if (block) block.remove();
+    return;
+  }
+  if (!block) {
+    block = el('div', 'chat-think');
+    message.thinkingStartedAt = Date.now();
+    const toggle = el('button', 'chat-think-toggle');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-expanded', String(live));
+    const caret = el('span', 'chat-think-caret', live ? '▾' : '▸');
+    const label = el('span', 'chat-think-label', live ? '思考中' : '思考');
+    const count = el('span', 'chat-think-count', '');
+    toggle.appendChild(caret);
+    toggle.appendChild(label);
+    toggle.appendChild(count);
+    const body = el('div', 'chat-think-body' + (live ? '' : ' hidden'));
+    block.appendChild(toggle);
+    block.appendChild(body);
+    toggle.addEventListener('click', () => {
+      const hidden = body.classList.toggle('hidden');
+      paintThinking(block, toggle, message);
+    });
+    // 思考块放在正文之前：先看结论，需要时再展开推理
+    bubble.insertBefore(block, bubble.querySelector('[data-chat-body="' + messageId + '"]'));
+  }
+  const body = block.querySelector('.chat-think-body');
+  const toggle = block.querySelector('.chat-think-toggle');
+  if (live) {
+    body.classList.remove('hidden');
+  } else if (body.classList.contains('hidden') === false && block.dataset.wasLive === '1') {
+    body.classList.add('hidden');
+  }
+  body.textContent = message.thinking;
+  block.dataset.wasLive = live ? '1' : '0';
+  paintThinking(block, toggle, message);
+  const stream = chatHistoryNode();
+  if (stream) stream.scrollTop = stream.scrollHeight;
+}
+
+/** 只更新思考块头部（展开态 / 文案 / 用时），正文内容由调用方写入 */
+function paintThinking(block, toggle, message) {
+  const body = block.querySelector('.chat-think-body');
+  const live = Boolean(message && message.thinkingLive);
+  const expanded = !body.classList.contains('hidden');
+  const chars = (body.textContent || '').replace(/\s/g, '').length;
+  const seconds = !live && message && message.thinkingStartedAt
+    ? Math.max(1, Math.round((Date.now() - message.thinkingStartedAt) / 1000)) : 0;
+  if (!live && message && seconds) message.thinkingSeconds = seconds;
+  const shown = seconds || (message && message.thinkingSeconds) || 0;
+  const bits = [chars ? (chars > 999 ? Math.round(chars / 1000) + 'k' : chars) + ' 字' : ''];
+  if (!live && shown) bits.push('用时 ' + shown + ' 秒');
+  const caret = block.querySelector('.chat-think-caret');
+  const label = block.querySelector('.chat-think-label');
+  const count = block.querySelector('.chat-think-count');
+  if (caret) caret.textContent = expanded ? '▾' : '▸';
+  if (label) label.textContent = live ? '思考中' : '思考';
+  if (count) count.textContent = bits.filter(Boolean).length ? ' · ' + bits.filter(Boolean).join(' · ') : '';
+  toggle.setAttribute('aria-expanded', String(expanded));
+}
+
 function handleTokenEvent(data) {
   const piece = pick(data, ['content', 'token', 'text', 'delta'], '');
   if (!piece) return;
+  finishThinking();
   state.tokenBuffer += String(piece);
   flushToken();
 }
@@ -2428,6 +2227,9 @@ async function handleEvent(data) {
     case 'token':
       handleTokenEvent(data);
       break;
+    case 'thinking':
+      handleThinkingEvent(data);
+      break;
     case 'tool_call':
       handleToolCallEvent(data);
       break;
@@ -2439,6 +2241,11 @@ async function handleEvent(data) {
       break;
     case 'choices':
       handleChoicesEvent(data);
+      break;
+    case 'limit':
+      /* 步数预算：系统自己放宽上限/收尾，只是如实告知（不弹问题、不阻塞运行） */
+      logLine(String(data.message || '已达步数上限，自动处理中'), 'stage');
+      setRunHint(String(data.message || '已达步数上限，自动处理中'), 'run');
       break;
     case 'final': {
       const content = pick(data, ['content', 'report_markdown', 'markdown'], '');
@@ -2491,7 +2298,10 @@ async function handleEvent(data) {
         orchSettle('ok');
         /* 状态 no_op = 受理层判定本次指令不是可执行任务、零工具调用：如实说「未执行计算」，
            不要说成「运行完成」（否则用户会以为跑了一次筛选）。 */
-        if (status === 'no_op') {
+        if (status === 'needs_user_input') {
+          logLine('等待用户在界面上点选' + (data.run_id ? ' · ' + data.run_id : '') +
+            '（受体/分子解析需要确认，未替用户决定）', 'cmd');
+        } else if (status === 'no_op') {
           logLine('本次未执行计算' + (data.run_id ? ' · ' + data.run_id : '') +
             '（受理层未受理该指令，未调用任何工具）', 'cmd');
         } else {
@@ -2556,7 +2366,12 @@ function appendChatMessage(role, text, status, chips, advanced, attachments) {
     attachments: Array.isArray(attachments) ? attachments.slice() : [],
     advanced: Boolean(advanced),
     notes: [],
+    thinking: '',
+    thinkingLive: false,
+    thinkingStartedAt: 0,
+    thinkingSeconds: 0,
     choices: [],
+    choiceNotes: {},
     choiceNote: ''
   });
   renderChatHistory();
@@ -2620,47 +2435,8 @@ function stripBareUrls(markdown) {
 }
 
 /* 长内容折叠：超过阈值才显示「展开 / 收起」，避免一屏被长工具回执占满 */
-const CHAT_FOLD_LINES = 24;
-const CHAT_FOLD_CHARS = 1800;
-
-/** 纯函数：文本是否需要折叠（便于单测） */
-function chatNeedsFold(text) {
-  const value = String(text || '');
-  if (value.length > CHAT_FOLD_CHARS) return true;
-  return value.split(/\r?\n/).length > CHAT_FOLD_LINES;
-}
-
-function makeChatFoldToggle(bubble, body) {
-  const button = el('button', 'chat-fold-toggle', '展开');
-  button.type = 'button';
-  button.setAttribute('aria-expanded', 'false');
-  button.addEventListener('click', () => {
-    const collapsed = body.classList.toggle('chat-fold');
-    button.textContent = collapsed ? '展开' : '收起';
-    button.setAttribute('aria-expanded', String(!collapsed));
-  });
-  bubble.appendChild(button);
-  return button;
-}
-
-/** 流式增长时同步折叠状态（正文在 setChatText/setChatMarkdown 里被就地替换） */
-function syncChatFold(messageId) {
-  const message = findChatMessage(messageId);
-  const box = chatHistoryNode();
-  if (!message || !box) return;
-  const bubble = box.querySelector('[data-chat-bubble="' + messageId + '"]');
-  const body = box.querySelector('[data-chat-body="' + messageId + '"]');
-  if (!bubble || !body) return;
-  const existing = bubble.querySelector('.chat-fold-toggle');
-  const need = chatNeedsFold(message.text);
-  if (need && !existing) {
-    body.classList.add('chat-fold');
-    makeChatFoldToggle(bubble, body);
-  } else if (!need && existing) {
-    existing.remove();
-    body.classList.remove('chat-fold');
-  }
-}
+/* 对话气泡**不再默认折叠**（用户要求）：助手回执与报告块一律全文显示。
+   曾经有 24 行 / 1800 字阈值 + 「展开」按钮，但它把最该被读到的结论藏在折叠线下面。 */
 
 function appendChatNote(note) {
   const message = state.chatActiveId ? findChatMessage(state.chatActiveId) : null;
@@ -2683,13 +2459,24 @@ function setChatText(id, text) {
   if (!message) return;
   message.text = String(text || '');
   message.rendered = false;
-  const body = chatHistoryNode().querySelector('[data-chat-text="' + id + '"]');
+  const box = chatHistoryNode();
+  const body = box ? box.querySelector('[data-chat-body="' + id + '"]') : null;
   if (body) {
-    body.textContent = message.text;
+    /* 流式阶段就按 Markdown 渲染：否则用户先看到的是一屏 `## / ** / |` 源码，
+       与市面主流对话产品的观感差距很大（报告定稿前的观感缺陷）。 */
+    let host = body.querySelector('[data-chat-text="' + id + '"]');
+    if (!host) {
+      clear(body);
+      body.classList.add('markdown');
+      host = el('div', 'chat-text');
+      host.setAttribute('data-chat-text', id);
+      body.appendChild(host);
+    }
+    clear(host);
+    host.appendChild(renderMarkdown(message.text));
     const stream = chatHistoryNode();
     if (stream) stream.scrollTop = stream.scrollHeight;
   }
-  syncChatFold(id);
 }
 
 function setChatMarkdown(id, markdown) {
@@ -2702,7 +2489,6 @@ function setChatMarkdown(id, markdown) {
   clear(host);
   host.classList.add('markdown');
   host.appendChild(renderMarkdown(message.text));
-  syncChatFold(id);
 }
 
 function setChatStatus(id, status) {
@@ -2731,6 +2517,29 @@ function renderChatHistory() {
     head.setAttribute('data-chat-status', message.id);
     bubble.appendChild(head);
 
+    if (message.role === 'assistant' && message.thinking) {
+      const block = el('div', 'chat-think');
+      const toggle = el('button', 'chat-think-toggle');
+      toggle.type = 'button';
+      toggle.setAttribute('aria-expanded', 'false');
+      const caret = el('span', 'chat-think-caret', '▸');
+      toggle.appendChild(caret);
+      toggle.appendChild(el('span', 'chat-think-label', '思考'));
+      const chars = message.thinking.replace(/\s/g, '').length;
+      const bits = [(chars > 999 ? Math.round(chars / 1000) + 'k' : chars) + ' 字'];
+      if (message.thinkingSeconds) bits.push('用时 ' + message.thinkingSeconds + ' 秒');
+      toggle.appendChild(el('span', 'chat-think-count', ' · ' + bits.join(' · ')));
+      const thinkBody = el('div', 'chat-think-body hidden', message.thinking);
+      toggle.addEventListener('click', () => {
+        const hidden = thinkBody.classList.toggle('hidden');
+        toggle.setAttribute('aria-expanded', String(!hidden));
+        caret.textContent = hidden ? '▸' : '▾';
+      });
+      block.appendChild(toggle);
+      block.appendChild(thinkBody);
+      bubble.appendChild(block);
+    }
+
     const body = el('div', 'chat-body');
     body.setAttribute('data-chat-body', message.id);
     /* 显示与传输分离：用户气泡只显示用户自己输入的文字；
@@ -2741,9 +2550,13 @@ function renderChatHistory() {
     const displayText = message.role === 'user'
       ? stripFileRefs(message.text)
       : stripBareUrls(message.text || '正在等待模型输出…');
-    if (message.role === 'assistant' && message.rendered) {
+    if (message.role === 'assistant') {
+      /* 助手正文一律 Markdown 渲染（含流式未定稿）：观感与定稿一致，重渲染不再回退成源码 */
       body.classList.add('markdown');
-      body.appendChild(renderMarkdown(displayText));
+      const host = el('div', 'chat-text');
+      host.setAttribute('data-chat-text', message.id);
+      host.appendChild(renderMarkdown(displayText));
+      body.appendChild(host);
     } else {
       const text = el('p', 'chat-text');
       text.setAttribute('data-chat-text', message.id);
@@ -2751,10 +2564,7 @@ function renderChatHistory() {
       body.appendChild(text);
     }
     bubble.appendChild(body);
-    if (chatNeedsFold(displayText)) {
-      body.classList.add('chat-fold');
-      makeChatFoldToggle(bubble, body);
-    }
+    /* 不再默认折叠：内容全部展开显示 */
 
     /* 规范化报告（report.md）：**唯一权威版**，运行结束后挂在气泡正文之后。
        模型自己的叙述与结论保留在上面（正文），两者不互相覆盖。 */
@@ -2766,10 +2576,6 @@ function renderChatHistory() {
       rbody.setAttribute('data-chat-report', message.id);
       rbody.appendChild(renderMarkdown(resolveReportImages(message.reportMarkdown)));
       report.appendChild(rbody);
-      if (chatNeedsFold(message.reportMarkdown)) {
-        rbody.classList.add('chat-fold');
-        makeChatFoldToggle(report, rbody);
-      }
       bubble.appendChild(report);
     }
 
@@ -2808,21 +2614,34 @@ function renderChatHistory() {
     /* 结构化选项：受体/分子解析不确定时，服务端把候选下发成 choices，
        这里渲染成可点按钮；点选后以同一 conversation_id 追问一句等价的话继续跑。 */
     if (message.role !== 'user' && message.choices && message.choices.length) {
-      const choices = el('div', 'chat-choices');
-      if (message.choiceNote) {
-        choices.appendChild(el('p', 'chat-choice-note', message.choiceNote));
-      }
+      /* **按 kind 分组**：受体 / 分子 / 阳性对照是三问，同一条气泡里可以同时挂着，
+         各带自己的备注。旧实现把整条气泡的候选取代成最后一组 → 先出现的问题按钮被覆盖。 */
+      const groups = [];
       message.choices.forEach((choice, index) => {
-        const button = el('button', 'chat-choice', choice.label || choice.value || '选项');
-        button.type = 'button';
-        button.setAttribute('data-choice-id', choice.id || ('choice-' + index));
-        button.setAttribute('data-choice-kind', choice.kind || '');
-        button.setAttribute('data-choice-value', choice.value || '');
-        if (choice.prompt || choice.value) button.title = choice.prompt || choice.value;
-        button.addEventListener('click', () => pickChatChoice(message.id, index));
-        choices.appendChild(button);
+        const groupKind = String((choice && choice.kind) || '');
+        let group = groups.filter((g) => g.kind === groupKind)[0];
+        if (!group) { group = { kind: groupKind, items: [] }; groups.push(group); }
+        group.items.push({ choice: choice, index: index });
       });
-      bubble.appendChild(choices);
+      groups.forEach((group) => {
+        const choices = el('div', 'chat-choices');
+        choices.setAttribute('data-choice-group', group.kind || 'other');
+        const note = (message.choiceNotes || {})[group.kind] || '';
+        if (note) choices.appendChild(el('p', 'chat-choice-note', note));
+        group.items.forEach((entry) => {
+          const choice = entry.choice;
+          const button = el('button', 'chat-choice', choice.label || choice.value || '选项');
+          button.type = 'button';
+          button.setAttribute('data-choice-id', choice.id || ('choice-' + entry.index));
+          button.setAttribute('data-choice-kind', choice.kind || '');
+          button.setAttribute('data-choice-value', choice.value || '');
+          if (choice.prompt || choice.value) button.title = choice.prompt || choice.value;
+          button.disabled = Boolean(state.running);
+          button.addEventListener('click', () => pickChatChoice(message.id, entry.index));
+          choices.appendChild(button);
+        });
+        bubble.appendChild(choices);
+      });
     }
 
     wrap.appendChild(bubble);
@@ -2846,9 +2665,15 @@ function renderChoicePanel() {
   if (!box || !list) return;
   const pending = state.pendingChoices || {};
   const items = Array.isArray(pending.items) ? pending.items : [];
+  const notes = pending.notes || {};
   box.classList.toggle('hidden', !items.length);
   clear(list);
-  if (note) note.textContent = items.length ? (pending.note || '点选后将以同一会话继续运行。') : '';
+  if (note) {
+    note.textContent = items.length
+      ? Object.keys(notes).map((key) => notes[key]).filter(Boolean).join(' ')
+        || '点选后将以同一会话继续运行。'
+      : '';
+  }
   items.forEach((choice, index) => {
     const button = el('button', 'chat-choice');
     button.type = 'button';
@@ -2857,6 +2682,7 @@ function renderChoicePanel() {
     button.appendChild(label);
     const detailText = choiceDetailText(choice.detail);
     if (detailText) button.appendChild(el('span', 'chat-choice-detail', detailText));
+    button.disabled = Boolean(state.running);
     button.addEventListener('click', () => { pickChoice(index); });
     list.appendChild(button);
   });
@@ -2887,14 +2713,20 @@ function choiceDetailText(detail) {
 function showChoices(choices, note, kind) {
   const items = Array.isArray(choices) ? choices.slice() : [];
   const useBubble = state.page === 'chat';
-  clearChoicesEverywhere();
+  const group = String(kind || (items[0] && items[0].kind) || '');
+  clearChoices(group);                 // 只替换同类问题，别的待答问题保留
   if (!items.length) return;
   if (useBubble) {
     if (!state.chatActiveId) state.chatActiveId = appendChatMessage('assistant', '', '请选择');
     const message = findChatMessage(state.chatActiveId);
     if (message) {
-      message.choices = items;
-      message.choiceNote = note || '';
+      /* 先摘掉同类问题的旧候选，再追加新的；**别的 kind 原样保留**（可以是另一个待答问题）。 */
+      message.choices = (message.choices || [])
+        .filter((c) => String((c && c.kind) || '') !== group)
+        .concat(items);
+      message.choiceNotes = message.choiceNotes || {};
+      if (note) message.choiceNotes[group] = note;
+      message.choiceNote = note || message.choiceNote || '';
       if (message.status === '运行中') message.status = '请选择';
       renderChatHistory();
       return;                       // 气泡承载成功：面板保持为空
@@ -2903,25 +2735,45 @@ function showChoices(choices, note, kind) {
   setPendingChoices(items, note, kind || (items[0] && items[0].kind));
 }
 
-/** 清空两个承载面（气泡上的候选 + 中栏面板） */
-function clearChoicesEverywhere() {
-  state.pendingChoices = null;
-  renderChoicePanel();
+/**
+ * 清掉**同一类**问题的候选（`kind` ∈ receptor | molecule | positive_control，各是一问）。
+ *
+ * 真实缺陷（用户反馈「配体选择问了两次 / 选了前一个，后面的选项不出来」）：原实现
+ * `clearChoicesEverywhere()` 把**所有**消息的候选一起清空 —— 于是新问题一到，用户
+ * 还没回答的旧问题按钮就消失了；运行中点了旧按钮又被 `startRun` 的 busy 判定静默丢掉。
+ * 现在只替换同类问题（同一问重发＝覆盖，符合直觉），`kind` 为空时才清全部。
+ */
+function clearChoices(kind) {
+  const target = String(kind || '');
+  const sameKind = (value) => !target || String(value || '') === target;
+  if (state.pendingChoices && sameKind(state.pendingChoices.kind)) {
+    state.pendingChoices = null;
+    renderChoicePanel();
+  }
   let touched = false;
   (state.chatMessages || []).forEach((message) => {
-    if (message && message.choices && message.choices.length) {
-      message.choices = [];
-      message.choiceNote = '';
-      touched = true;
-    }
+    if (!message || !message.choices || !message.choices.length) return;
+    const kept = target ? message.choices.filter((c) => !sameKind(c && c.kind)) : [];
+    if (kept.length === message.choices.length) return;
+    message.choices = kept;
+    if (!kept.length) message.choiceNote = '';
+    if (message.choiceNotes && target) delete message.choiceNotes[target];
+    touched = true;
   });
   if (touched) renderChatHistory();
 }
 
-/** 设置/清空待确认候选（SSE 事件与历史载入共用） */
+/** 设置/清空待确认候选（SSE 事件与历史载入共用）：按 kind 合并，多个问题互不覆盖 */
 function setPendingChoices(items, note, kind) {
   const list = Array.isArray(items) ? items.slice() : [];
-  state.pendingChoices = list.length ? { items: list, note: note || '', kind: kind || '' } : null;
+  const group = String(kind || (list[0] && list[0].kind) || '');
+  const current = state.pendingChoices || { items: [], notes: {} };
+  const kept = (current.items || []).filter((c) => String((c && c.kind) || '') !== group);
+  const merged = kept.concat(list);
+  const notes = Object.assign({}, current.notes || {});
+  if (note) notes[group] = note;
+  state.pendingChoices = merged.length
+    ? { items: merged, notes: notes, kind: group, note: notes[group] || '' } : null;
   renderChoicePanel();
 }
 
@@ -2937,15 +2789,31 @@ function pickChoice(index) {
  */
 function applyChoice(choice) {
   if (!choice) return;
+  /* 运行中点选必须**明确拒绝**：原实现先清空所有按钮、再被 startRun 的 busy 判定丢掉，
+     用户看到的是「点了没反应，后面的选项也不出来了」（真实反馈）。 */
+  if (state.running) {
+    setRunHint('本轮仍在运行：请等结束后再点选，或先点「停止」。', 'warn');
+    return;
+  }
   const text = String(choice.prompt || choice.value || choice.label || '');
   if (!text) return;
-  clearChoicesEverywhere();               // 气泡 + 面板一起清空，避免重复提交/残留
+  clearChoices(choice.kind || '');        // 只清被回答的这一问，避免重复提交/残留
   // 阳性对照类选择：把所选结构作为**请求字段**下发，而不是只留在文字里 ——
   // 否则后端读不到 positive_control（对照不会生效），共晶配体询问条件依旧成立 → 跑完又问一次。
   if (String(choice.kind || '') === 'positive_control') {
     state.pendingPositiveControl = String(choice.value || '');
     // 记录"用/不用"这一决定本身：报告正文要能单列一行追溯（后端 positive_control_decision）
     state.pendingPositiveControlDecision = choice.value ? 'use' : 'skip';
+  }
+  // 多组分/配位聚合物的「代表结构怎么取」：把**选中的 SMILES 与取法**作为请求字段下发。
+  // 真实缺陷（用户反馈「我选择了，但没有正常工作」）：只把选项 prompt 当普通消息发回去时，
+  // 配体侧会退回「按名称重新查询 → 又是多组分 → 再问一次」，且追问若丢了受体还会被判 ask。
+  if (String(choice.kind || '') === 'molecule') {
+    state.pendingMoleculeChoice = {
+      smiles: String(choice.value || ''),
+      decision: String((choice.detail && choice.detail.mode) || ''),
+      label: String(choice.label || '')
+    };
   }
   state.pendingMessage = text;
   logLine('已选择：' + (choice.label || text), 'cmd');
@@ -2963,7 +2831,8 @@ function applyChoice(choice) {
  */
 function statusLabel(status) {
   const map = { ok: 'ok', no_op: 'no_op', error: 'error', running: 'running',
-                interrupted: '已中断（进程重启）', cancelled: '已取消' };
+                needs_user_input: '等待用户选择', interrupted: '已中断（进程重启）',
+                cancelled: '已取消' };
   return map[String(status || '')] || fmtText(status);
 }
 
@@ -2971,10 +2840,22 @@ function statusLabel(status) {
 function handleChoicesEvent(data) {
   const choices = Array.isArray(data && data.choices) ? data.choices : [];
   if (!choices.length) return;
-  // 只挂一个面：对话模式用气泡，参数模式用中栏面板（此前两面同时渲染 → 用户看到两份）
-  showChoices(choices, (data && data.note) || '', choices[0] && choices[0].kind);
-  logLine('收到 ' + choices.length + ' 个候选可选项：请在'
-          + (state.page === 'chat' ? '助手气泡下方' : '中栏「需要你确认的选项」中') + '点选。', 'stage');
+  // **先缓冲、不立即渲染**：模型可能还在输出（后续还会追加结论/别的工具调用），
+  // 此刻挂出按钮会让用户在运行中途点选 —— 点选与进行中的运行抢跑，选择可能取不到。
+  const kind = String((choices[0] && choices[0].kind) || '');
+  state.deferredChoices = (state.deferredChoices || [])
+    .filter((item) => String(item.kind || '') !== kind)
+    .concat([{ choices: choices, note: (data && data.note) || '', kind: kind }]);
+  logLine('已生成 ' + choices.length + ' 个候选可选项（kind=' + (kind || '-')
+          + '）：本轮模型输出结束后挂出，请在界面上点选。', 'stage');
+}
+
+/** 本轮结束：把缓冲的候选挂出来（模型已经输出完了，此时点选才是安全的） */
+function flushDeferredChoices() {
+  const pending = Array.isArray(state.deferredChoices) ? state.deferredChoices.slice() : [];
+  state.deferredChoices = [];
+  if (!pending.length) return;
+  pending.forEach((item) => showChoices(item.choices || [], item.note || '', item.kind || ''));
 }
 
 /* 点选某个候选：清空按钮 → 把等价追问写进输入框 → 以同一 conversation_id 继续运行 */
@@ -2987,6 +2868,7 @@ function finishAssistant(status) {
   if (state.page !== 'chat' || !state.chatActiveId) return;
   const message = findChatMessage(state.chatActiveId);
   if (!message) return;
+  if (message.thinkingLive) renderThinking(message.id, message.thinking, { live: false });
   if (!message.rendered) {
     const fallback = state.tokenRendered.trim();
     setChatMarkdown(state.chatActiveId, fallback || '（本次运行没有产生文本输出，请查看下方工具调用轨迹与结果区。）');
@@ -3106,7 +2988,7 @@ function renderChatAttachments() {
     chip.title = (item.kind === 'receptor'
       ? ('受体文件：' + item.name + '（源文件 ' + item.path + '）'
          + '；开始运行时才准备为 PDBQT 并按目标 pH 处理受体质子化，提交时作为 receptor_file，'
-         + '优先于注册表受体')
+         + '即本次运行的受体')
       : ('小分子库：' + item.path + '；开始运行时才解析'));
     chip.appendChild(el('span', 'chat-attachment-name mono', item.name));
     chip.appendChild(el('span', 'chat-attachment-kind', item.kind === 'receptor' ? 'R' : 'L'));
@@ -3232,7 +3114,7 @@ function collectParamForm() {
   const center = ['center-x', 'center-y', 'center-z'].map((id) => toNumber($(id).value));
   const size = ['size-x', 'size-y', 'size-z'].map((id) => toNumber($(id).value));
   const form = {
-    receptor: $('receptor-select').value || '',
+    receptor: ($('receptor-source') ? $('receptor-source').value.trim() : ''),
     /* 提交**原始上传文件路径**：受体在运行阶段才准备（含目标 pH 质子化），
        上传时后端不做任何处理，因此这里不能再用 receptor_file（那是预览产物）。 */
     receptor_file: (state.upload.receptor.data && state.upload.receptor.data.path) || '',
@@ -3274,6 +3156,23 @@ function collectParamForm() {
   return form;
 }
 
+/** 用户点选带来的明确决定（阳性对照 / 分子代表结构）：一次性写进 payload。
+ *  与「附件派生字段」同理 —— 这是用户的显式选择，不能被 advanced=false 丢掉。 */
+function applyPendingChoices(payload) {
+  const control = state.pendingPositiveControl || '';
+  if (control) {
+    payload.positive_control = control;
+    payload.positive_control_decision = state.pendingPositiveControlDecision || 'use';
+  }
+  const molecule = state.pendingMoleculeChoice;
+  if (molecule && molecule.smiles) {
+    payload.molecule_choice = molecule.smiles;
+    payload.molecule_choice_decision = molecule.decision || '';
+    payload.molecule_choice_label = molecule.label || '';
+  }
+  return payload;
+}
+
 /** 构造请求体：决定 mode / advanced / message 与参数字段的组合方式 */
 function buildPayload(messageOverride) {
   // 由选项面板/气泡点选带入的阳性对照（一次性使用，取用后清空）
@@ -3296,6 +3195,7 @@ function buildPayload(messageOverride) {
       mode: 'chat', message: message, displayText: raw,
       attachments: chatMessageRefs(raw), advanced: false
     };
+    applyPendingChoices(payload);
     const form = collectParamForm();
     /* 对话模式的高级设置只作为「默认值」下发：未改动的项一律省略，不覆盖指令。
        上传的受体/分子库文件是明确意图，无条件发送（receptor_file / molecule_file）。 */
@@ -3362,11 +3262,7 @@ function buildPayload(messageOverride) {
   const payload = { params: params, paramChips: paramChips(form, params) };
   payload.mode = 'manual';                 // 表单参数为权威参数，由协调 Agent 执行
   if (message) payload.message = message;
-  if (controlOverride) {
-    payload.positive_control = controlOverride;
-    payload.params = { ...(payload.params || {}), positive_control: controlOverride };
-  }
-  if (controlDecision) payload.positive_control_decision = controlDecision;
+  applyPendingChoices(payload);
   payload.form = form;
   return payload;
 }
@@ -3429,8 +3325,7 @@ function manualParamChips(form, params) {
     chips.push('受体文件 ' + fileBaseName(sent.receptor_file) +
       (uploaded.file_name ? '（' + uploaded.file_name + '）' : ''));
   } else if (sent.receptor) {
-    const receptor = state.receptors.find((item) => item.key === sent.receptor);
-    chips.push('受体 ' + (receptor ? (receptor.name || receptor.key) : sent.receptor));
+    chips.push('受体 ' + sent.receptor);
   }
   if (form.ligandSource === 'text' && sent.ligands_text) {
     const count = parseLigandsText(sent.ligands_text).length;
@@ -3471,7 +3366,8 @@ function manualParamChips(form, params) {
 /** 参数模式下的必填校验（表单为权威参数） */
 function validateManualForm(form) {
   if (!form.receptor && !form.receptor_file) {
-    return '请先选择受体，或上传受体文件（.pdb / .pdbqt）。';
+    return '请指定受体：填写 PDB 编号（如 4HHB）/ UniProt accession（如 P08922）/ 受体名称，'
+      + '或上传受体结构文件。';
   }
   if (state.ligandSource === 'text' && !form.ligands_text) {
     return '请至少输入一个 SMILES 分子，或切换到「使用示例库」/「上传文件」。';
@@ -3518,6 +3414,10 @@ function validateChatAdvanced(form) {
 
 /** 附件派生字段：上传的受体/分子库是**明确的用户意图**，任何模式下都必须进请求体 */
 const ATTACHMENT_BODY_FIELDS = ['receptor_file', 'molecule_file'];
+/* 点选带来的明确决定：与附件一样**无条件下发**（后端据此跳过重新查询与二次询问） */
+const CHOICE_BODY_FIELDS = ['positive_control', 'positive_control_decision',
+                            'molecule_choice', 'molecule_choice_decision',
+                            'molecule_choice_label'];
 
 /**
  * 把 Payload 变成真正发给服务端的请求体。
@@ -3533,6 +3433,9 @@ function payloadToBody(payload) {
   const conversationId = state.conversationId || '';
   if (state.page === 'manual') {
     const body = Object.assign({}, payload.params);
+    CHOICE_BODY_FIELDS.forEach((field) => {
+      if (payload[field]) body[field] = payload[field];
+    });
     if (conversationId) body.conversation_id = conversationId;
     if (state.mode === 'agent') {
       body.mode = 'manual';
@@ -3553,6 +3456,9 @@ function payloadToBody(payload) {
   ATTACHMENT_BODY_FIELDS.forEach((field) => {
     if (params[field]) body[field] = params[field];
   });
+  CHOICE_BODY_FIELDS.forEach((field) => {
+    if (payload[field]) body[field] = payload[field];
+  });
   if (payload.advanced) Object.assign(body, params);
   return body;
 }
@@ -3569,6 +3475,7 @@ function resetExecution() {
   state.liveCount = 0;
   state.tokenBuffer = '';
   state.tokenRendered = '';
+  state.thinkingBuffer = '';
   state.serverElapsed = null;
   state.etaSec = null;
   state.cancelled = false;
@@ -3671,6 +3578,14 @@ function setRunDetailsOpen(open) {
 
 function setRunning(running) {
   state.running = running;
+  // 本轮结束（正常 / 取消 / 出错都走这里）→ 这时才把缓冲的候选挂出来，
+  // 且必须在 state.running 更新之后：候选按钮的可点性按运行态决定。
+  if (!running) flushDeferredChoices();
+  /* 候选按钮只在「没有运行在跑」时可点：运行中点选过去会被静默丢弃（真实反馈），
+     现在从交互上就禁止，跑完再由这里统一恢复可点。 */
+  document.querySelectorAll('.chat-choice').forEach((button) => {
+    button.disabled = Boolean(running);
+  });
   $('btn-start').disabled = running;
   const stop = $('btn-stop');
   const stopLabel = $('btn-stop-label');
@@ -3700,7 +3615,9 @@ function setRunning(running) {
 
 async function startRun(messageOverride) {
   if (state.running) return;
-  clearChoicesEverywhere();               // 新一轮开始：清掉上一轮的两处候选
+  state.deferredChoices = [];        // 新一轮：丢掉上一轮没来得及挂出的候选
+  /* 注意：这里**不能**清候选。历史缺陷：新一轮一开始就把上一轮（用户还没回答）的选项
+     一起清掉，于是「另一个问题的按钮凭空消失」。同类问题由服务端再次下发时按 kind 替换。 */
   state.pendingPositiveControl = state.pendingPositiveControl || '';
   resetRunViewForNewRun();                // 重置运行态：不再显示上一次的"已完成"
   const payload = buildPayload(messageOverride);
@@ -3783,6 +3700,10 @@ async function startRun(messageOverride) {
   state.controller = controller;
   state.runId = null;
   state.standardRunId = null;
+  // 点选带来的决定**只用一次**：已写进本次请求体，立即清空（否则之后的每条消息都会重复下发）
+  state.pendingPositiveControl = '';
+  state.pendingPositiveControlDecision = '';
+  state.pendingMoleculeChoice = null;
   setRunIdLabel('run_id —');
   logLine('正在请求 ' + url + '（标准 Agent Protocol，assistant=' + assistantId + '）…', 'cmd');
   if (estimate > LARGE_LIBRARY_THRESHOLD) {
@@ -5189,7 +5110,9 @@ async function copyReport() {
  * ------------------------------------------------------------------------ */
 function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.tab === name);
+    const active = btn.dataset.tab === name;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');   // 与视觉状态同步
   });
   document.querySelectorAll('.tab-pane').forEach((pane) => {
     pane.classList.toggle('active', pane.id === 'tab-' + name);
@@ -5502,8 +5425,10 @@ async function loadRun(runId, options) {
     // 实时刚跑完则保留最近 N 行；历史载入则不铺开全量，只提示去分页视图查看
     if (state.liveCount > 0) setLiveNote(state.ranking.total);
     else resetLiveTableForLoadedRun(state.ranking.total);
-    // 该运行当时停在"等待用户选择"时，把候选重新挂出来：刷新页面或换设备后依然可点选
+    // 该运行当时停在"等待用户选择"时，把候选重新挂出来：刷新页面或换设备后依然可点选。
+    // 先清空当前挂着的候选再按记录重挂：否则换了运行（或本轮已答完）会把旧问题留在界面上。
     const loadedRun = (payload && payload.run) || {};
+    clearChoices('');
     showChoices(loadedRun.choices || [], loadedRun.choices_note || '',
                 (loadedRun.choices || [{}])[0].kind || '');
     if (!opts.silent) setRunHint('已载入运行 ' + runId + '（结果按服务端分页展示）。');
@@ -5535,6 +5460,9 @@ function resetLiveTableForLoadedRun(total) {
  * ------------------------------------------------------------------------ */
 function historyRowNode(run) {
   const tr = el('tr', 'clickable');
+  /* 行上带 run_id：表格本身不显示 id，但门禁（scripts/ui_e2e.js）需要精确点到某一条 ——
+     没有这个属性就只能靠"猜第几行"，历史一变就假红。 */
+  tr.dataset.runId = String(run.run_id || '');
   tr.appendChild(el('td', 'mono', fmtTime(run.created_at)));
   tr.appendChild(el('td', null, run.kind === 'agent' ? '多 Agent' : (run.kind === 'pipeline' ? '旧流水线' : fmtText(run.kind))));
   tr.appendChild(el('td', null, fmtText(run.receptor_label || run.receptor)));
@@ -5550,7 +5478,8 @@ function historyRowNode(run) {
     : (status === 'running' ? 'run'
       : (status === 'cancelled' ? 'cancel'
         : (status === 'interrupted' ? 'cancel'
-          : (status === 'no_op' ? 'skip' : 'fail'))));
+          : (status === 'needs_user_input' ? 'ask'
+            : (status === 'no_op' ? 'skip' : 'fail')))));
   statusTd.appendChild(el('span', 'tag tag-' + statusKey, ORCH_TAG_TEXT[statusKey]));
   if (status) statusTd.appendChild(el('span', 'status-text', statusText));
   if (run.error) statusTd.title = String(run.error);
@@ -5959,8 +5888,8 @@ function syncProtonationFields() {
  * 不写任何配置文件，也不影响已上传的附件。
  */
 function restoreParamDefaults() {
-  $('receptor-select').value = '';
-  renderReceptorInfo(null);
+  /* 受体来源是用户必填项，恢复默认 = 清空，绝不用任何内置默认受体顶替 */
+  $('receptor-source').value = '';
   clearSite();
   $('ligands-text').value = '';
   $('molecule-file').value = '';
@@ -6066,7 +5995,7 @@ function mountParams(page) {
       if (rest && rest.parentElement !== host) host.appendChild(rest);
     }
   }
-  /* 对话模式：隐藏「注册表受体下拉 + 位点编辑」（受体由指令或系统默认值决定），
+  /* 对话模式：隐藏「受体来源 + 位点编辑」（受体由指令决定），
      但保留受体文件上传（上传是明确意图，只发送 receptor_file）。 */
   if (quick) quick.classList.toggle('chat-mode', page === 'chat');
   panel.classList.toggle('chat-mode', page === 'chat');   // 旧选择器兼容（.params-body.chat-mode）
@@ -6157,25 +6086,14 @@ function setPage(page) {
     : '参数模式：表单参数为权威参数，目标描述不会覆盖参数。');
 }
 
-function bindStaticEvents() {
-  // 受体
-  $('receptor-select').addEventListener('change', () => {
-    const receptor = currentReceptor();
-    renderReceptorInfo(receptor);
-    fillSite(receptor);
-  });
-  $('btn-fill-site').addEventListener('click', () => {
-    const receptor = currentReceptor();
-    if (!receptor) {
-      setRunHint('请先选择受体。', 'err');
-      return;
-    }
-    fillSite(receptor);
-    setRunHint('已填入注册位点。');
-  });
+/* bindStaticEvents 第 2 波已按功能拆成下面 9 个绑定函数（每个只做一件事，
+ * 便于单点修改与定位）；bindStaticEvents 只按顺序调用它们。 */
+/** 位点盒清空 + 配体来源切换（四选一）+ 示例库选择。 */
+function bindSiteAndLigandSource() {
+  // 位点盒：只能由用户手填 / 上传受体的位点盒填入，没有可自动预填的注册位点
   $('btn-clear-site').addEventListener('click', () => {
     clearSite();
-    setRunHint('已清空位点，运行时将使用受体默认位点。');
+    setRunHint('已清空位点，运行时将由口袋分析自动定盒。');
   });
 
   // 配体来源（四选一：SMILES 文本 / 上传文件 / 服务端路径 / 示例库）
@@ -6186,7 +6104,10 @@ function bindStaticEvents() {
     const library = state.libraries.find((item) => (item.id || item.path) === $('library-select').value);
     renderLibraryPreview(library || null);
   });
+}
 
+/** 文件上传区（点击 / 拖拽）与「位点被手改后不再自动覆盖」标记。 */
+function bindUploadZones() {
   // 文件上传：点击 / 拖拽，两种模式共用同一份上传区（参数面板在子页间移动挂载）
   setupDropzone($('ligand-upload-zone'), $('ligand-file-input'), 'ligand');
   setupDropzone($('receptor-upload-zone'), $('receptor-file-input'), 'receptor');
@@ -6200,7 +6121,10 @@ function bindStaticEvents() {
       state.uploadSiteFilled = false;
     });
   });
+}
 
+/** 参数面板：搜索强度自动、子页切换、hash 深链接、高级设置、工具提示、一键预设、手改标记。 */
+function bindParamPanel() {
   // 参数控件
   $('exhaustiveness').addEventListener('input', () => {
     syncExhaustivenessAuto();
@@ -6255,7 +6179,10 @@ function bindStaticEvents() {
     paramsPanel.addEventListener('input', onParamChange);
     paramsPanel.addEventListener('change', onParamChange);
   }
+}
 
+/** 对话输入：附件按钮 / @ 引用 / 拖拽上传 / Enter 发送。 */
+function bindChatComposer() {
   // 对话输入：Enter 发送 / Shift+Enter 换行
   /* 附件：按钮 → 文件选择 → 上传；支持拖拽；@ 唤起引用选择器 */
   const attachBtn = $('chat-attach-btn');
@@ -6320,7 +6247,10 @@ function bindStaticEvents() {
   });
   $('chat-send').addEventListener('click', () => { startRun(); });
   $('btn-chat-new').addEventListener('click', () => { startNewConversation(); });
+}
 
+/** 运行控制与结果页签：开始 / 停止 / 三栏折叠 / tab 切换。 */
+function bindRunControls() {
   // 参数模式恒为多 Agent 协作（表单参数为权威参数）：工具轨迹始终显示
   $('agent-box').classList.remove('hidden');
 
@@ -6336,7 +6266,10 @@ function bindStaticEvents() {
   document.querySelectorAll('.tab-btn').forEach((button) => {
     button.addEventListener('click', () => switchTab(button.dataset.tab));
   });
+}
 
+/** 结果表：表头排序、搜索、只看命中、分页、分子卡片分页、导出 CSV。 */
+function bindResultControls() {
   // 结果总览表头排序：走服务端 sort/order（全库排序，而非仅排当前页）
   document.querySelectorAll('#result-table thead th[data-key]').forEach((th) => {
     th.addEventListener('click', () => {
@@ -6424,7 +6357,10 @@ function bindStaticEvents() {
   $('btn-export-csv').addEventListener('click', (event) => {
     if (event.currentTarget.classList.contains('disabled')) event.preventDefault();
   });
+}
 
+/** 规模提示、阳性对照填入/清空、报告复制、位姿与整包下载。 */
+function bindReportActions() {
   // 大库规模提示（>500 个分子时给出小样本建议，但不阻止运行）
   $('ligands-text').addEventListener('input', () => { updateConfigInfoBar(); });
   $('max-ligands').addEventListener('input', () => { updateConfigInfoBar(); });
@@ -6456,7 +6392,10 @@ function bindStaticEvents() {
   $('btn-zip-all').addEventListener('click', (event) => {
     if (event.currentTarget.classList.contains('disabled')) event.preventDefault();
   });
+}
 
+/** 历史运行：刷新 / 检索 / 重置 / 翻页 / 展开更多。 */
+function bindHistoryControls() {
   // 历史
   $('btn-refresh-history').addEventListener('click', () => { refreshHistory(state.historyOffset || 0); });
   if ($('history-search')) $('history-search').addEventListener('click', () => { submitHistorySearch(); });
@@ -6483,11 +6422,26 @@ function bindStaticEvents() {
     state.historyShown += HISTORY_PAGE_SIZE;
     renderHistory();
   });
+}
 
+/** 窗口级脚本错误兜底提示。 */
+function bindGlobalErrorHint() {
   // 窗口错误兜底提示
   window.addEventListener('error', (event) => {
     if (event && event.message) logLine('页面脚本错误：' + event.message, 'err');
   });
+}
+
+function bindStaticEvents() {
+  bindSiteAndLigandSource();
+  bindUploadZones();
+  bindParamPanel();
+  bindChatComposer();
+  bindRunControls();
+  bindResultControls();
+  bindReportActions();
+  bindHistoryControls();
+  bindGlobalErrorHint();
 }
 
 /* ==========================================================================
@@ -7325,10 +7279,11 @@ function bindViewEvents() {
   }
 
   /* 谁被用户改过，谁才下发（未改动 = 自动/系统默认）。位点盒这类专家项同理：
-     手填坐标或点「填入上传位点」才算显式指定。 */
-  const INJECTABLE_IDS = ['engine-select', 'protonation-select', 'protonation-ph', 'n-poses',
-    'exhaustiveness', 'positive-control', 'pocket-engine-select', 'max-ligands', 'save-poses',
-    'center-x', 'center-y', 'center-z', 'size-x', 'size-y', 'size-z'];
+     手填坐标或点「填入上传位点」才算显式指定；受体来源始终必填，这里登记以便
+     手改时取消预设高亮并刷新摘要。 */
+  const INJECTABLE_IDS = ['receptor-source', 'engine-select', 'protonation-select', 'protonation-ph',
+    'n-poses', 'exhaustiveness', 'positive-control', 'pocket-engine-select', 'max-ligands',
+    'save-poses', 'center-x', 'center-y', 'center-z', 'size-x', 'size-y', 'size-z'];
   INJECTABLE_IDS.forEach((id) => {
     const node = $(id);
     if (!node) return;
@@ -7380,6 +7335,8 @@ async function init() {
   if (initialPage) state.page = initialPage;
   bindStaticEvents();
   bindViewEvents();
+  /* 报告图片的加载失败降级（捕获阶段委托；内联 onerror 会被 CSP 拦掉） */
+  installImageFallback(document);
   /* 会话 id：从 localStorage 恢复（刷新后继续同一段对话），没有则生成一个 */
   state.conversationId = loadConversationId();
   setConversationIdLabel();
@@ -7401,7 +7358,7 @@ async function init() {
   applyViewView(state.view);
   syncHash(state.page);
   syncViewHash(state.view);
-  await Promise.all([loadHealth(), loadReceptors(), loadLibraries(), loadSettings(true)]);
+  await Promise.all([loadHealth(), loadLibraries(), loadSettings(true)]);
   updateConfigInfoBar();
   updateExportLink();
   await refreshHistory();
