@@ -41,6 +41,7 @@ from docking_agent.core.normalize_io import (
     _inchikeys_in,
     _materialize,
     _mol_name,
+    _pick_field,
     _read_bytes,
     _record,
     _significant_lines,
@@ -191,8 +192,19 @@ def _parse_sdf(data: bytes, local: Optional[str], source_file: str,
             if not smiles:
                 skipped.append({"line": start, "reason": f"第 {idx} 条 SDF 记录无法生成规范 SMILES"})
                 continue
-            name = _mol_name(mol) or f"{name_prefix}{idx}"
-            records.append(_record(name, smiles, raw, source_file, idx))
+            # SDF 的附加字段（ID / CAS / MOLENAME / 编号…）：用户常要求"输出带上 ID 号"，
+            # 这些字段就写在 SDF 里，必须在这里取出来并一路带到排序表/CSV/报告。
+            try:
+                props = {str(k): str(v).strip() for k, v in (mol.GetPropsAsDict() or {}).items()
+                         if str(v).strip()}
+            except Exception:  # noqa: BLE001 - 取不到属性不影响分子本身
+                props = {}
+            id_override = _pick_field(props, ("ID", "Id", "id", "编号", "化合物编号", "CATALOG_ID"))
+            cas = _pick_field(props, ("CAS", "Cas", "cas", "CAS号", "CASRN", "CAS_NUMBER"))
+            name = (_mol_name(mol) or _pick_field(props, ("MOLENAME", "Name", "NAME", "名称"))
+                    or id_override or f"{name_prefix}{idx}")
+            records.append(_record(name, smiles, raw, source_file, idx,
+                                   id_override=id_override, fields=props, cas=cas))
     except Exception as exc:  # noqa: BLE001 - SDMolSupplier 对畸形文件可能抛异常
         skipped.append({"line": blocks[0][0] if blocks else 1,
                         "reason": f"SDF 读取异常：{exc}"})

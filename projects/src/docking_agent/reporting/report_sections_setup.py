@@ -324,14 +324,34 @@ def section_2_ranking(ctx: ReportContext) -> List[str]:
 
     L.append("### 2.1 主组排序")
     L.append("")
-    header = ["排名", "分子", "亲和力 (kcal/mol)", "Δ vs 对照 (kcal/mol)", "引擎", "搜索强度",
-              "分子量 (Da)", "logP", "TPSA (Å²)", "类药性", "相似度"]
+    # 输入文件里的附加信息（ID / CAS / 自定义字段）：只有**真的存在**才加列，
+    # 避免给没有这些信息的库排出空列（用户要求"输出带上 ID/CAS"，没有就如实留空）。
+    def _remark(m: Dict[str, Any]) -> str:
+        fields = m.get("fields") or {}
+        return "; ".join(f"{k}={v}" for k, v in fields.items()
+                         if str(k).upper() not in ("ID", "CAS", "MOLENAME", "NAME", "名称"))
+
+    show_id = any(str(m.get("id") or "").strip() and str(m.get("id")) != str(m.get("name"))
+                  for m in ctx.ranking)
+    show_cas = any(str(m.get("cas") or "").strip() for m in ctx.ranking)
+    show_remark = any(_remark(m) for m in ctx.ranking)
+    header = ["排名", "分子"]
+    for label, shown in (("ID", show_id), ("CAS", show_cas), ("备注", show_remark)):
+        if shown:
+            header.append(label)
+    header += ["亲和力 (kcal/mol)", "Δ vs 对照 (kcal/mol)", "引擎", "搜索强度",
+               "分子量 (Da)", "logP", "TPSA (Å²)", "类药性", "相似度"]
     rows: List[List[Any]] = []
     for i, m in enumerate(ctx.ranking, 1):
         aff = m.get("affinity_kcal_mol")
         delta = (round(aff - ctx.pc_aff, 2) if isinstance(aff, (int, float))
                  and isinstance(ctx.pc_aff, (int, float)) else None)
-        rows.append([i, m.get("name") or m.get("smiles"), _num(aff), _num(delta),
+        row = [i, m.get("name") or m.get("smiles")]
+        for value, shown in ((m.get("id"), show_id), (m.get("cas"), show_cas),
+                             (_remark(m), show_remark)):
+            if shown:
+                row.append(value or "—")
+        rows.append(row + [_num(aff), _num(delta),
                      m.get("engine") or "—", m.get("exhaustiveness") or "—",
                      _num(m.get("molecular_weight"), 2), _num(m.get("logP"), 2),
                      _num(m.get("tpsa"), 2),
@@ -339,9 +359,12 @@ def section_2_ranking(ctx: ReportContext) -> List[str]:
                      ("违例" if m.get("lipinski_violations") else "—"),
                      _num(m.get("similarity_to_positive_control"), 3)])
     if ctx.pc:
-        rows.append(["对照", ctx.pc.get("name") or "阳性对照", _num(ctx.pc_aff), "0.00",
-                     ctx.pc.get("engine") or "—", ctx.pc.get("exhaustiveness") or "—",
-                     "—", "—", "—", "—", "1.000"])
+        pad = ["" for label, shown in (("ID", show_id), ("CAS", show_cas), ("备注", show_remark))
+               if shown]
+        rows.append(["对照", ctx.pc.get("name") or "阳性对照"] + pad
+                    + [_num(ctx.pc_aff), "0.00",
+                       ctx.pc.get("engine") or "—", ctx.pc.get("exhaustiveness") or "—",
+                       "—", "—", "—", "—", "1.000"])
     L += ctx.table_block("候选分子对接结果（主组，按亲和力升序；对照行不参与排名）",
                          header, rows,
                          aligns=["r", "l", "r", "r", "c", "r", "r", "r", "r", "c", "r"])

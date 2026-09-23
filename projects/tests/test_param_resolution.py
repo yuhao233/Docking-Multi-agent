@@ -74,7 +74,11 @@ def _capture_dispatch(monkeypatch: pytest.MonkeyPatch, plan: Any) -> List[str]:
                         lambda agent, msg, **kw: seen.append(msg) or "{}")
     monkeypatch.setattr(dispatch, "get_docking_agent", lambda: object())
     monkeypatch.setattr(dispatch, "active_run",
-                        lambda runtime=None: SimpleNamespace(data={"param_plan": plan}))
+                        lambda runtime=None: SimpleNamespace(data={
+                            "param_plan": plan,
+                            # 前置条件：受体已确定（本用例只关心参数解析，但护栏会先检查）
+                            "task_spec": {"receptor": {"file": "/tmp/rec.pdb"}},
+                            "request": {"receptor_file": "/tmp/rec.pdb"}}))
     return seen
 
 

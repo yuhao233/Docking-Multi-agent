@@ -531,6 +531,22 @@ class ReportContext:
             parts.append(tag)
         return " · ".join(parts) or None
 
+    def agent_section_lines(self) -> List[str]:
+        """Agent 自定义小节（`customize_report` 的 `sections`）：结构固定、内容由 Agent 写。
+
+        用户要求"有格式的自由"：报告的骨架/表格由脚本保证口径与可复现，文字部分允许 Agent
+        按需追加小节（标题+正文，纯 Markdown 片段）。没写就不占章节。
+        """
+        spec = self.result.get("report_customization") or {}
+        lines: List[str] = []
+        for i, section in enumerate(spec.get("sections") or [], 1):
+            title = str((section or {}).get("title") or "").strip()
+            body = str((section or {}).get("body") or "").strip()
+            if not (title or body):
+                continue
+            lines += [f"### 8.{i} {title or '补充说明'}", "", body, ""]
+        return lines
+
     def param_plan_lines(self) -> List[str]:
         """「1.5 参数自动规划」：没有规划内容时返回空列表（不占章节）。"""
         if not _param_plan(self.result):

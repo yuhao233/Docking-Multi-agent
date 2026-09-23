@@ -154,8 +154,14 @@ def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "
             if canonical in seen:
                 continue
             seen.add(canonical)
-            name = str((m or {}).get("id") or (m or {}).get("name") or "").strip()
-            molecules.append({"id": name or canonical, "name": name or canonical, "smiles": canonical})
+            src = m or {}
+            name = str(src.get("id") or src.get("name") or "").strip()
+            # 来源文件的附加信息（SDF 的 ID/CAS/自定义字段）必须原样带走：用户要"输出带上 ID 号"，
+            # 这些字段只存在于输入记录里，重建字典时丢掉就再也找不回来了（真实缺陷 2026-09-24）。
+            extra = {k: src[k] for k in ("id", "cas", "fields", "source_file", "source_index")
+                     if src.get(k) not in (None, "", {})}
+            molecules.append({**extra, "id": name or canonical,
+                              "name": name or canonical, "smiles": canonical})
         board = active_blackboard(runtime)
         if board is not None:
             board.add_molecules(molecules)

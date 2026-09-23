@@ -11,7 +11,7 @@ from docking_agent.core.ranking import sort_by_affinity
 # （`box_group`：main=主组共用同一个盒子；large=跨度超出主盒、用同中心的更大盒子单独重跑）
 # `status` / `error`：成功行标 ok，失败/跳过行标 error 并写原因，绝不静默丢弃失败分子。
 CSV_FIELDS = [
-    "rank", "id", "name", "smiles", "affinity_kcal_mol", "engine", "exhaustiveness",
+    "rank", "id", "cas", "name", "remark", "smiles", "affinity_kcal_mol", "engine", "exhaustiveness",
     "box_group", "box_size",
     "seed", "seed_policy",
     "intermolecular_kcal_mol", "intramolecular_kcal_mol", "torsion_kcal_mol",
@@ -99,6 +99,10 @@ def build_ranking_csv(molecules: List[Dict[str, Any]], pos_control: Dict[str, An
     for i, m in enumerate(ordered, 1):
         row = {k: _fmt(m.get(k)) for k in CSV_FIELDS}
         row["rank"] = i
+        # 备注：来源文件里的其它字段（ID/CAS 以外的）拼成一栏，用户可直接看到自定义信息
+        fields = m.get("fields") or {}
+        row["remark"] = "; ".join(f"{k}={v}" for k, v in fields.items()
+                                  if str(k).upper() not in ("ID", "CAS", "MOLENAME", "NAME", "名称"))
         row["box_group"] = m.get("box_group") or "main"
         row["box_size"] = format_box_size(m.get("box_size"))
         prot = _protonation_of(m)

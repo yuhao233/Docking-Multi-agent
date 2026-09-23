@@ -276,6 +276,18 @@ def customize_report(spec_json: str = "", runtime: ToolRuntime[AgentContext] = N
             else:
                 accepted["title"] = title
 
+        sections = spec.get("sections") or []
+        if isinstance(sections, list) and sections:
+            clean_sections = []
+            for item in sections[:12]:            # 上限 12 节，避免报告被写爆
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()[:120]
+                body = str(item.get("body") or "").strip()[:4000]
+                if title or body:
+                    clean_sections.append({"title": title, "body": body})
+            if clean_sections:
+                accepted["sections"] = clean_sections
         columns = spec.get("extra_columns") or []
         if not isinstance(columns, list):
             rejected.append({"field": "extra_columns", "reason": "必须是数组"})

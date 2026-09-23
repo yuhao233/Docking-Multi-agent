@@ -30,6 +30,7 @@ from docking_agent.agents.dispatch import (
     run_docking,
     run_binding_mode_analysis,
 )
+from docking_agent.agents.tool_docs import tool_guide
 from docking_agent.tools.pose import analyze_pose_pocket
 from docking_agent.tools.recommend import customize_report, recommend_compounds, submit_recommendations
 from docking_agent.tools.report import generate_screening_report
@@ -76,6 +77,7 @@ def build_agent(ctx: Optional[Context] = None) -> Any:
             generate_screening_report,
             fetch_protein_structure,
             fetch_molecule_record,
+            tool_guide,          # 工具用法文档（随时可查，不占提示词）
         ],
         middleware=middleware,
         checkpointer=get_memory_saver(),

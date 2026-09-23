@@ -413,9 +413,11 @@ def main() -> int:
           "报告按定制输出：自定义标题 + 附加列 + 「0. 本次要求与响应」一节")
     check("def carry_identity" in dock_py and "IDENTITY_FIELDS" in dock_py,
           "分子 ID / 来源文件等字段一路带进对接、性质、排序与报告（不再只活在 molecules.json）")
-    check('"id"' in fields_py and '"id", "name", "smiles"' in
-          (PROJECT_ROOT / "src" / "docking_agent" / "reporting" / "tables.py").read_text(encoding="utf-8"),
-          "ranking.csv 含 id 列（用户要 ID 时可离线核对）")
+    csv_fields = (PROJECT_ROOT / "src" / "docking_agent" / "reporting" / "tables.py").read_text(
+        encoding="utf-8")
+    check('"id"' in fields_py and '"id"' in csv_fields and '"cas"' in csv_fields
+          and '"remark"' in csv_fields,
+          "ranking.csv 含 id / cas / 备注 列（用户要 ID/CAS/备注 时可离线核对）")
     check(".md-img-fallback[hidden]" in styles, "图片降级文案只在加载失败时出现")
 
     # 6.12) 前端与接口的安全姿态：URL 方案白名单 + 无内联 onerror + CSP + 同源校验 + id 白名单

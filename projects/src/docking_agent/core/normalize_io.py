@@ -199,6 +199,15 @@ def _canonical(mol: Any) -> str:
         return ""
 
 
+def _pick_field(props: Dict[str, Any], keys: Any) -> str:
+    """从来源文件字段里按候选键名取第一个非空值（键名大小写/中英文都试）。"""
+    for key in keys:
+        value = str((props or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _mol_name(mol: Any) -> str:
     for prop in ("_Name", "ID", "Name", "Title", "id", "name", "编号", "名称"):
         try:
@@ -322,7 +331,8 @@ def xlsx_to_csv_sheets(data: bytes, notes: List[str]) -> List[Tuple[str, str]]:
 
 
 def _record(id_: str, smiles: str, raw: str, source_file: str, source_index: int, *,
-            id_override: str = "") -> Dict[str, Any]:
+            id_override: str = "", fields: Optional[Dict[str, Any]] = None,
+            cas: str = "") -> Dict[str, Any]:
     """标准分子记录：默认 id 与 name 同值。
 
     `id_override`：表格文件里**单独有一列 ID**（如 `id,名称,smiles` 或 `编号,SMILES`）时，
@@ -330,7 +340,7 @@ def _record(id_: str, smiles: str, raw: str, source_file: str, source_index: int
     这个 ID 才是有信息量的（与名称不同）。
     """
     ident = str(id_override or "").strip() or id_
-    return {
+    record: Dict[str, Any] = {
         "id": ident,
         "name": id_,
         "smiles": smiles,
@@ -338,6 +348,13 @@ def _record(id_: str, smiles: str, raw: str, source_file: str, source_index: int
         "source_index": int(source_index),
         "raw": raw,
     }
+    # 来源文件里的**附加字段**（SDF 的 ID/CAS/编号等）原样带走：用户要"输出带上 ID/CAS"时，
+    # 这些字段是唯一来源，不能在这一层丢掉（此前只留 name/smiles，报告里就没有 ID 列）。
+    if cas:
+        record["cas"] = str(cas)
+    if fields:
+        record["fields"] = {str(k): str(v) for k, v in list(fields.items())[:20]}
+    return record
 
 
 def _materialize(data: bytes, inner_name: str) -> str:
@@ -507,6 +524,7 @@ __all__ = [
     "_looks_like_inchikey",
     "_materialize",
     "_mol_name",
+    "_pick_field",
     "_record",
     "_header_kind",
     "_significant_lines",

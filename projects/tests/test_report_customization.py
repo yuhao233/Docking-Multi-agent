@@ -81,7 +81,8 @@ def test_ranking_csv_has_id_columns() -> None:
     assert "id" in CSV_FIELDS and "source_index" in CSV_FIELDS and "source_file" in CSV_FIELDS
     csv_text = build_ranking_csv(_ranking(2), {})
     header = csv_text.splitlines()[0].split(",")
-    assert header[:3] == ["rank", "id", "name"], header[:4]
+    # 表头固定以 rank/id 开头，id 之后是 cas/name/remark（用户要"输出带上 ID/CAS/备注"）
+    assert header[:5] == ["rank", "id", "cas", "name", "remark"], header[:5]
     assert "PGR001" in csv_text
 
 

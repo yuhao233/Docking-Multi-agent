@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from langchain.tools import tool
 from docking_agent.runtime.context import (AgentContext, active_blackboard, active_run, request_value)
+from docking_agent.agents.guards import readiness_payload, unresolved_receptor_message
 from docking_agent.tools.schemas import CoordArray, floats_to_text
 from docking_agent.tools.molecule_paths import looks_like_molecule_path, resolve_molecule_file
 from docking_agent.paths import libraries_dir
@@ -92,102 +93,6 @@ def _normalization_digest(normalization: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def unresolved_receptor_message(run: Any = None) -> str:
-    """受理层判定「受体未指定 / 点名但无法解析」时返回给编排层的 JSON；否则返回空串。
-
-    产品底线：**计算对象不明确时绝不计算**。两种情形都在**任何对接/口袋计算被调用之前**拦下，
-    返回 `needs_user_input` 并请用户补充：
-      · `unresolved` —— 用户点名了受体但无法解析（真实缺陷：系统按「回退默认受体」继续对接，
-        计算对象被悄悄换成凝血酶，用户拿到的是答非所问的结果）；
-      · `default` —— 用户**根本没指定受体**。预置受体仅供内部测试，系统**没有**默认受体，
-        更不允许替用户挑一个靶点开跑。
-
-    `unresolved` 何时产生：不再由受理层预先判定，而是由
-    `tools/online.py::fetch_protein_structure` 在**真正在线检索过**之后写回
-    （`_mark_receptor_unresolved`）—— 也就是说，走到这里的每个 `unresolved` 都带着
-    真实的已尝试检索与候选清单。本护栏的判定逻辑与对外契约保持不变（只多回传这些证据）。
-    """
-    spec = (getattr(run, "data", None) or {}).get("task_spec") or {}
-    receptor = spec.get("receptor") or {}
-    source = str(receptor.get("source") or "")
-    if source == "default":
-        # 没有受体 = 没有计算对象。**不给任何预置受体候选**（它们只用于内部测试）。
-        return json.dumps({
-            "status": "needs_user_input",
-            "missing": ["receptor"],
-            "message": (
-                "受理层判定：用户**没有指定受体**（系统没有默认受体，也不会替用户挑靶点）。"
-                "**本次不执行任何计算**。请让用户三选一："
-                "① 提供 PDB 编号或 UniProt accession；"
-                "② 写出受体的基因名/蛋白名（中英文均可，系统会去在线数据库检索）；"
-                "③ 上传受体结构文件（.pdb/.cif/.pdbqt）。"
-                "在用户明确答复前，不要调用 run_pocket_analysis / run_docking。"
-            ),
-        }, ensure_ascii=False)
-    if source != "unresolved":
-        return ""
-    name = str(receptor.get("name") or "用户点名的受体")
-    resolution = receptor.get("resolution") or {}
-    if str(resolution.get("status") or "") == "input_invalid":
-        # 用户**给了**受体，但那份输入不可用（文件准备失败 / 名字认不出）：
-        # 措辞要给出真实原因与可选项，不能套用「你没给受体」那套说法。
-        detail = str(resolution.get("message") or resolution.get("reason") or "").strip()
-        return json.dumps({
-            "status": "needs_user_input",
-            "missing": ["receptor"],
-            "receptor": name,
-            "reason": str(resolution.get("reason") or "input_invalid"),
-            "message": (
-                f"受理层判定：用户提供的受体「{name}」**无法用于计算**。{detail}"
-                "**本次不执行任何计算**，也没有改用任何预置受体。"
-                "在用户给出可用的受体之前，不要调用 run_pocket_analysis / run_docking / "
-                "molecular_docking 重试。"
-            ),
-        }, ensure_ascii=False)
-    attempts = resolution.get("attempts") or []
-    candidates = resolution.get("candidates") or []
-    evidence = ""
-    if attempts:
-        lines = []
-        for item in attempts:
-            if isinstance(item, dict):
-                lines.append(f"[{item.get('strategy')}] {item.get('query')} → "
-                             f"{item.get('hits', 0)} 条命中")
-            else:
-                lines.append(str(item))
-        evidence += " 已尝试的检索：" + "；".join(lines) + "。"
-    if candidates:
-        rows = []
-        for c in candidates[:5]:
-            if not isinstance(c, dict):
-                continue
-            pdbs = c.get("pdb_ids") or []
-            rows.append(f"{c.get('accession')}（{c.get('organism')}，{c.get('protein')}，"
-                        f"结构来源 {'RCSB ' + '/'.join(pdbs[:2]) if pdbs else 'AlphaFold 预测'}，"
-                        f"打分 {c.get('score')}）")
-        if rows:
-            evidence += " 找到的候选：" + "；".join(rows) + " —— 请让用户从中选择。"
-    return json.dumps({
-        "status": "needs_user_input",
-        "receptor": name,
-        "attempts": attempts,
-        "candidates": candidates,
-        "message": (
-            f"受理层判定：用户点名了受体「{name}」，但无法解析"
-            "（不是 PDB 号、不是 UniProt accession、不是可检索的基因/蛋白名称，"
-            "也没有上传受体文件）。"
-            + evidence +
-            "**本次不执行任何对接计算**，也不得擅自改用系统默认受体。"
-            "请让用户三选一：① 提供 PDB 编号或 UniProt accession；"
-            "② 写出受体的基因名/蛋白名（中英文均可，系统会在线检索）；"
-            "③ 上传受体结构文件（.pdb/.ent/.cif/.pdbqt）。"
-            "在用户明确答复前，不要调用 run_docking / molecular_docking。"
-        ),
-    }, ensure_ascii=False)
-
-# 各子 Agent 返回 JSON 必须包含的关键字段（用于分发边界校验）
-# 子 Agent 返回 JSON 的必填字段。注意大库时工具只回传摘要（明细在产物里），
-# 因此这里接受「完整结构」与「摘要契约」两种形态。
 _REQUIRED_KEYS = {
     "property": ("assessment",),
     "pocket": ("pockets",),
@@ -523,8 +428,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     位点：site_center / site_size（数组 [x,y,z]，也接受 "31.5,13.74,24.36"）；
       留空 = 口袋分析 Agent 已提交的盒子（黑板）或由工具现场定盒。
     参数：exhaustiveness（**0=用受理层自动规划的运行级值**，显式给值才以你为准，同阶段必须一致）、
-      n_poses、engine（留空=跟随设置页「对接引擎（默认）」；可显式 auto/vina/autodock/external）、
-      save_poses、max_ligands（0=不限）。
+      n_poses、engine（留空=跟随设置页默认；可显式 auto/vina/autodock/external）、save_poses、max_ligands。
     keep_hetatm：要保留的非水杂原子残基名（如 'ZN,HEM'）。留空=标准流程剔除水与杂原子，
       被剔除的残基会出现在结果的 dropped_hetatm/notes 里；金属酶/辅因子体系判断重要后用本参数重跑。
     positive_control_smiles：一般不必传（工具会自动取本次运行的阳性对照并一并对接）。
@@ -541,7 +445,14 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     if guard:
         logger.info("拒绝对接：受理层判定用户点名的受体无法解析")
         return guard
-    # 阻断式询问未回答前连子 Agent 都不调度（真实故障 2026-09-23：白算 40 分钟）。
+    # **前置条件**（受体/位点/配体库/阳性对照）：缺任何一项都不开始计算 —— 规则在工具层，
+    # 不靠提示词求模型自觉（用户反复强调"先确定信息再来"）。
+    ready = readiness_payload(active_run(runtime), receptor_file=receptor_file,
+                              receptor_sources=receptor_sources,
+                              site_center=_coords(site_center), site_size=_coords(site_size))
+    if ready:
+        logger.info("拒绝对接：前置条件未满足")
+        return ready
     from docking_agent.tools.choices import blocking_choice_pending  # noqa: PLC0415
     if blocking_choice_pending("positive_control", runtime=runtime):
         logger.info("拒绝对接：等用户点选共晶配体阳性对照")
@@ -556,7 +467,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     run = active_run(runtime)
     plan = (getattr(run, "data", None) or {}).get("param_plan") or {}
     planned_exh = resolve_exhaustiveness(exhaustiveness, plan)
-    # 引擎：显式参数 > 运行请求（表单）> 设置页默认；留空不再等价于硬编码 auto。
+    # 引擎：显式参数 > 运行请求 > 设置页默认
     engine = resolve_engine(engine, (getattr(run, "data", None) or {}).get("request") or {})
     try:
         explicit_exh = int(exhaustiveness or 0) > 0

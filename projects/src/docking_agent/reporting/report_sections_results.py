@@ -441,6 +441,8 @@ def section_8_conclusions(ctx: ReportContext) -> List[str]:
         if ctx.stats["failed"] or ctx.stats["skipped"]:
             L.append(f"4. 本次有 {ctx.stats['failed'] + ctx.stats['skipped']} 个分子未获得有效分数"
                      "（见第 7 节），在评估覆盖度时需计入，必要时修正输入或重跑。")
+    # Agent 自定义小节（customize_report 的 sections）：结构由脚本定，内容由 Agent 写
+    L += ctx.agent_section_lines()
     L.append("")
     return L
 

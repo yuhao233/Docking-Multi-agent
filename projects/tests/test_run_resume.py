@@ -97,10 +97,12 @@ def test_choice_answer_resumes_the_same_run(client: TestClient,
         after = {p.name for p in store.root.iterdir() if p.is_dir()}
         assert after - before == set(), f"续跑不该新建运行目录：{sorted(after - before)}"
 
-        assert stub.payloads and stub.payloads[0] is None, (
-            "续跑必须以 None 入参从 checkpoint 继续，而不是新起一次消息流")
-        injected = " ".join(str(getattr(m, "content", "")) for m in stub.injected)
-        assert "阳性对照" in injected, f"用户的答案必须注入线程：{stub.injected}"
+        # 续跑必须**真的把图跑起来**（真实故障 20260924-013514-2617：暂停后图的 next 已空，
+        # 用 astream(None) 不会触发任何节点，运行 1 秒就"完成"）
+        assert stub.payloads, "续跑没有把图跑起来"
+        payload = stub.payloads[0]
+        text = json.dumps(payload, ensure_ascii=False, default=str) if payload else ""
+        assert "阳性对照" in text, f"续跑的图输入必须带上用户答案：{text[:200]}"
 
         resumed = store.load(run.id)
         assert resumed is not None

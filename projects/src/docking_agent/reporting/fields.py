@@ -9,6 +9,8 @@ from typing import Dict
 
 REPORT_FIELD_LABELS: Dict[str, str] = {
     "id": "分子 ID",
+    "cas": "CAS 号",
+    "remark": "备注",
     "name": "分子",
     "smiles": "SMILES",
     "formula": "分子式",
