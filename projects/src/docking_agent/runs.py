@@ -355,6 +355,23 @@ class RunStore:
     def exists(self, run_id: str) -> bool:
         return (self.root / run_id / RUN_META).is_file()
 
+    def delete(self, run_id: str) -> bool:
+        """删除一条运行记录（整棵运行目录）。不存在返回 False；非法 id 抛 ValueError。
+
+        用途有两类：① 门禁脚本清理**自己创建**的运行记录（`scripts/ui_e2e.js` /
+        `scripts/browser_check.py` 每跑一次会真实创建十几条，长期会挤满用户的历史列表）；
+        ② 界面/接口按需删除。删除后索引签名（目录数 / mtime）自变，检索自动重建。
+        """
+        rid = safe_run_component(run_id)
+        target = self.root / rid
+        if not target.is_dir():
+            return False
+        shutil.rmtree(target)
+        self._index_cache = None
+        self._index_signature = None
+        logger.info("已删除运行记录：%s", rid)
+        return True
+
     def meta(self, run_id: str) -> Optional[Dict[str, Any]]:
         meta_path = self.root / run_id / RUN_META
         if not meta_path.is_file():

@@ -317,3 +317,27 @@ def test_chat_advanced_opens_but_untouched_sends_no_params() -> None:
     assert "自动（按库柔性/盒体积规划" in msg, msg[:400]
     assert "已知结合位点：**未指定坐标**" in msg
     assert "阳性对照：未提供" in msg
+
+
+def test_run_delete_endpoint_removes_the_record(client) -> None:
+    """`DELETE /api/runs/{id}`：门禁脚本用它清理自己创建的运行记录。
+
+    真实困扰（2026-09-23）：ui_e2e / browser_check 每跑一次会真实创建十几条运行记录，
+    长期把用户的历史列表挤满（当时 5534 条里绝大多数是夹具运行）。删除接口让门禁能自清理。
+    """
+    from docking_agent.runs import get_run_store
+
+    store = get_run_store()
+    run = store.new("agent", {"message": "门禁自清理用例"})
+    run.save()
+    assert store.exists(run.id)
+
+    resp = client.delete(f"/api/runs/{run.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["run_id"] == run.id
+    assert not store.exists(run.id), "删除后运行目录必须真的消失"
+    ids = {str(r.get("run_id")) for r in store.list(limit=50)}
+    assert run.id not in ids, "删除后不该再出现在历史列表里"
+
+    assert client.delete(f"/api/runs/{run.id}").status_code == 404
+    assert client.delete("/api/runs/..%2F..%2Fetc").status_code in (400, 404)

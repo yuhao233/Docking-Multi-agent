@@ -313,6 +313,15 @@ curl -s "$BASE/api/runs/<run_id>" | python -m json.tool | grep -E 'conversation_
 }]}
 ```
 
+### `DELETE /api/runs/{run_id}`
+
+删除一条运行记录（连同它的产物目录）。**不可撤销**；返回 `{"status":"ok","run_id":...}`，
+记录不存在返回 404，非法 `run_id` 返回 400。同源校验由全局中间件负责（跨站 DELETE 会被拒）。
+
+用途：门禁脚本清理**自己创建**的运行记录 —— `scripts/ui_e2e.js` 与 `scripts/browser_check.py`
+每跑一次（真跑模式）会真实创建十几条运行记录，长期会把用户的历史列表挤满；两个脚本现在会在
+结束时对比「跑之前 / 跑之后」的历史，删掉本次新增的 id 并打印清理条数。
+
 ### `GET /api/runs/{run_id}`
 ```json
 {

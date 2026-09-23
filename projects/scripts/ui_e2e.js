@@ -1290,11 +1290,41 @@ async function runRunLogReceptorScenario(check, sleep) {
   dom.window.close();
 }
 
+/* --------------------------------------------------------------------------
+ * 门禁自清理：本脚本会真实创建运行记录（每跑一次十几条），跑完必须删掉自己创建的那些，
+ * 否则用户的历史列表会被门禁产物挤满（真实问题：5534 条运行里绝大多数是夹具运行）。
+ * 只删「跑之前不存在、跑完新出现」的 id，绝不碰用户已有的记录。
+ * ------------------------------------------------------------------------ */
+async function snapshotRunIds() {
+  const out = new Set();
+  try {
+    const listing = await api('/api/runs?limit=300');
+    const rows = (listing.data && listing.data.runs) || [];
+    rows.forEach((r) => { if (r && r.run_id) out.add(String(r.run_id)); });
+  } catch (error) { /* 取不到就当空集：下面的清理会退化为「不删」 */ }
+  return out;
+}
+
+async function cleanupGateRuns(beforeIds) {
+  const after = await snapshotRunIds();
+  const created = [...after].filter((id) => !beforeIds.has(id));
+  let deleted = 0;
+  for (const id of created) {
+    const res = await api('/api/runs/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (res.status === 200) deleted += 1;
+  }
+  check(deleted === created.length,
+    `门禁自清理：删除本次创建的运行记录（${deleted}/${created.length} 条）`,
+    created.length ? created.slice(0, 3).join(', ') : '本次未创建运行记录');
+  return deleted;
+}
+
 async function main() {
   console.log('='.repeat(74));
   console.log('设置页面 / 导航栏 DOM 级验证（jsdom + 真实后端）');
   console.log('='.repeat(74));
 
+  const gateRunsBefore = await snapshotRunIds();
   const before = await api('/api/settings');
   if (before.status !== 200 || !before.data) {
     throw new Error('后端 /api/settings 不可用，请先启动服务');
@@ -1880,6 +1910,9 @@ async function main() {
     try { dom.window.fetch = () => new Promise(() => {}); } catch (e) { /* 忽略 */ }
   });
   await sleep(200);
+
+  /* 门禁自清理必须在打印结果**之前**：它自己也是一条 check。 */
+  await cleanupGateRuns(gateRunsBefore);
 
   const passed = results.filter((r) => r[0]).length;
   console.log('\n' + '='.repeat(74));

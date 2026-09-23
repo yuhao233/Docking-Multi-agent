@@ -5,7 +5,7 @@ import asyncio
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from docking_agent.api.support import (
     _artifact_filename,
@@ -35,6 +35,25 @@ async def api_runs(limit: int = 20, offset: int = 0, q: str = "", status: str = 
     return await asyncio.to_thread(
         store.search, q=q, status=status, kind=kind, receptor=receptor,
         since=since, until=until, offset=max(0, offset), limit=max(1, min(limit, 200)))
+
+
+@router.delete("/api/runs/{run_id}")
+async def api_run_delete(run_id: str) -> Any:
+    """删除一条运行记录（含其产物目录）。
+
+    门禁脚本用它清理**自己创建**的运行记录（每跑一次 ui_e2e / browser_check 会真实创建
+    十几条，长期会挤满历史列表）；用户也可用它清理不再需要的运行。删除不可撤销。
+    同源校验由全局中间件负责（带 Origin 且跨站的 DELETE 会被拒）。
+    """
+    try:
+        ok = await asyncio.to_thread(get_run_store().delete, run_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400,
+                            content={"status": "error", "error_message": str(exc)})
+    if not ok:
+        return JSONResponse(status_code=404,
+                            content={"status": "error", "error_message": "运行记录不存在"})
+    return {"status": "ok", "run_id": run_id}
 
 
 @router.get("/api/runs/{run_id}")

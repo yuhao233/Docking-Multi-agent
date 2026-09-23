@@ -252,8 +252,8 @@ var/runs/<run_id>/
 | `pytest` | 计算内核、智能体契约、受理与继承、报告版式与 golden、接口协议、候选生命周期、工具调用序列自愈、步数预算、身份去重、外部引擎执行适配、默认引擎解析、安全边界、运行记录损坏与保留策略等，本机全量 **840 项**通过（多数用例可离线运行） |
 | `projects/scripts/check.sh --static` | 五道静态门禁一次跑完：lint（手写 AST 检查 + 基线棘轮）、ruff、mypy（渐进白名单）、界面契约（`check_web.py`，239 项）、安全姿态 |
 | `projects/scripts/check.sh --fast` | 与 CI 等价的离线快跑：跳过需要本机引擎的用例（588 通过 / 252 跳过，约 30 秒） |
-| `projects/scripts/ui_e2e.js` | DOM 级端到端（230 项，jsdom + 真实后端）：对话、参数、结果、设置、协议帧、两套界面 |
-| `projects/scripts/browser_check.py` | 真实浏览器（85 项）：标准协议请求形状、Markdown 渲染、思考折叠、候选点选时机与运行态、报告版式；候选交互另有 `browser_choice_checks.py` |
+| `projects/scripts/ui_e2e.js` | DOM 级端到端（231 项，jsdom + 真实后端）：对话、参数、结果、设置、协议帧、两套界面、门禁自清理 |
+| `projects/scripts/browser_check.py` | 真实浏览器（86 项）：标准协议请求形状、Markdown 渲染、思考折叠、候选点选时机与运行态、报告版式、门禁自清理；候选交互另有 `browser_choice_checks.py` |
 | `projects/scripts/snapshot_ids.py diff` | 界面 id 基线（244 个）：改动前端结构时防止契约被误删 |
 | `tests/test_docs_consistency.py` | 文档一致性：`.env.example` 登记所有被读取的环境变量；技术文档与技术报告必须由当前 Markdown 重新生成（内容哈希核对） |
 | `langgraph-deploy/scripts/check.sh` · `test.sh` | 部署面：依赖清单一致性、每张图真实加载、部署层用例 |

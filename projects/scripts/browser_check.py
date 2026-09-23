@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import gate_cleanup  # 同目录助手：python scripts/xxx.py 时脚本目录就是 sys.path[0]
 BASE = "http://127.0.0.1:5106"
 SHOT_DIR = Path(__file__).resolve().parent.parent / "var" / "tmp" / "browser_std"
 
@@ -645,6 +646,7 @@ def main(argv: List[str]) -> int:
         return 2
 
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
+    gate_runs_before = gate_cleanup.run_ids(BASE)
     rep = Report()
     calls: List[Dict[str, Any]] = []
     with sync_playwright() as p:
@@ -689,6 +691,8 @@ def main(argv: List[str]) -> int:
             run_live(page, rep, calls)
         rep.check(not errors, "浏览器无 JS 运行时错误", "; ".join(errors[:3]))
         browser.close()
+    deleted, created = gate_cleanup.cleanup(BASE, gate_runs_before)
+    rep.check(deleted == created, f"门禁自清理：删除本次创建的运行记录（{deleted}/{created} 条）")
     return rep.summary()
 
 
