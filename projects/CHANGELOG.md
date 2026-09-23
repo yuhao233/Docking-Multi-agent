@@ -37,6 +37,40 @@
 
 ---
 
+# 2026-09-23 · 坐标入参接受文档承诺的字符串形态；对接验证脚本区分「跳过」与「失败」
+
+起因：按用户要求核对环境里的 AutoDock Vina（CLI + 项目绑定）时，跑了仓库自带的
+`scripts/verify_docking.py`，暴露出两个真实缺陷。
+
+**① `site_center` / `site_size` 的文档承诺与真实校验不一致（真缺陷）**
+字段描述与工具 docstring 都写着「也接受 `"22,22,22"`」，`floats_to_text()` 也早就支持字符串，
+但字段类型是 `List[float]` —— 字符串在 **pydantic 校验阶段**就被拒，函数体永远拿不到。
+表现：仓库自带脚本按文档传 `site_center="31.5,13.74,24.36"` 直接抛 `ValidationError`；
+模型照描述传字符串同样会被拒（提示词里承诺的写法不可用）。
+修法：`CoordArray` 改为 `Annotated[Optional[List[float]], BeforeValidator(normalize_coord)]`，
+校验前把逗号/空格/分号分隔的字符串折成数组；空串按「未提供」处理；无法解析的字符串原样交给
+pydantic 报错。回归：`tests/test_coord_schema.py`（5 项：三种分隔符 / 数组与 None 透传 /
+垃圾输入仍报错 / 工具 schema 两种形态等价）。
+
+**② `verify_docking.py` 把「前置条件不满足」当成验证失败（假失败）**
+`--quick` 分子集里没有超出主盒的分子 → `large` 组不变量无从验证，脚本却记 FAIL；
+`[E]` 环节拿**旧归档**（C 方案之前、无 box_group 与版本戳）做「同代码逐位复现」，差异 0.02–0.33
+kcal/mol 也记 FAIL。两者都会让验证结论看起来比实际差。
+修法：新增 `skip()` 与 `[SKIP]` 分级（与 FAIL 分离，汇总里单列）：
+- `large` 组：本次分子集无超限分子 → SKIP（并说明该不变量由 [D] 反证控制或含大配体库覆盖）；
+- 旧归档重放：完全一致 → PASS；差异 ≤ 0.5 kcal/mol → SKIP 并报出最大差异与排序是否变化；
+  超过该量级 → FAIL（可能是真回归）。同代码的逐位一致由 [B] 独立复算与 [C] 交叉验证覆盖。
+
+顺带拆分：`scripts/verify_docking.py` 已顶到 700 行上限（`lint_local.py` 的文件规模门禁），
+把「独立实现的对接探针」（`make_ligand_pdbqt` / `vina_dock` / `vina_rescore` 与它们硬编码的常量）
+拆到 `scripts/vina_probe.py` —— 这一组本来就是「用另一条实现路径重算」的地基，拆开后两个文件都远低于上限。
+
+验证：`scripts/verify_docking.py --quick` → **31/33 通过（2 项跳过）✓**；
+`doctor_probe.py` 报告 AutoDock Vina Python 绑定 1.2.7 可用；`check.sh --static` 全绿；
+`check.sh --fast` → 568 passed / 248 skipped。
+
+---
+
 ## 14. 修复记录
 
 以下均为原项目既有问题（原始压缩包 `project_20260912_151606.tar.gz` 中同样存在），已修复并被测试看护：

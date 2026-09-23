@@ -12,15 +12,41 @@
 为了让**既有调用方（CLI / 测试 / 旧提示词）传字符串也不炸**，这里提供
 `floats_to_text()`：`None` / `""` / `"31.5,13.74,24.36"` / `"31.5 13.74 24.36"` /
 `[31.5, 13.74, 24.36]` 一律规范化成下游一直使用的 `"31.5,13.74,24.36"` 文本形态。
+
+`CoordArray` 用 `BeforeValidator` 把**字符串形态在校验前**折成数组：字段描述里承诺了
+「也接受 "22,22,22"」，但 `List[float]` 会在进函数体前就拒掉字符串 —— 文档承诺与真实校验
+不一致（真实缺陷：仓库自带的 `scripts/verify_docking.py` 按文档传 `"31.5,13.74,24.36"`
+直接抛 ValidationError；模型按描述传字符串同样会被拒）。
 """
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Union
+from typing import Annotated, Any, List, Optional, Sequence, Union
+
+from pydantic import BeforeValidator
 
 NumberList = Optional[Union[str, Sequence[float]]]
 
-#: 工具 schema 里坐标字段的类型（数组；描述里注明也接受逗号/空格分隔字符串）
-CoordArray = Optional[List[float]]
+
+def normalize_coord(value: Any) -> Any:
+    """把 `"31.5,13.74,24.36"` / `"31.5 13.74 24.36"` 折成 `[31.5, 13.74, 24.36]`。
+
+    已经是数组/None 的原样返回；无法解析的字符串原样返回，交给 pydantic 报错
+    （错误信息比这里自己抛更具体）。空串按未提供处理（返回 None）—— 与 `floats_to_text`
+    的「空 = 未提供」口径一致。
+    """
+    if not isinstance(value, str):
+        return value
+    parts = [p for p in value.replace(",", " ").replace(";", " ").split() if p]
+    if not parts:
+        return None
+    try:
+        return [float(p) for p in parts]
+    except ValueError:
+        return value
+
+
+#: 工具 schema 里坐标字段的类型：数组为主，**字符串形态在校验前折成数组**（见模块 docstring）
+CoordArray = Annotated[Optional[List[float]], BeforeValidator(normalize_coord)]
 
 
 def floats_to_text(values: NumberList, *, expect: int = 0) -> str:
@@ -62,4 +88,5 @@ def coord_description(label: str, *, example: str = "31.5,13.74,24.36") -> str:
     return (f"{label}，形如 [x, y, z]（Å）；也接受逗号分隔字符串 \"{example}\"")
 
 
-__all__ = ["NumberList", "CoordArray", "floats_to_text", "coord_description"]
+__all__ = ["NumberList", "CoordArray", "floats_to_text", "coord_description",
+           "normalize_coord"]
