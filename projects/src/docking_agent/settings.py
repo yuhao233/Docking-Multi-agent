@@ -166,8 +166,12 @@ def _role_specs() -> Tuple[Spec, ...]:
 
 # ---- 对接默认值（界面表单预填；不映射环境变量）----
 DOCKING_SPECS: Tuple[Spec, ...] = (
-    Spec("docking.engine", "对接引擎", "docking", "enum",
-         choices=("auto", "vina", "autodock"), default="vina"),
+    Spec("docking.engine", "对接引擎（默认）", "docking", "enum",
+         choices=("auto", "vina", "autodock", "external"), default="auto",
+         help="对话/表单没有显式指定引擎时用这里的默认值。"
+              "auto=优先内置 Vina、不可用时回退 AutoDock4 CPU；vina=内置 Vina（CPU）；"
+              "autodock=经典 AutoDock4（需要 autodock4+autogrid4）；"
+              "external=设置页登记的外部引擎（如 GPU 版 AutoDock-GPU）——未登记或探测不通过会直接报错。"),
     Spec("docking.exhaustiveness", "搜索强度 exhaustiveness", "docking", "int",
          default=16, minimum=1, maximum=64,
          help="每个分子的采样次数，默认 16（平衡档）。越大越准越慢；"
@@ -197,10 +201,22 @@ DOCKING_SPECS: Tuple[Spec, ...] = (
 # ---- 运行与性能（映射环境变量，保存后立即生效）----
 # ---- 外部工具（用户自行安装；env 映射后 core/ 侧照旧用 env() 读取）----
 EXTERNAL_SPECS: Tuple[Spec, ...] = (
+    Spec("external.autogrid4_bin", "AutoGrid4 可执行文件", "external", "str",
+         env="AUTOGRID4_BIN", placeholder="/path/to/autogrid4",
+         help="生成格点能量图（.maps.fld）：经典 AutoDock4 与外部 AutoDock-GPU 都要用；"
+              "留空则查找 PATH 上的 autogrid4。"),
+    Spec("external.autodock4_bin", "AutoDock4 可执行文件", "external", "str",
+         env="AUTODOCK4_BIN", placeholder="/path/to/autodock4",
+         help="经典 AutoDock4 CPU 引擎（engine=autodock）与 AutoGrid4 配套；留空则查找 PATH。"),
+    Spec("external.vina_bin", "AutoDock Vina CLI 路径（仅登记）", "external", "str",
+         env="VINA_BIN", placeholder="/path/to/vina",
+         help="只用于登记与探测（设置页「检测」/ doctor / 报告标注），**不改变对接由谁执行**；"
+              "留空则自动查找 PATH 上的 vina。要真正改用它跑对接，请填下面的 EXTERNAL_DOCKING_BIN。"),
     Spec("external.docking_bin", "GPU 对接引擎可执行文件", "external", "str",
          env="EXTERNAL_DOCKING_BIN", placeholder="/path/to/unidock",
-         help="Vina 兼容的 GPU 对接工具，识别 Uni-Dock / Vina-GPU / AutoDock-GPU 三类。"
-              "它是 vina 引擎的另一种执行器，不改变打分函数；留空则用内置 CPU Vina。"),
+         help="Vina 兼容的对接工具：识别 Uni-Dock / Vina-GPU / AutoDock-GPU 三类**以及 CPU 版 "
+              "AutoDock Vina CLI**。它是 vina 引擎的另一种执行器，不改变打分函数；"
+              "留空则用内置 CPU Vina（同版本、支持每分子盒子/分批/取消）。"),
     Spec("external.gpu_device", "GPU 设备序号", "external", "int",
          env="GPU_DEVICE", default=0, minimum=0, maximum=15,
          help="多卡机器指定用哪块卡（对应 CUDA_VISIBLE_DEVICES / OpenCL 设备序号）。"),

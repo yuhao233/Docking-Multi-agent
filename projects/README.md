@@ -233,10 +233,11 @@ bash start.sh --setup           # 强制重装依赖
 | P2Rank | 可选 | 同上；补齐：`bash scripts/fetch_tools.sh`（工具包 290 MB，不进交付包）或设 `P2RANK_HOME` |
 | pdb2pqr | 可选 | 受体**不按目标 pH 重算**质子化态（报告明确告警）；补齐：设 `PDB2PQR_BIN` |
 | Dimorphite-DL（配体 pKa 引擎） | 可选 | 配体 pH 处理**回退内置 pKa 规则表**（近似，非 pKa 预测；报告与运行笔记如实说明）；补齐见下方「质子化态（pKa）专业处理」 |
-| `autodock4`/`autogrid4` | 可选 | 只有 Vina 可用（`engine=autodock` 会失败）；`apt-get install autodock autogrid` |
+| `autodock4`/`autogrid4` | 可选 | 经典 AutoDock4 CPU 引擎与**格点图生成**（AutoDock-GPU 也依赖它）。路径可用 `AUTODOCK4_BIN`/`AUTOGRID4_BIN` 指定（conda 独立前缀不在 PATH 上时必需）；缺失则 `engine=autodock` 报错、`engine=external`(autodock-gpu) 无法建图 |
 | 中文字体（Noto CJK 等） | 可选 | 图表/PDF 中文可能显示为方块；`apt-get install fonts-noto-cjk` |
 | LLM（`LLM_API_KEY` + `LLM_BASE_URL`） | **必需** | 对接编排由协调 Agent 驱动；缺失时只能做环境自检与已有记录查看 |
-| GPU 对接引擎（用户自行安装） | 可选 | 设置页「外部工具」填写可执行文件路径；填了但检测不通过则**拒绝启动**并提示补齐方法，不会静默改用 CPU |
+| GPU 对接引擎（用户自行安装） | 可选 | 设置页「外部工具」填 `EXTERNAL_DOCKING_BIN`，并把引擎设为 `external`；已接入执行适配的是 **AutoDock-GPU**（会话内由 `autogrid4` 建格点图，结果行记录 `engine` 与版本）与 **CPU 版 Vina CLI**；`unidock`/`vina-gpu` 只登记不执行。填了但检测不通过则**拒绝启动**并提示补齐方法，不会静默改用 CPU |
+| 命令行 AutoDock Vina（CPU CLI，仅登记） | 可选 | `VINA_BIN`（或 PATH）登记路径 → `collect()` / 设置页「检测」/ `doctor.sh` 显示类型与版本，**执行路径不变**（默认内置绑定 1.2.7）；要改由 CLI 执行则填 `EXTERNAL_DOCKING_BIN` 并把引擎设为 `external`（已接入执行适配，不要求 GPU） |
 | 默认端口 5000 空闲 | 可选 | `start.sh` 自动顺延到下一个可用端口（`doctor` 会告知将用哪个） |
 
 内网/本机 LLM 端点下可完全离线运行：上传受体结构文件 + 上传分子库即可

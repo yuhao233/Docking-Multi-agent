@@ -286,6 +286,37 @@ def resolve_exhaustiveness(explicit: Any = UNSET_EXHAUSTIVENESS,
     return planned_int if planned_int and planned_int > 0 else None
 
 
+#: 对接引擎取值（工具参数、运行请求、设置页「默认引擎」三处共用同一套枚举）。
+ENGINE_CHOICES = ("auto", "vina", "autodock", "external")
+
+
+def system_default_engine() -> str:
+    """设置页「对接引擎（默认）」的当前生效值（环境变量优先，见 `settings.runtime_effective`）。"""
+    try:
+        from docking_agent.settings import SPEC_BY_PATH, runtime_effective
+
+        spec = SPEC_BY_PATH.get("docking.engine")
+        value = str(runtime_effective(spec) or "").strip().lower() if spec is not None else ""
+    except Exception:  # noqa: BLE001 - 设置不可读时按内置默认执行，不能因此让对接失败
+        value = ""
+    return value if value in ENGINE_CHOICES else "auto"
+
+
+def resolve_engine(explicit: Any = "", request: Optional[Dict[str, Any]] = None) -> str:
+    """把「工具参数 / 运行请求 / 设置页默认」解析成**本次真正要用的**对接引擎。
+
+    优先级：工具参数（非空） > 运行请求里的 `engine`（表单/高级设置） > 设置页默认 > `auto`。
+    参数默认留空（而不是 `"auto"`）才能区分「模型没给」与「模型明确要 auto」——
+    与 `resolve_exhaustiveness` 同一个口径：留空就跟随系统默认，不让工具层的硬编码默认
+    悄悄盖掉用户在设置页做的选择。
+    """
+    for candidate in (explicit, (request or {}).get("engine")):
+        value = str(candidate or "").strip().lower()
+        if value in ENGINE_CHOICES:
+            return value
+    return system_default_engine()
+
+
 def plan_docking_params(*, task_type: str = "screening",
                         molecules: Optional[Sequence[Dict[str, Any]]] = None,
                         box_size: Optional[Sequence[float]] = None,
@@ -320,7 +351,8 @@ def plan_docking_params(*, task_type: str = "screening",
             "exhaustiveness": user_exh if user_exh is not None else FALLBACK_EXHAUSTIVENESS,
             "coarse_exhaustiveness": None, "refine_top_n": None, "two_stage": False,
             "n_poses": user_np if user_np is not None else FALLBACK_N_POSES,
-            "engine": PLAN_ENGINE, "seed": PLAN_SEED, "library_size": library_n,
+            "engine": resolve_engine((user_params or {}).get("engine")),
+            "seed": PLAN_SEED, "library_size": library_n,
             "p90_rotatable": None, "flex_factor": None, "box_factor": None,
             "eta_sec": None, "budget_sec": round(budget, 1),
             "pilot": {"status": "skipped", "n": 0, "seconds_per_molecule": None,
@@ -335,7 +367,8 @@ def plan_docking_params(*, task_type: str = "screening",
         return {
             "source": "skipped", "task_type": task_type,
             "exhaustiveness": None, "coarse_exhaustiveness": None, "refine_top_n": None,
-            "two_stage": False, "n_poses": None, "engine": PLAN_ENGINE, "seed": PLAN_SEED,
+            "two_stage": False, "n_poses": None,
+            "engine": resolve_engine((user_params or {}).get("engine")), "seed": PLAN_SEED,
             "library_size": library_n, "p90_rotatable": None, "flex_factor": None,
             "box_factor": None, "eta_sec": None, "budget_sec": round(budget, 1),
             "pilot": {"status": "skipped", "n": 0, "seconds_per_molecule": None,
@@ -344,6 +377,12 @@ def plan_docking_params(*, task_type: str = "screening",
             "warnings": warnings,
         }
 
+    # 引擎：用户参数 > 设置页「对接引擎（默认）」。规划表里写的是**本次要用的引擎**，
+    # 不能固定成 PLAN_ENGINE，否则用户在设置页选了 external/autodock 时报告与执行不一致。
+    planned_engine = resolve_engine((user_params or {}).get("engine"))
+    if planned_engine != PLAN_ENGINE:
+        decisions.append(f"对接引擎 = {planned_engine}（来自用户参数或设置页「对接引擎（默认）」；"
+                         "内置默认假设是 vina）")
     binding = task_type == "binding_only"
     base = (env_int("AUTO_PARAM_BASE_BINDING", 16) if binding
             else env_int("AUTO_PARAM_BASE_SCREENING", 16))
@@ -533,7 +572,7 @@ def plan_docking_params(*, task_type: str = "screening",
         "refine_top_n": refine_top_n if two_stage else None,
         "two_stage": two_stage,
         "n_poses": n_poses,
-        "engine": PLAN_ENGINE,
+        "engine": planned_engine,
         "seed": PLAN_SEED,
         "library_size": library_n,
         "p90_rotatable": p90,

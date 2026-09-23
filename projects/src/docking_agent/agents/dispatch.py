@@ -24,7 +24,7 @@ from docking_agent.runtime.payload import parse_json_object
 from docking_agent.core import (
     parse_smiles_text, load_library_file, read_molecule_file_normalized,
 )
-from docking_agent.core.params import resolve_exhaustiveness
+from docking_agent.core.params import resolve_engine, resolve_exhaustiveness
 from docking_agent.runtime import tool_io
 from docking_agent.agents.workers import (
     invoke_worker,
@@ -508,7 +508,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
                 positive_control_smiles: str = "",
                 site_center: CoordArray = None, site_size: CoordArray = None,
                 exhaustiveness: int = 0, n_poses: int = 1,
-                engine: Literal["auto", "vina", "autodock"] = "auto",
+                engine: Literal["", "auto", "vina", "autodock", "external"] = "",
                 top_from_previous: int = 0,
                 keep_hetatm: str = "",
                 save_poses: bool = True, max_ligands: int = 0,
@@ -523,7 +523,8 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     位点：site_center / site_size（数组 [x,y,z]，也接受 "31.5,13.74,24.36"）；
       留空 = 口袋分析 Agent 已提交的盒子（黑板）或由工具现场定盒。
     参数：exhaustiveness（**0=用受理层自动规划的运行级值**，显式给值才以你为准，同阶段必须一致）、
-      n_poses、engine（auto/vina/autodock）、save_poses、max_ligands（0=不限）。
+      n_poses、engine（留空=跟随设置页「对接引擎（默认）」；可显式 auto/vina/autodock/external）、
+      save_poses、max_ligands（0=不限）。
     keep_hetatm：要保留的非水杂原子残基名（如 'ZN,HEM'）。留空=标准流程剔除水与杂原子，
       被剔除的残基会出现在结果的 dropped_hetatm/notes 里；金属酶/辅因子体系判断重要后用本参数重跑。
     positive_control_smiles：一般不必传（工具会自动取本次运行的阳性对照并一并对接）。
@@ -545,6 +546,9 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     run = active_run(runtime)
     plan = (getattr(run, "data", None) or {}).get("param_plan") or {}
     planned_exh = resolve_exhaustiveness(exhaustiveness, plan)
+    # 引擎：显式参数 > 本次运行请求（表单）> 设置页「对接引擎（默认）」。留空**不再**等价于
+    # 硬编码 auto —— 否则用户在设置页选了 external/autodock 也会被工具默认值盖掉。
+    engine = resolve_engine(engine, (getattr(run, "data", None) or {}).get("request") or {})
     try:
         explicit_exh = int(exhaustiveness or 0) > 0
     except (TypeError, ValueError):
@@ -581,9 +585,12 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
         # 解析不出规划值：**不要**下发 null（子 Agent 的参数契约是「没出现的键 = 未指定」，
         # 而且 null 会被 int 形态的 args_schema 拒掉）—— 删掉这个键，让它按工具默认走。
         params.pop("exhaustiveness", None)
-    instruction = ("请对任务参数里给出的分子清单执行真实对接"
-                   "（engine=auto 优先用 Vina，不可用时回退 AutoDock4 CPU；"
-                   "engine=autodock 直接用经典 AutoDock4 CPU 模式）。")
+    instruction = (f"请对任务参数里给出的分子清单执行真实对接（engine={engine}："
+                   + ("auto 优先用 Vina，不可用时回退 AutoDock4 CPU" if engine == "auto" else
+                      "经典 AutoDock4 CPU 模式" if engine == "autodock" else
+                      "用设置页登记的外部引擎，未就绪会直接报错、不会静默回退" if engine == "external"
+                      else "内置 Vina（不可用即报错，不回退）")
+                   + "）。")
     if params["top_from_previous"]:
         instruction += (f"**精算轮次**：只对上一轮对接结果里亲和力最好的前 "
                         f"{params['top_from_previous']} 个分子重算 —— 它会直接从共享黑板取清单，"

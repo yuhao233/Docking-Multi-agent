@@ -28,8 +28,10 @@ from docking_agent.config import env, env_int
 
 logger = logging.getLogger(__name__)
 
-#: 用户提供的对接可执行文件（Vina 兼容）
+#: 用户提供的对接可执行文件（Vina 兼容）—— 填了它 = **改用它执行对接**
 ENV_DOCKING_BIN = "EXTERNAL_DOCKING_BIN"
+#: 仅**登记/探测**用的 CPU 版 Vina CLI 路径（不改执行路径；留空则自动看 PATH）
+ENV_VINA_BIN = "VINA_BIN"
 #: GPU 设备序号（多卡机器用）
 ENV_GPU_DEVICE = "GPU_DEVICE"
 #: 单批提交给外部引擎的配体数
@@ -52,13 +54,20 @@ class ExternalEngineError(RuntimeError):
 # --------------------------------------------------------------------------- #
 #: (flavor, 显示名, 版本输出中出现的特征串)
 FLAVORS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    # CPU 版官方 CLI（`vina --version` → "AutoDock Vina 1.2.7" / "AutoDock Vina <git-hash>"）：
+    # 与内置绑定同一打分函数，不要求 GPU —— 用于「只登记路径、不改默认执行」的场景。
+    ("vina-cpu", "AutoDock Vina（CPU CLI）", ("autodock vina",)),
     ("unidock", "Uni-Dock", ("unidock", "uni-dock")),
     ("vina-gpu", "Vina-GPU", ("vina-gpu", "vinagpu", "quickvina2-gpu", "quickvina-w-gpu")),
     ("autodock-gpu", "AutoDock-GPU", ("autodock-gpu", "autodock_gpu", "autodockgpu")),
 )
 
+#: 需要 GPU 的类型：只有这些才在探测时校验设备可见性（CPU CLI 不该因为“没有 GPU”被判不可用）
+GPU_FLAVORS = frozenset({"unidock", "vina-gpu", "autodock-gpu"})
+
 #: 各类型的调用形状（P1 执行适配用；P0 只生成并校验 argv）
 FLAVOR_ARGV_STYLE: Dict[str, str] = {
+    "vina-cpu": "vina",
     "unidock": "unidock",
     "vina-gpu": "vina-gpu",
     "autodock-gpu": "autodock-gpu",
@@ -103,6 +112,36 @@ def gpu_device() -> int:
 
 def gpu_batch_size() -> int:
     return max(1, int(env_int(ENV_GPU_BATCH, 100)))
+
+
+def vina_cli_bin() -> str:
+    """定位 CPU 版 AutoDock Vina CLI：`VINA_BIN` → PATH。找不到返回空串。
+
+    与 `external.docking_bin` 的区别（重要）：
+      * 本函数只用于**登记与探测**（设置页「检测」/ `doctor.sh` / 报告标注）；
+      * 真正「改用它执行对接」要填 `EXTERNAL_DOCKING_BIN`（见 `configured_bin()`）。
+    这样「本机装了哪个 Vina」与「对接由谁执行」是两件事，不会因为登记一个路径就换掉执行后端。
+    """
+    explicit = str(env(ENV_VINA_BIN, "") or "").strip()
+    if explicit:
+        target = Path(explicit).expanduser()
+        if target.is_file() and os.access(target, os.X_OK):
+            return str(target)
+    return shutil.which("vina") or ""
+
+
+def detect_available_vina() -> Dict[str, Any]:
+    """登记 PATH（或 `VINA_BIN`）上的 AutoDock Vina CLI：识别类型与版本，不改变执行路径。"""
+    found = vina_cli_bin()
+    if not found:
+        return {}
+    version = run_version(found)
+    if not version.get("ok"):
+        return {}
+    flavor = str(version.get("flavor") or "")
+    return {"path": found, "flavor": flavor, "flavor_label": _flavor_label(flavor),
+            "version_line": version.get("version_line", ""),
+            "recognized": flavor in FLAVOR_ARGV_STYLE}
 
 
 def probe_path(path: str) -> Dict[str, Any]:
@@ -185,10 +224,17 @@ def collect(*, check_gpu: bool = True) -> Dict[str, Any]:
     path = configured_bin()
     report: Dict[str, Any] = {"configured": bool(path), "bin": path}
     if not path:
+        # 「只登记、不改默认执行」：把 PATH 上发现的 Vina CLI 如实报出来供查看/复制路径，
+        # 但 configured=False、执行仍走内置绑定（同版本、支持每分子盒子/分批/取消）。
+        detected = detect_available_vina()
         report.update({
             "ok": True, "state": "not_configured",
             "message": "未提供外部引擎，使用内置 CPU Vina",
         })
+        if detected:
+            report["detected"] = detected
+            report["message"] += (f"；发现系统 PATH 上的 {detected.get('flavor_label', '')}"
+                                  f"（{detected.get('version_line', '')}），如需改用它请在设置页填入路径")
         return report
 
     path_check = probe_path(path)
@@ -214,7 +260,9 @@ def collect(*, check_gpu: bool = True) -> Dict[str, Any]:
         })
         return report
 
-    gpu = gpu_visibility() if check_gpu else {"ok": True, "skipped": True}
+    needs_gpu = flavor in GPU_FLAVORS
+    gpu = (gpu_visibility() if (needs_gpu and check_gpu)
+           else {"ok": True, "skipped": True, "reason": "CPU 引擎，无需 GPU"})
     report["gpu"] = gpu
     report.update({
         "ok": bool(gpu.get("ok")),
@@ -248,16 +296,39 @@ def require_engine() -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 def build_argv(flavor: str, *, binary: str, receptor: str, ligands: Sequence[str],
                out_dir: str, center: Sequence[float], size: Sequence[float],
-               exhaustiveness: int, n_poses: int, seed: int) -> List[str]:
+               exhaustiveness: int, n_poses: int, seed: int,
+               fld: str = "", resnam: str = "", threads: Optional[int] = None,
+               out_pose: str = "", device: Optional[int] = None) -> List[str]:
     """按引擎类型生成调用参数。
 
-    只覆盖已识别的三类 Vina 兼容 CLI；未知类型直接报错，不猜参数。
+    `autodock-gpu` 与 `vina-cpu` 的参数形状按各自官方 CLI 实测固定（本机验证过）；
+    `unidock` / `vina-gpu` 仍按官方文档固定，但**执行适配未接入**（`external_run.py` 会直接报错，
+    不拿未验证的参数去跑真实计算）。
+
+    `device`：项目内部一律用 **0 基** GPU 序号（`GPU_DEVICE=0` 表示第一块卡）；AutoDock-GPU 的
+    `--devnum` 是 **1 基**（实测传 0 会被拒："must be an integer between 1 and 65536"），
+    因此这里 `+1` 后再下发。
     """
     if flavor not in FLAVOR_ARGV_STYLE:
         raise ExternalEngineError(f"未识别的外部引擎类型：{flavor or '(空)'}")
     cx, cy, cz = (float(v) for v in center)
     sx, sy, sz = (float(v) for v in size)
     base = [binary]
+    if flavor == "vina-cpu":
+        # 官方 CLI：一次一个配体文件 + 显式盒子（无格点图）；`--out` 写位姿
+        argv = [
+            "--receptor", receptor,
+            "--ligand", ligands[0] if ligands else "",
+            "--center_x", f"{cx:.3f}", "--center_y", f"{cy:.3f}", "--center_z", f"{cz:.3f}",
+            "--size_x", f"{sx:.3f}", "--size_y", f"{sy:.3f}", "--size_z", f"{sz:.3f}",
+            "--exhaustiveness", str(int(exhaustiveness)),
+            "--num_modes", str(int(n_poses)),
+            "--seed", str(int(seed)),
+            "--out", str(out_pose or (Path(out_dir) / "out.pdbqt")),
+        ]
+        if threads:
+            argv += ["--cpu", str(int(threads))]
+        return base + argv
     if flavor == "unidock":
         return base + [
             "--receptor", receptor,
@@ -280,6 +351,21 @@ def build_argv(flavor: str, *, binary: str, receptor: str, ligands: Sequence[str
             "--thread", str(int(exhaustiveness)),
             "--seed", str(int(seed)),
         ]
+    if flavor == "autodock-gpu":
+        # 官方 CLI：吃 autogrid4 生成的格点图（`--ffile`），盒子信息已在图里
+        if not fld:
+            raise ExternalEngineError("autodock-gpu 需要格点图描述文件（`.maps.fld`）")
+        return base + [
+            "--ffile", fld,
+            "--lfile", ligands[0] if ligands else "",
+            "--nrun", str(int(n_poses)),
+            "--seed", str(int(seed)),
+            "--resnam", resnam or (Path(out_dir) / "adgpu_out").as_posix(),
+            "--xmloutput", "0",
+            # 0 基 → 1 基（见 docstring 实测说明）
+            "--devnum", str(int(device if device is not None else 0) + 1),
+        ]
+    # 其余（AutoDock-GPU 之外的 GPU 工具）：按官方文档固定，执行适配未接入
     return base + [
         "--receptor", receptor,
         "--ligand_directory", out_dir,

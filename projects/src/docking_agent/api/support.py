@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -100,7 +99,13 @@ def _same_origin(request: Request) -> bool:
 # --------------------------------------------------------------------------- #
 # 脱敏与引擎/模型探测
 # --------------------------------------------------------------------------- #
-def _engine_available() -> Dict[str, bool]:
+def _engine_available() -> Dict[str, Any]:
+    """本机可用引擎：内置 Vina / 经典 AutoDock4 / 用户登记的外部引擎。
+
+    路径判定一律走项目自己的定位逻辑（`AUTODOCK4_BIN`/`AUTOGRID4_BIN` → PATH），
+    因为本机的 AD4 常常**不在 PATH 上**（conda 独立前缀）；只看 `shutil.which` 会把
+    "已配置" 错报成 "不可用"。外部引擎按探测结果如实标注（登记了但不可用也不算可用）。
+    """
     vina_ok = False
     try:
         import vina  # noqa: F401
@@ -108,7 +113,21 @@ def _engine_available() -> Dict[str, bool]:
         vina_ok = True
     except Exception as e:  # noqa: BLE001
         logger.info("Vina 不可用（%s）：对接将只能走 AutoDock4 或直接失败", e)
-    return {"vina": vina_ok, "autodock": bool(shutil.which("autodock4") and shutil.which("autogrid4"))}
+    try:
+        from docking_agent.core.docking import _autodock_bin
+        from docking_agent.core.external_tools import collect as _collect_external
+
+        autodock_ok = bool(_autodock_bin("autodock4") and _autodock_bin("autogrid4"))
+        external = _collect_external()
+    except Exception as e:  # noqa: BLE001 - 健康检查不能因为探测异常而失败
+        logger.info("引擎探测失败（%s）", e)
+        return {"vina": vina_ok, "autodock": False}
+    return {
+        "vina": vina_ok,
+        "autodock": autodock_ok,
+        "external": bool(external.get("ok") and external.get("configured")),
+        "external_flavor": external.get("flavor") or "",
+    }
 
 
 def _agent_model_map() -> Dict[str, Any]:

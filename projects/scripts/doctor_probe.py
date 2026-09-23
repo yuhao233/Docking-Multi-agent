@@ -223,8 +223,17 @@ def check_external_engine() -> Dict[str, Any]:
                      required=False, degrade="使用内置 CPU Vina")
     state = report.get("state")
     if state == "not_configured":
-        return _item("external_engine", "外部对接引擎（用户提供）", False, "未提供",
-                     hint="设置页「外部工具」填入 GPU 对接可执行文件路径（可选）",
+        detected = report.get("detected") or {}
+        label = "外部对接引擎（用户提供）"
+        if detected:
+            # 已登记（VINA_BIN / PATH）但**未启用**：如实显示，执行仍走内置绑定
+            return _item("external_engine", label, True,
+                         f"未启用（执行用内置 CPU Vina）；已登记 {detected.get('flavor_label', '')}："
+                         f"{detected.get('path', '')} · {detected.get('version_line', '')}",
+                         hint="如需改用它执行对接：设置页「外部工具 → GPU 对接引擎可执行文件」填同一路径",
+                         required=False)
+        return _item("external_engine", label, False, "未提供",
+                     hint="设置页「外部工具」填入对接可执行文件路径（可选）",
                      required=False, degrade="使用内置 CPU Vina")
     if report.get("ok"):
         return _item("external_engine", "外部对接引擎（用户提供）", True,

@@ -174,7 +174,8 @@ SSE（runtime/streaming.py，每个事件带 ts）→ 前端 web/app.js 渲染�
 
 | 文件 | 职责 | 关键接口 |
 |---|---|---|
-| `docking.py` | 引擎封装与批量调度：`DockingSession`（一次建图多次复用）、`dock_batch`（串/并行、LPT 调度、取消、化学体检）、`dock_library`（受体×配体位点/漏斗）、`plan_concurrency` | `DockingSession.dock`、`dock_batch`、`dock_library`、`plan_concurrency` |
+| `docking.py` | 引擎封装与批量调度：`DockingSession`（一次建图多次复用）、`dock_batch`（串/并行、LPT 调度、取消、化学体检）、`dock_library`（受体×配体位点/漏斗）、`plan_concurrency`；`engine ∈ auto/vina/autodock/external`，`external` 走 `external_run` 的执行适配（未登记或未就绪**直接报错**，不回退内置引擎） | `DockingSession.dock`、`dock_batch`、`dock_library`、`plan_concurrency` |
+| `external_tools.py` + `external_run.py` | **外部引擎**（用户自行安装的 GPU/CLI）：前者识别类型（unidock / vina-gpu / autodock-gpu / vina-cpu）、探测版本与 GPU 可见性、固定各引擎 argv 形状（`GPU_DEVICE` 0 基 → AutoDock-GPU `--devnum` 1 基）；后者真的把它跑起来 —— `autogrid4` 生成格点图（会话内缓存）、调用二进制、解析 DLG/位姿，产出与内置引擎同形的结果行。`unidock`/`vina-gpu` 只登记不执行（不猜参数） | `collect`、`require_engine`、`build_argv`、`build_grid_maps`、`dock_ligand_external` |
 | `normalize.py` + `normalize_io.py` | **统一输入归一化**（唯一入口，见 §9.0）：内容嗅探优先于扩展名、gzip/zip、编码/分隔符/中英文表头自动判定、逐行容错、按 canonical SMILES 去重并保留全部别名、InChI/InChIKey、标准记录 `{id,name,smiles,source_file,source_index,raw}` | `sniff_format`、`normalize_ligand_file`、`normalize_ligand_text`、`normalize_receptor_source`、`record_input_normalization` |
 | `receptors.py` | 受体准备：去水/杂原子溯源、`keep_hetatm`、altloc 重试、模板缺失逐个剔除、内容哈希缓存、共晶配体识别、位点盒推断、PDBQT spec | `prepare_user_receptor`、`resolve_receptor_specs`、`read_receptor_file`、`_pdbqt_spec`、`guess_cocrystal_ligand` |
 | `ligands.py` | 配体读取与准备：SDF/SMI/CSV/MOL2、`名称:SMILES` 与自由文本抽取、3D 构象(ETKDGv3+MMFF)+meeko、**化学体检** `describe_ligand` | `read_molecule_file`、`parse_smiles_text`、`extract_smiles`、`smiles_to_pdbqt`、`describe_ligand` |

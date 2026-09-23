@@ -13,7 +13,7 @@ from docking_agent.runtime import tool_io
 from docking_agent.runtime.blackboard import board_molecules_json
 from docking_agent.core import (POSITIVE_CONTROL_NAME, dock_library)
 from docking_agent.core.params import (DEFAULT_EXHAUSTIVENESS,
-                                       resolve_exhaustiveness)
+                                       resolve_engine, resolve_exhaustiveness)
 from docking_agent.runs import slug
 from docking_agent.tools.schemas import CoordArray, floats_to_text
 from docking_agent.runtime.context import AgentContext, active_blackboard, active_run
@@ -127,7 +127,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                       receptor_file: str = "", receptor_sources: str = "",
                       site_center: CoordArray = None, site_size: CoordArray = None,
                       exhaustiveness: int = 0, n_poses: int = 1,
-                      engine: Literal["auto", "vina", "autodock"] = "auto", top_from_previous: int = 0,
+                      engine: Literal["", "auto", "vina", "autodock", "external"] = "",
+                      top_from_previous: int = 0,
                       keep_hetatm: str = "", protonation: str = "",
                       protonation_ph: float = 0.0, save_poses: bool = True,
                       max_ligands: int = 0, runtime: ToolRuntime[AgentContext] = None) -> str:
@@ -153,7 +154,10 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
           （受理层算好的运行级值，同一阶段内所有分子一致）；本次没有规划值时才落到设置页默认
           （16）。只有刻意做参数对比时才显式给值，并在报告里说明两次的差别。
       n_poses: 返回的构象个数（默认 1）
-      engine: 对接引擎，'auto'(默认：优先 Vina，失败自动回退 AutoDock4 CPU) / 'vina' / 'autodock'(经典 AutoDock4 CPU 模式)
+      engine: 对接引擎，**留空 = 跟随「设置页 → 对接引擎（默认）」**（默认 auto：优先 Vina，失败自动回退
+              AutoDock4 CPU）/ 'vina' / 'autodock'(经典 AutoDock4 CPU 模式) /
+              'external'(用设置页登记的外部引擎，如 AutoDock-GPU；未登记或未就绪会直接报错，不静默回退)。
+              只有用户明确要求换引擎时才显式传值。
       save_poses: 是否把每个分子的最佳位姿写入运行目录（表单里的「保存对接位姿」；False 时不落位姿文件）
       max_ligands: 本次最多对接多少个分子（表单里的「最大分子数」；0=不限制，仍受部署级上限约束）
       protonation: **一般留空**。运行级质子化态策略：'ph'(默认，按目标 pH 分配，见 protonation_ph) /
@@ -186,6 +190,9 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
     _planned_exh = resolve_exhaustiveness(
         exhaustiveness,
         (getattr(active_run(runtime), "data", None) or {}).get("param_plan"))
+    # 引擎：显式参数 > 本次运行请求（表单）> 设置页默认；留空不再等价于硬编码 "auto"
+    _run_req_engine = (getattr(active_run(runtime), "data", None) or {}).get("request") or {}
+    engine = resolve_engine(engine, _run_req_engine)
     exhaustiveness = int(_planned_exh) if _planned_exh else DEFAULT_EXHAUSTIVENESS
     try:
         molecules = None
@@ -453,7 +460,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
 
         out = dock_library(molecules, receptor=receptor, keep_hetatm=keep,
                            exhaustiveness=int(exhaustiveness), n_poses=int(n_poses),
-                           engine=(engine or "auto"), protonation=(protonation or ""),
+                           engine=engine, protonation=(protonation or ""),
                            protonation_ph=(protonation_ph or None),
                            site=site,
                            # 表单里的这两项此前在 Agent 路径被忽略（恒存位姿、不套上限）→ 真实行为缺口

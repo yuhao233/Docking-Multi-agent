@@ -12,6 +12,39 @@
 
 ---
 
+## 版本 0.8.0（2026-09-23）
+
+发布版本号从 `0.7.0` 升到 `0.8.0`（`projects/pyproject.toml`、`src/docking_agent/__init__.py`、
+`CITATION.cff`、`docs/api.md`、`docs/技术报告.md` 同步；`/api/health` 与设置页显示的版本随之变化）。
+
+本版的主要内容：
+
+- **外部 GPU 引擎接入执行**：登记 `EXTERNAL_DOCKING_BIN` 后，`engine=external` 会把对接真的交给
+  外部二进制。已接入执行适配的是 **AutoDock-GPU**（`autogrid4` 按会话生成格点图并缓存、解析 DLG）
+  与 **CPU 版 Vina CLI**（`--out` + `--score_only`）；`unidock` / `vina-gpu` 仍只登记不执行（不猜参数）。
+  结果行与内置引擎同形，并记录 `engine`（如 `autodock-gpu`）与 `engine_version`。
+  本机实测（RTX 5090，AutoDock-GPU v1.6 CUDA 构建）：凝血酶 1DWC × 苯甲脒 → −6.15 kcal/mol，
+  乙醇 → −2.80 kcal/mol，单配体 < 1 s。
+- **默认引擎可配且真的生效**：设置页新增「对接引擎（默认）」（`auto`/`vina`/`autodock`/`external`，
+  出厂 `auto` = 优先 Vina、不可用回退 AutoDock4 CPU）；工具参数 `engine` 默认改为**留空**，
+  解析优先级为「工具参数 > 运行请求（表单）> 设置页默认 > auto」—— 否则用户在设置页做的选择会被
+  工具层硬编码默认值静默盖掉。报告「1.5 参数自动规划」里的引擎同步显示本次真正要用的引擎。
+- **外部工具登记项补全**：新增 `AUTODOCK4_BIN` / `AUTOGRID4_BIN`（conda 独立前缀不在 PATH 上时必需），
+  `.env.example`、设置页与 `doctor.sh` 一并同步。
+- **健康面板如实反映本机引擎**：`/api/health` 的 `engine_available` 增加 `external` 与
+  `external_flavor`；AutoDock4 的可用性判定改走项目自己的定位逻辑（不再用 `shutil.which` 误报）。
+- **修复（均为实测踩到的真实故障）**：
+  1. `GPU_DEVICE=0` 下发 `--devnum 0` 被 AutoDock-GPU 拒绝（它要求 1 基）→ 登记了 GPU 却 0.15 s 失败；
+  2. 配体带极性氢（meeko 的 `HD` 类型）而格点图没有 `HD` → 引擎报「任务未成功」；
+  3. `--nrun N` 时 DLG 里有多组结果，旧解析取第一组而非最优组 → 改为取最低结合能并与
+     `CLUSTERING HISTOGRAM` 交叉校验；
+  4. 外部引擎登记的播报绕过了 `_note()` 的异常保护，`note_cb` 抛错会打断对接本身。
+
+> 说明：文档里出现的 `(v0.28)`、`(v0.33)` 这类括号是**特性迭代号**（历史沿用的写作习惯），
+> 发行版本以本节的 `0.8.0` 为准。
+
+---
+
 ## 版本 0.7.0（2026-09-23）
 
 发布版本号从 `0.6.0` 升到 `0.7.0`（`projects/pyproject.toml`、`src/docking_agent/__init__.py`、
@@ -32,8 +65,8 @@
 - **工程保障**：接入 GitHub Actions（静态门禁 + 离线用例 + 部署自检）；部署自检在无密钥环境
   （干净检出 / CI）按 `[SKIP]` 分级，不再假失败。
 
-> 说明：文档里出现的 `(v0.28)`、`(v0.33)` 这类括号是**特性迭代号**（历史沿用的写作习惯），
-> 发行版本以本节的 `0.7.0` 为准。
+> 说明：文档里出现的 `(v0.28)`、`(v0.33)` 这类括号是**特性迭代号**（历史沿用的写作习惯）；
+> 本节记录 0.7.0 发布当时的状态，当前发行版本见上一节。
 
 ---
 
@@ -68,6 +101,26 @@ kcal/mol 也记 FAIL。两者都会让验证结论看起来比实际差。
 验证：`scripts/verify_docking.py --quick` → **31/33 通过（2 项跳过）✓**；
 `doctor_probe.py` 报告 AutoDock Vina Python 绑定 1.2.7 可用；`check.sh --static` 全绿；
 `check.sh --fast` → 568 passed / 248 skipped。
+
+---
+
+# 2026-09-23 · 登记本机 AutoDock Vina CLI（不改默认执行）
+
+用户要求把环境里新装的命令行 Vina 配置进项目，并选择「**只登记路径、不改变对接由谁执行**」。
+
+- **识别**：外部引擎注册表此前只认 Uni-Dock / Vina-GPU / AutoDock-GPU 三类 GPU 工具 ——
+  本机装了官方 CPU CLI（`vina 1.2.7`）也会被判「无法识别」而**拒绝启动**。现在新增
+  `vina-cpu` 类型（`--version` 出现 "AutoDock Vina" 即命中，不会抢走 vina-gpu 的识别），
+  并补齐它的 argv 形状；`GPU_FLAVORS` 之外的引擎不再校验 GPU 可见性（CPU 引擎不该因“没有显卡”不可用）。
+- **登记**：新增设置项 `external.vina_bin`（环境变量 `VINA_BIN`）与 `vina_cli_bin()`：
+  `VINA_BIN` → PATH 自动查找。它**只进探测报告** —— `configured_bin()` 仍为空、
+  `require_engine()` 仍返回 `{}`，因此对接照旧由内置绑定（同版本 1.2.7）执行，
+  每分子盒子 / 分批 / 取消等能力不变。
+- **可见**：`collect()` 在 `not_configured` 时附带 `detected`（路径 / 类型 / 版本），
+  `doctor.sh`、`/api/tools/probe` 与设置页「检测」三处同源显示；
+  本机 `.env` 已写入 `VINA_BIN=/home/biolab/Autodock_Vina/vina-env/.pixi/envs/default/bin/vina`。
+- 回归：`tests/test_external_engine.py` +3 项（CPU CLI 识别与 argv / 登记不改执行路径 /
+  `VINA_BIN` 无效时回退 PATH）。
 
 ---
 

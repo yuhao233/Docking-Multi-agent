@@ -272,7 +272,12 @@ class DockingSession:
         self.seed_policy = "session"
         self.mode = "autodock"
         self._vina = None
-        if self.engine in ("auto", "vina"):
+        self._external: Dict[str, Any] = {}
+        self._external_fld = ""
+        self._external_map_dir = ""
+        if self.engine in ("external", "gpu"):
+            self._init_external()
+        elif self.engine in ("auto", "vina"):
             try:
 
                 v = self._new_vina(seed)
@@ -284,6 +289,90 @@ class DockingSession:
                 if self.engine == "vina":
                     raise
                 logger.warning("Vina 不可用，回退 AutoDock4：%s", e)
+
+    def _init_external(self) -> None:
+        """外部引擎（GPU/CLI）：登记必须**就绪**，否则直接报错 —— 不静默改用内置 CPU。
+
+        格点图（AutoDock-GPU 需要）在首次 `_dock_external()` 时按本次盒子生成一次并缓存；
+        执行适配在 `core/external_run.py`，结果行与内置引擎同口径（能量项 + 位姿 + engine 标注）。
+        """
+        from docking_agent.core.external_tools import require_engine
+
+        report = require_engine()
+        if not report:
+            raise RuntimeError(
+                "engine=external 需要先在设置页「外部工具」登记可对外执行的引擎二进制"
+                "（EXTERNAL_DOCKING_BIN，例如 AutoDock-GPU）；未登记时不静默改用内置引擎。")
+        self._external = dict(report)
+        self.mode = f"external:{report.get('flavor') or 'unknown'}"
+        logger.info("外部引擎就绪：%s（%s）", report.get("flavor_label"), report.get("version_line"))
+
+    def _external_maps(self, ligand_types: Sequence[str] = ()) -> str:
+        """按当前受体 + 盒子生成（或复用）格点图，返回 `.fld` 路径。
+
+        配体类型取 `external_run.STANDARD_LIGAND_TYPES`（本机 autogrid4 实测可用的全集），
+        因为格点图在一个会话内共享、要在下一个配体到来之前就建好；配体若带全集之外的原子类型，
+        这里**直接报错并说明原因** —— autogrid4 的参数库确实没有这些类型，不能假装能算。
+        """
+        from docking_agent.core.external_run import STANDARD_LIGAND_TYPES, build_grid_maps
+        from docking_agent.core.external_tools import ExternalEngineError
+
+        unsupported = sorted({str(t) for t in ligand_types if t} - set(STANDARD_LIGAND_TYPES))
+        if unsupported:
+            raise ExternalEngineError(
+                f"配体含 AutoDock 参数库不支持的原子类型：{'、'.join(unsupported)}；"
+                "AutoDock-GPU 无法为这些原子生成格点图。请改用内置 Vina 引擎"
+                "（engine=vina/auto）或先处理该配体，不要指望它被静默跳过。")
+        if self._external_fld and os.path.exists(self._external_fld):
+            return self._external_fld
+        import tempfile
+
+        self._external_map_dir = tempfile.mkdtemp(prefix="external_maps_")
+        self._external_fld = build_grid_maps(self.spec["pdbqt"], self.spec["center"],
+                                             self.spec["size"], self._external_map_dir,
+                                             ligand_types=STANDARD_LIGAND_TYPES)
+        return self._external_fld
+
+    def _dock_external(self, prep: Dict[str, Any], exhaustiveness: int, n_poses: int,
+                       pose_base: Optional[str]) -> Dict[str, Any]:
+        """调用外部引擎对接一个配体（`prep` 为 `describe_ligand` 的准备结果）。"""
+        import tempfile
+
+        from docking_agent.core.external_run import dock_ligand_external
+
+        flavor = str(self._external.get("flavor") or "")
+        binary = str(self._external.get("path") or self._external.get("bin") or "")
+        pdbqt = smiles_to_pdbqt(str(prep.get("smiles") or ""), seed=self.seed)
+        workdir = tempfile.mkdtemp(prefix="external_dock_")
+        try:
+            lig = os.path.join(workdir, "lig.pdbqt")
+            with open(lig, "w", encoding="utf-8") as handle:
+                handle.write(pdbqt)
+            row = dock_ligand_external(
+                flavor=flavor, binary=binary, ligand_pdbqt=lig, workdir=workdir,
+                receptor_pdbqt=self.spec["pdbqt"],
+                fld=(self._external_maps(_pdbqt_atom_types(lig))
+                     if flavor == "autodock-gpu" else ""),
+                center=self.spec["center"], size=self.spec["size"],
+                exhaustiveness=exhaustiveness, n_poses=n_poses, seed=self.seed,
+                pose_base=pose_base, threads=self.threads,
+                device=self._external.get("device"),
+                engine_version=str(self._external.get("version_line") or ""))
+        finally:
+            import shutil as _sh
+
+            _sh.rmtree(workdir, ignore_errors=True)
+        span = _ligand_span(lig)
+        row.update({
+            "receptor": receptor_label(self.spec),
+            "protein": self.spec.get("protein", ""),
+            "box_center": list(self.spec["center"]),
+            "box_size": list(self.spec["size"]),
+            "box_group": "main",
+            "ligand_span": [round(float(x), 2) for x in span] if span else [],
+            "engine_flavor": flavor,
+        })
+        return row
 
     def _new_vina(self, seed: int):
         from vina import Vina  # type: ignore
@@ -305,7 +394,9 @@ class DockingSession:
                     "ligand_warnings": warns, "ligand_facts": facts}
 
         dock_smiles = prep.get("smiles") or smiles
-        if self.mode == "vina":
+        if self.mode.startswith("external:"):
+            r = self._dock_external(prep, exhaustiveness, n_poses, pose_base)
+        elif self.mode == "vina":
             r = self._dock_vina(dock_smiles, exhaustiveness, n_poses, pose_base)
         else:
             r = self._dock_autodock(dock_smiles, pose_base)
@@ -446,7 +537,15 @@ def _pdbqt_tors(pdbqt_path: str) -> int:
 
 
 def _autodock_bin(name: str) -> Optional[str]:
+    """定位 AD4 家族二进制：`<NAME>_BIN`（如 `AUTODOCK4_BIN`）→ PATH。找不到返回 None。"""
     import shutil
+
+    override = str(env(f"{name.upper()}_BIN", "") or "").strip()
+    if override:
+        target = Path(override).expanduser()
+        if target.is_file() and os.access(target, os.X_OK):
+            return str(target)
+        logger.warning("%s_BIN 指向的文件不可执行，回退 PATH 查找：%s", name.upper(), override)
     return shutil.which(name) or None
 
 
@@ -868,6 +967,23 @@ def _large_group_box(main_size: Sequence[float], spans: Sequence[Sequence[float]
     return out
 
 
+def external_engine_note(external: Dict[str, Any], engine: str) -> str:
+    """外部引擎的**如实播报**：本次到底由谁执行，一看就知道。
+
+    登记了 GPU 引擎却用内置引擎跑，是用户最容易误解的一种状态（以为在 GPU 上）；
+    反过来，真的用外部引擎执行时也要说清楚设备与批次。
+    """
+    from docking_agent.core.params import resolve_engine
+
+    effective = resolve_engine(engine)
+    where = (f"{external.get('flavor_label', '')}"
+             f"（设备 {external.get('device')}，单批 {external.get('batch_size')} 个配体）")
+    if effective == "external":
+        return f"外部对接引擎：{where} —— 本次对接由它执行。"
+    return (f"已登记外部对接引擎 {where}；本次 engine={effective}，仍由内置引擎计算 —— "
+            "要用它请把引擎设为 external。")
+
+
 def _note(note_cb: Optional[Any], message: str) -> None:
     """播报准备阶段说明（对接尚未开始）。回调异常绝不影响对接本身。"""
     if note_cb is None:
@@ -905,7 +1021,8 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                  protonation: str = "", protonation_ph: Any = None) -> Dict[str, Any]:
     """小分子库 × 蛋白质库 对接：对每个受体 × 每个配体执行真实对接，按受体分组返回。
 
-    engine: 'auto'(默认，优先 Vina，失败自动回退 AutoDock CPU) / 'vina' / 'autodock'(AutoDock4 CPU)。
+    engine: 'auto'(默认，优先 Vina，失败自动回退 AutoDock CPU) / 'vina' / 'autodock'(AutoDock4 CPU) /
+            'external'(设置页登记的外部引擎，如 AutoDock-GPU；未登记或未就绪**直接报错**，不静默回退)。
     site:   覆盖受体注册位点，形如 {"center": [x,y,z], "size": [a,b,c]}（用于自定义/微调已知位点）。
     pose_dir: 若提供，每个分子的最佳位姿写入该目录（中间数据留档）。
     max_ligands: 覆盖环境变量 DOCKING_MAX_LIGANDS 的上限（None 表示读环境变量，0 表示不限制）。
@@ -926,10 +1043,8 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
     from docking_agent.core.external_tools import configured_bin, require_engine
 
     external = require_engine() if configured_bin() else {}
-    if external and callable(note_cb):
-        note_cb(f"外部对接引擎已登记：{external.get('flavor_label', '')}"
-                f"（设备 {external.get('device')}，单批 {external.get('batch_size')} 个配体）；"
-                "执行适配启用前，本次仍由内置引擎完成计算。")
+    if external:
+        _note(note_cb, external_engine_note(external, engine))
 
     # 安全阀：限制单次对接分子数，避免误传大库导致长时间占用
     if max_ligands is None:

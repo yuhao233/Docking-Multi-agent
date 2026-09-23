@@ -57,9 +57,13 @@ def test_site_fields_are_array_typed_in_schema(tool_name: str, field: str) -> No
 
 def test_engine_enums_are_literal_in_schema() -> None:
     from docking_agent.agents.dispatch import run_docking
+    from docking_agent.tools.docking import molecular_docking
 
     prop = run_docking.tool_call_schema.model_json_schema()["properties"]["engine"]
-    assert set(prop.get("enum") or []) == {"auto", "vina", "autodock"}, prop
+    assert set(prop.get("enum") or []) == {"", "auto", "vina", "autodock", "external"}, prop
+    assert "" in (prop.get("enum") or []), "留空 = 跟随设置页「对接引擎（默认）」"
+    sub = molecular_docking.tool_call_schema.model_json_schema()["properties"]["engine"]
+    assert set(sub.get("enum") or []) == {"", "auto", "vina", "autodock", "external"}, sub
 
 
 def test_run_docking_accepts_both_array_and_legacy_string(monkeypatch: pytest.MonkeyPatch) -> None:

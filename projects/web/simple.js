@@ -72,7 +72,11 @@ async function refreshHealth() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     dot.className = 'dot dot-ok';
-    const engine = data.engine_available ? '引擎就绪' : '未检测到引擎';
+    const engines = data.engine_available || {};
+    const ready = Object.keys(engines)
+      .filter((key) => key !== 'external_flavor' && engines[key])
+      .map((key) => (key === 'external' && engines.external_flavor ? engines.external_flavor : key));
+    const engine = ready.length ? ('引擎 ' + ready.join(' / ')) : '未检测到引擎';
     text.textContent = '服务正常 · ' + engine + ' · v' + (data.version || '—');
   } catch (error) {
     dot.className = 'dot dot-bad';

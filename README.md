@@ -242,15 +242,16 @@ var/runs/<run_id>/
 | pdb2pqr | 可选 | 受体不按目标 pH 重新分配质子化态，报告注明 |
 | AutoDock4 | 可选 | 仅保留主引擎 |
 | 中文字体 | 可选 | 图表与 PDF 中的中文可能显示异常 |
-| GPU 对接引擎 | 可选 | 由用户提供可执行文件并在设置中登记；登记后不可用时任务直接失败并提示，不回退 |
+| GPU 对接引擎 | 可选 | 由用户提供可执行文件并在设置中登记，再把「对接引擎」设为 `external`；已接入执行的是 AutoDock-GPU（会话内建格点图）与 CPU 版 Vina CLI，结果行记录引擎与版本；登记后探测不通过则任务直接失败并提示，不回退 |
+| 命令行 AutoDock Vina | 可选 | 本机已有 CLI 时可用 `VINA_BIN` 登记路径（或让它出现在 `PATH`）：设置页「检测」、`/api/tools/probe` 与 `doctor.sh` 会显示其类型与版本，**登记不改变对接由谁执行**（默认仍用内置绑定，同版本）；要让 CLI 真正执行对接，把同一路径填入 `EXTERNAL_DOCKING_BIN` 并把引擎设为 `external` |
 
 ## 质量保障
 
 | 检查 | 内容 |
 | --- | --- |
-| `pytest` | 计算内核、智能体契约、受理与继承、报告版式与 golden、接口协议、候选生命周期、工具调用序列自愈、步数预算、身份去重、安全边界、运行记录损坏与保留策略等，本机全量 **811 项**通过（多数用例可离线运行） |
+| `pytest` | 计算内核、智能体契约、受理与继承、报告版式与 golden、接口协议、候选生命周期、工具调用序列自愈、步数预算、身份去重、外部引擎执行适配、默认引擎解析、安全边界、运行记录损坏与保留策略等，本机全量 **840 项**通过（多数用例可离线运行） |
 | `projects/scripts/check.sh --static` | 五道静态门禁一次跑完：lint（手写 AST 检查 + 基线棘轮）、ruff、mypy（渐进白名单）、界面契约（`check_web.py`，239 项）、安全姿态 |
-| `projects/scripts/check.sh --fast` | 与 CI 等价的离线快跑：跳过需要本机引擎的用例（563 通过 / 248 跳过，约 20 秒） |
+| `projects/scripts/check.sh --fast` | 与 CI 等价的离线快跑：跳过需要本机引擎的用例（588 通过 / 252 跳过，约 30 秒） |
 | `projects/scripts/ui_e2e.js` | DOM 级端到端（230 项，jsdom + 真实后端）：对话、参数、结果、设置、协议帧、两套界面 |
 | `projects/scripts/browser_check.py` | 真实浏览器（85 项）：标准协议请求形状、Markdown 渲染、思考折叠、候选点选时机与运行态、报告版式；候选交互另有 `browser_choice_checks.py` |
 | `projects/scripts/snapshot_ids.py diff` | 界面 id 基线（244 个）：改动前端结构时防止契约被误删 |

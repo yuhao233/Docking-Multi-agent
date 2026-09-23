@@ -1,4 +1,4 @@
-# 本地 HTTP API 契约（v0.7.0）
+# 本地 HTTP API 契约（v0.8.0）
 
 本文件是**前端与后端的接口契约**。任何一方改动都必须同步更新本文件。
 服务默认监听 `http://127.0.0.1:5000`，无鉴权（本地单机使用）。
@@ -17,11 +17,11 @@
 ```json
 {
   "status": "ok",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "llm_configured": true,
   "model": "deepseek-flash",
   "base_url": "https://api.deepseek.com",
-  "engine_available": {"vina": true, "autodock": false},
+  "engine_available": {"vina": true, "autodock": true, "external": true, "external_flavor": "autodock-gpu"},
   "roles": {
     "intake":      {"model": "deepseek-flash", "temperature": 0.0, "...": "..."},
     "coordinator": {"model": "deepseek-flash", "temperature": 0.2, "top_p": 0.9,
@@ -169,7 +169,8 @@ curl -s "localhost:5000/api/runs?q=阿司匹林&status=ok&since=2026-09-01&offse
 }
 ```
 字段说明：`site_center`/`site_size` 为空则用该受体注册位点；`molecule_file` 为服务端可读路径或 URL；
-`max_ligands=0` 表示不限制；`engine` ∈ `auto|vina|autodock`。
+`max_ligands=0` 表示不限制；`engine` ∈ `auto|vina|autodock|external`（`external` = 设置页登记的
+外部引擎，未登记或探测不通过时**直接报错**，不静默回退内置引擎）。
 `exhaustiveness` / `n_poses` 为 `null`（或省略）时按任务/库柔性/盒体积/预算**自动规划**，
 并在报告「参数自动规划」一节给出理由链；给出数值即用户参数，规划不改写（见 §7.6）。
 
@@ -1761,6 +1762,13 @@ SSE `choices` 事件与 `GET /api/runs/{id}` 的 `run.choices` 给出结构化�
 `pka` 是**配体质子化的专业 pKa 引擎**（Dimorphite-DL）：`ok=false` 时配体 pH 处理会回退
 内置规则表，`hint` 给出 `--no-deps` 安装命令（其元数据把 `rdkit` 钉在 `<2026`，直接安装会降级 RDKit）。
 除 `not_configured` 与 `ready` 之外的状态都会让对接任务**拒绝启动**并返回 `hint` 中的补齐方法。
+
+**登记 ≠ 执行**：`VINA_BIN`（CPU CLI）只进探测报告；要让对接真的交给外部引擎，需填
+`EXTERNAL_DOCKING_BIN` 并把 `engine` 设为 `external`（表单 / `molecular_docking` 工具 /
+设置项「对接引擎（默认）」三处任一）。目前**已接入执行适配**的是 `autodock-gpu`（需 `autogrid4`
+生成格点图，可用 `AUTOGRID4_BIN` / `AUTODOCK4_BIN` 指定路径）与 `vina-cpu`；`unidock` / `vina-gpu`
+只登记，执行层直接报错。结果行与内置引擎同形，并记录 `engine`（如 `autodock-gpu`）与
+`engine_version`。
 
 ## 标准 Agent Protocol 面（兼容子集，阶段 1）
 

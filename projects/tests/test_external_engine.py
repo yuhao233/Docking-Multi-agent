@@ -26,6 +26,8 @@ _FAKE_SCRIPTS = {
     "vina-gpu": "AutoDock-Vina-GPU 2.1\nQuickVina2-GPU 2.1\n",
     "autodock-gpu": "AutoDock-GPU version 1.6 (OpenCL)\n",
     "unknown": "some-docking-tool 0.1\n",
+    # CPU 版官方 CLI：`--version` 打印 "AutoDock Vina <版本或 git 短哈希>"
+    "vina-cpu": "AutoDock Vina 1.2.7\n",
 }
 
 
@@ -51,7 +53,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
 
 @pytest.fixture()
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (ET.ENV_DOCKING_BIN, ET.ENV_GPU_DEVICE, ET.ENV_GPU_BATCH):
+    for name in (ET.ENV_DOCKING_BIN, ET.ENV_VINA_BIN, ET.ENV_GPU_DEVICE, ET.ENV_GPU_BATCH):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -150,10 +152,34 @@ def test_build_argv_per_flavor() -> None:
     assert "/tmp/a.pdbqt" in uni and "--center_x" in uni and "--size_z" in uni
     vg = ET.build_argv("vina-gpu", **common)
     assert "--ligand_directory" in vg and "--thread" in vg
-    adg = ET.build_argv("autodock-gpu", **common)
-    assert "--nrun" in adg and "--ligand_directory" in adg
+    # AutoDock-GPU 吃 autogrid4 的格点图（--ffile），没有图就不是合法调用
+    with pytest.raises(ET.ExternalEngineError):
+        ET.build_argv("autodock-gpu", **common)
+    adg = ET.build_argv("autodock-gpu", **common, fld="/tmp/out/rec.maps.fld",
+                        resnam="/tmp/out/adgpu_out")
+    assert "--ffile" in adg and "/tmp/out/rec.maps.fld" in adg
+    assert "--nrun" in adg and "--xmloutput" in adg
+    assert "--ligand_directory" not in adg, "AutoDock-GPU 一次只吃一个配体文件"
     with pytest.raises(ET.ExternalEngineError):
         ET.build_argv("", **common)
+
+
+def test_autodock_gpu_devnum_is_one_based() -> None:
+    """`GPU_DEVICE` 是 0 基（项目口径），AutoDock-GPU 的 `--devnum` 是 1 基（实测传 0 被拒）。
+
+    真实故障：填 `GPU_DEVICE=0` 时下发 `--devnum 0`，引擎直接报
+    "must be an integer between 1 and 65536" 并以状态 255 退出 —— 登记了 GPU 却算不出结果。
+    """
+    argv = ET.build_argv("autodock-gpu", binary="/opt/adgpu", receptor="", ligands=["/tmp/l.pdbqt"],
+                         out_dir="/tmp/out", center=[1, 2, 3], size=[20, 20, 20],
+                         exhaustiveness=8, n_poses=1, seed=42,
+                         fld="/tmp/out/rec.maps.fld", resnam="/tmp/out/o")
+    assert argv[argv.index("--devnum") + 1] == "1", "0 基设备 0 应下发 --devnum 1"
+    argv = ET.build_argv("autodock-gpu", binary="/opt/adgpu", receptor="", ligands=["/tmp/l.pdbqt"],
+                         out_dir="/tmp/out", center=[1, 2, 3], size=[20, 20, 20],
+                         exhaustiveness=8, n_poses=1, seed=42, device=2,
+                         fld="/tmp/out/rec.maps.fld", resnam="/tmp/out/o")
+    assert argv[argv.index("--devnum") + 1] == "3"
 
 
 def test_gpu_device_and_batch_from_env(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,6 +189,50 @@ def test_gpu_device_and_batch_from_env(clean_env: None, monkeypatch: pytest.Monk
     assert ET.gpu_batch_size() == 250
 
 
+def test_cpu_vina_is_recognized_as_its_own_flavor(clean_env: None,
+                                                  monkeypatch: pytest.MonkeyPatch,
+                                                  tmp_path: Path) -> None:
+    """CPU 版 AutoDock Vina CLI 必须被识别（此前只认三类 GPU 工具 → 本机装了也判「未识别」）。"""
+    assert ET.detect_flavor("AutoDock Vina 1.2.7") == "vina-cpu"
+    assert ET.detect_flavor("AutoDock Vina f458505-mod") == "vina-cpu"
+    # 三类 GPU 工具的识别不受影响（顺序敏感：vina-gpu 的特征串更长，不能被 vina-cpu 抢走）
+    assert ET.detect_flavor("AutoDock-Vina-GPU 2.1\nQuickVina2-GPU 2.1") == "vina-gpu"
+    binary = _fake_binary(tmp_path, "vina-cpu")
+    monkeypatch.setenv(ET.ENV_DOCKING_BIN, str(binary))
+    report = ET.collect(check_gpu=False)
+    assert report["state"] == "ready" and report["flavor"] == "vina-cpu", report
+    assert report["gpu"].get("skipped") is True, "CPU 引擎不该因为看不到 GPU 被判不可用"
+    argv = ET.build_argv("vina-cpu", binary=str(binary), receptor="/tmp/r.pdbqt",
+                         ligands=["/tmp/l.pdbqt"], out_dir=str(tmp_path), center=[1, 2, 3],
+                         size=[20, 20, 20], exhaustiveness=8, n_poses=3, seed=42)
+    assert argv[0] == str(binary) and "--ligand" in argv and "--out" in argv
+    assert "--size_z" in argv and "20.000" in argv
+
+
+def test_registering_vina_bin_does_not_change_the_execution_path(
+        clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """「登记路径、不改默认执行」：VINA_BIN 只进探测报告，`configured_bin()` 必须仍为空。"""
+    binary = _fake_binary(tmp_path, "vina-cpu")
+    monkeypatch.setenv(ET.ENV_VINA_BIN, str(binary))
+    assert ET.vina_cli_bin() == str(binary)
+    assert ET.configured_bin() == "", "登记不能等价于启用"
+    report = ET.collect(check_gpu=False)
+    assert report["configured"] is False and report["state"] == "not_configured"
+    assert report["detected"]["flavor"] == "vina-cpu"
+    assert str(binary) in report["detected"]["path"]
+    assert "内置" in report["message"] and "发现" in report["message"]
+    assert ET.require_engine() == {}, "未启用时执行层不应拿到外部引擎"
+
+
+def test_vina_bin_falls_back_to_path_and_ignores_bad_path(
+        clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    binary = _fake_binary(tmp_path, "vina-cpu")
+    monkeypatch.setattr(ET.shutil, "which", lambda name: str(binary) if name == "vina" else None)
+    assert ET.vina_cli_bin() == str(binary)
+    monkeypatch.setenv(ET.ENV_VINA_BIN, str(tmp_path / "not-there"))
+    assert ET.vina_cli_bin() == str(binary), "登记的路径无效时应回退到 PATH 查找"
+
+
 # --------------------------------------------------------------------------- #
 # 5) 设置页与 doctor 的一致性
 # --------------------------------------------------------------------------- #
@@ -170,7 +240,8 @@ def test_settings_exposes_external_group() -> None:
     from docking_agent.settings import SPEC_BY_PATH, SPECS
 
     for path in ("external.docking_bin", "external.gpu_device", "external.gpu_batch_size",
-                 "external.p2rank_home", "external.pdb2pqr_bin"):
+                 "external.p2rank_home", "external.pdb2pqr_bin",
+                 "external.vina_bin", "external.autodock4_bin", "external.autogrid4_bin"):
         assert path in SPEC_BY_PATH, f"设置页缺少 {path}"
         assert SPEC_BY_PATH[path].env, f"{path} 必须映射到环境变量"
     assert [s.path for s in SPECS if s.group == "external"], "external 分组应当非空"

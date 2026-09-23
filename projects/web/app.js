@@ -988,7 +988,10 @@ async function loadHealth() {
       ? ('已配置' + (data.model ? '（' + data.model + '）' : ''))
       : '未配置（多 Agent 模式不可用）');
     const engines = data.engine_available || {};
-    const names = Object.keys(engines).filter((key) => engines[key]);
+    const names = Object.keys(engines)
+      .filter((key) => key !== 'external_flavor' && engines[key])
+      .map((key) => (key === 'external' && engines.external_flavor
+        ? engines.external_flavor : key));
     $('health-engine').textContent = '引擎：' + (names.length ? names.join(' / ') : '无可用引擎');
     $('health-version').textContent = '版本 ' + fmtText(data.version);
     if (data.llm_configured === false) {
