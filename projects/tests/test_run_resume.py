@@ -197,3 +197,77 @@ def test_resume_keeps_user_parameters_and_applies_the_answer(
         for rid in {p.name for p in store.root.iterdir()
                     if p.is_dir() and p.name.startswith("2026")} - {run.id}:
             pass
+
+
+# --------------------------------------------------------------------------- #
+# 暂停必须"让当前步自然结束"，不能中途掐断流
+# --------------------------------------------------------------------------- #
+class _BlockingStubGraph(_StubGraph):
+    """第一步就下发阻断式候选（模拟 `molecular_docking` 在并行工具步里发问）。"""
+
+    def __init__(self, run: Any) -> None:
+        super().__init__()
+        self._run = run
+
+    async def astream(self, payload: Any, config: Any = None, **kwargs: Any) -> Any:
+        self.payloads.append(payload)
+        self._run.data["choices"] = [
+            {"id": "positive_control:E:2:Z9N", "kind": "positive_control", "label": "用 Z9N 作对照",
+             "value": "OC[C@H]1O[C@@](O)(CO)[C@@H](O)[C@@H]1O", "prompt": "把 Z9N 作为阳性对照继续"},
+        ]
+        self._run.data["choices_blocking"] = "positive_control"
+        yield "messages", (AIMessage(content="第一段：正在并行评估与对接", id="a1"), {})
+        yield "messages", (AIMessage(content="第二段：等你点选后再开跑", id="a2"), {})
+        yield "messages", (AIMessage(content="第三段：结束", id="a3"), {})
+
+
+def test_blocking_choice_does_not_cut_the_stream(client: TestClient,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """阻断式候选下发后**不得中断流**（否则同一步里在飞的工具结果会丢）。
+
+    真实故障（运行 20260924-011325-0913）：`run_property_assessment` 与 `run_docking` 并行进行时
+    候选中途下发，旧实现立即 `return` 掐断 SSE —— 性质评估虽然跑完了，但它的 ToolMessage
+    没进 checkpoint；用户点选后只能补"该调用被中断、没有结果"的占位回执，模型据此直接收尾，
+    对接一次都没跑（`ranking.json` 是空数组）。
+    """
+    from docking_agent.api import support
+    from docking_agent.runs import get_run_store
+
+    store = get_run_store()
+    run = store.new("agent", {"message": "上传文件做筛选", "mode": "chat"})
+    stub = _BlockingStubGraph(run)
+    monkeypatch.setattr(support.state, "get_graph", lambda: stub)
+    try:
+        resp = client.post("/api/agent/stream", json={
+            "mode": "chat", "message": "上传文件做筛选", "conversation_id": "conv-blocking"})
+        assert resp.status_code == 200, resp.text
+        assert stub.payloads, "请求没有走到图执行"
+        # 三段都在流里 = 没有中途掐断（旧实现只能看到第一段之前的部分）
+        for marker in ("第一段", "第二段", "第三段"):
+            assert marker in resp.text, f"流被提前掐断，缺少：{marker}"
+    finally:
+        run.data.pop("choices", None)
+        run.data.pop("choices_blocking", None)
+        import shutil
+
+        shutil.rmtree(store.root / run.id, ignore_errors=True)
+
+
+def test_pending_blocking_choice_marks_the_run_needs_user_input(tmp_path: Any) -> None:
+    """有待回答的阻断式问题时，即使别的工具已经出结果，运行也必须是 needs_user_input。
+
+    否则历史里显示 ok、用户以为跑完了，而对接其实一次都没跑（工具按护栏拒绝开跑）。
+    """
+    from docking_agent.agents.persistence import persist_agent_run
+    from docking_agent.runs import Run
+
+    run = Run(tmp_path, "20260924-011325-0913", "agent", {"message": "上传文件做筛选"})
+    run.data["choices"] = [{"id": "positive_control:none", "kind": "positive_control",
+                            "label": "不使用对照", "value": "", "prompt": "不用对照"}]
+    run.data["choices_blocking"] = "positive_control"
+    from langchain_core.messages import AIMessage
+
+    result = persist_agent_run(run, [AIMessage(content="等待用户选择", id="a1")], "")
+    assert result["status"] == "needs_user_input", result["status"]
+    assert result.get("needs_user_input") is True
+    assert "暂停" in str(result.get("pause_reason") or "")

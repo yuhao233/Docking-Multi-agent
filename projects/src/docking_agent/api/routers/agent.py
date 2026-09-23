@@ -171,6 +171,9 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                 choice_event = _choices_event()
                 if choice_event:
                     out.append(choice_event)
+                    if run.data.get("choices_blocking"):
+                        # 如实记录"本轮会等用户决定"（不打断流：见下方 async for 的说明）
+                        run.log("已就阻断式问题征询用户：本轮不再开始对接，等界面点选后续跑同一运行")
                 info = run.data.get("live_progress")
                 if info and info != last_progress.get("info"):
                     last_progress["info"] = dict(info)
@@ -189,25 +192,12 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                 stream = stream_agent_sse(graph, {"messages": [{"role": "user", "content": message}]},
                                           config, run.id, context=current_agent_context())
             async for chunk in _interleave(stream, 1.0, _tick):
-                # 阻断式候选（如「共晶配体是否作阳性对照」）一经下发，本轮立即收口：
-                # 用户没点选就不该继续算（真实故障：问题 22:47 下发、却把 2961 个分子算到 23:23）。
-                if run.data.get("choices_blocking") and run.data.get("choices"):
-                    run.log("本轮因需要用户决定而暂停：等界面点选后续跑同一运行")
-                    # F3：暂停也要留痕（否则这次运行连"模型说了什么"都查不到）。
-                    # 完整持久化（result/报告）留给续跑结束时统一做，这里只写消息日志。
-                    try:
-                        from docking_agent.agents.persistence import build_messages_log  # noqa: PLC0415
-
-                        _, _msgs = await _final_state(graph, config)
-                        run.write_json("messages_log", build_messages_log(_msgs, ""),
-                                       label="模型可见消息日志（角色/工具/长度/开头）")
-                    except Exception:  # noqa: BLE001 - 留痕失败不影响暂停本身
-                        logger.debug("暂停时写消息日志失败", exc_info=True)
-                    run.finish("needs_user_input")
-                    yield sse_event({"type": "final", "run_id": run.id, "content": ""})
-                    yield sse_event({"type": "done", "run_id": run.id,
-                                     "summary": run.to_dict()})
-                    return
+                # 阻断式候选**不在这里中断流**：实战踩坑（运行 20260924-011325-0913）——
+                # 同一模型步里还并行跑着 `run_property_assessment`，流被中途掐断后它的 ToolMessage
+                # 永远没进 checkpoint，续跑时只能补"该调用被中断、没有结果"的占位回执，
+                # 模型据此认为两个工具都没结果、直接收尾，对接一次都没跑。
+                # 正确做法：让当前步自然结束（对接工具本身会拒绝开跑，见 blocking_choice_pending），
+                # 由持久化按"有待回答的阻断式问题"把运行标成 needs_user_input 并落盘。
                 if cancel_event.is_set():
                     run.log("已被用户取消")
                     run.finish("cancelled", error="用户取消")

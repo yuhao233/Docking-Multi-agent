@@ -1,11 +1,11 @@
 {
   "artifacts": {
     "技术文档.docx": {
-      "sha256": "a0c4d74fc37028c0458b0e1681cf95ecd7469fc1cadf430f9b3f9bedcb7afd03",
+      "sha256": "d9f023964e9adab92ccb777dc954c62d4dd825ae484a592c1bee8451e5acc62c",
       "source": "技术文档.md"
     },
     "技术文档.pdf": {
-      "sha256": "a0c4d74fc37028c0458b0e1681cf95ecd7469fc1cadf430f9b3f9bedcb7afd03",
+      "sha256": "d9f023964e9adab92ccb777dc954c62d4dd825ae484a592c1bee8451e5acc62c",
       "source": "技术文档.md"
     }
   }

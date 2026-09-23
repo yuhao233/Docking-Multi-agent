@@ -533,8 +533,9 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
   回答方式：点选后前端**续跑同一个运行**（请求带 `resume_run_id` + `resume_choice_kind`），
   `GET /api/runs/{id}` 里始终只有这一条记录；不再另起运行。
   `blocking=true` 表示**阻断式问题**（当前只有「受体自带共晶配体是否作阳性对照」）：
-  下发后本轮立即以 `needs_user_input` 收口，工具层也会拒绝在未回答前重新开跑（真实故障：
-  问题 22:47 下发、却把 2961 个分子算到 23:23，用户回答时结果早已算完）。
+  工具层会拒绝在未回答前开跑，本轮**自然结束**（不中断事件流——同一模型步里可能还有在飞的
+  工具调用，掐断会让它们的结果进不了 checkpoint），持久化按"有待回答的阻断式问题"把运行标成
+  `needs_user_input`；用户点选后**续跑同一运行**。
   每项 `{id, kind, label, value, prompt, detail}`（`kind ∈ receptor|molecule`）：
   `label` 给人看、`value` 是机器可用值（accession / CID / SMILES）、`prompt` 是点选后原样发出的追问、
   `detail` 带物种/蛋白名/结构来源/打分。附带 `note` 说明为什么需要用户选。

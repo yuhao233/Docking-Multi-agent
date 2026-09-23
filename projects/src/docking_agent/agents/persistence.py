@@ -510,6 +510,18 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     # 却照样写 11 KB 全是空表格的报告 + 4 张空图 + 328 KB PDF，页面还把它当作
     # 「规范报告（report.md · 唯一权威版）」挂到对话气泡上 —— 用户看到的是纯噪声。
     narrative = (final_text or "").strip()
+    # 阻断式问题（如共晶配体是否作阳性对照）还等着用户点选时，运行状态必须是
+    # `needs_user_input` —— 即使导入/性质等工具已经产出了结果。真实故障
+    # （2026-09-24，运行 20260924-011325-0913）：暂停的 run 被标成 ok，用户以为跑完了，
+    # 而对接其实一次都没跑（工具按护栏拒绝开跑）。
+    if run.data.get("choices_blocking") and run.data.get("choices"):
+        kinds = "、".join(sorted({str(c.get("kind") or "") for c in run.data["choices"]}))
+        result["status"] = "needs_user_input"
+        result["needs_user_input"] = True
+        result["pause_reason"] = (f"已向用户提出确认问题（{kinds or 'choices'}，"
+                                  f"{len(run.data['choices'])} 项）：本轮暂停，未开始对接")
+        if not list(result.get("notes") or []):
+            result["notes"] = [result["pause_reason"]]
     executed = bool(molecules or properties or candidate_results or pocket_analysis or ranking)
     if not executed:
         decision = str((run.data.get("task_spec") or {}).get("decision") or "")

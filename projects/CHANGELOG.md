@@ -2493,3 +2493,21 @@ LLM_API_KEY=ci-graph-build-only ... bash langgraph-deploy/scripts/test.sh    # 4
 
 门禁：`check.sh --static` / `--fast`（603 通过 / 253 跳过）、`ui_e2e` 238/238、`browser_check` 86/86、
 `snapshot_ids` 244 不变、文档一致性通过。
+
+---
+
+# 2026-09-24 · 暂停不得中断事件流（运行 20260924-011325-0913 实测）
+
+用户在「上传受体 + 2961 条库」的运行里看到「上一轮的工具调用在运行中被中断…涉及
+run_property_assessment、run_docking」，运行 8 秒就结束、对接一次没跑。复盘：
+
+- 阻断式候选下发的那一刻，同一模型步里 `run_property_assessment` **还在飞**；旧实现在心跳里
+  直接 `return` 掐断 SSE，于是它的 ToolMessage 永远没进 checkpoint（结果只落在
+  `properties_tool.json`）。用户点选后续跑时，`_heal_thread` 只能补"该调用被中断、没有结果"
+  的占位回执，模型据此认为两个工具都没结果、直接收尾（`ranking.json` 为空数组）。
+- 现在**不再中途掐断**：对接工具按护栏拒绝开跑，当前步自然结束，持久化按"有待回答的阻断式
+  问题"把运行标成 `needs_user_input`（即使导入/性质已经出结果，也不会显示成 ok）。
+  新增 2 条回归：`test_blocking_choice_does_not_cut_the_stream`（三段事件必须都在流里）、
+  `test_pending_blocking_choice_marks_the_run_needs_user_input`。
+
+门禁：`check.sh --static` / `--fast`（606 通过 / 253 跳过）、`ui_e2e` 241/241、`browser_check` 86/86。
