@@ -1,11 +1,11 @@
 {
   "artifacts": {
     "技术报告.docx": {
-      "sha256": "06165c4e24110c04db9b1ef93c91de13e2b3f8260473f70ea28fc07c22629a83",
+      "sha256": "03cf2f186d640e43ca11e718e6949de0642d3bca64293d70b18460da0e0d8409",
       "source": "技术报告.md"
     },
     "技术报告.pdf": {
-      "sha256": "06165c4e24110c04db9b1ef93c91de13e2b3f8260473f70ea28fc07c22629a83",
+      "sha256": "03cf2f186d640e43ca11e718e6949de0642d3bca64293d70b18460da0e0d8409",
       "source": "技术报告.md"
     }
   }

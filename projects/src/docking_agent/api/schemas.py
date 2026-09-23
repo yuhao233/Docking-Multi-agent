@@ -46,7 +46,11 @@ class AgentRequest(BaseModel):
     exhaustiveness: Optional[int] = Field(
         default=None,
         description="搜索强度；留空(None)=自动规划（界面勾「自动」时不发本字段），给值=用户显式指定")
-    engine: str = Field(default="", description="对接引擎；留空=跟随系统默认（vina）/ auto / autodock")
+    engine: str = Field(
+        default="",
+        description=("对接引擎；留空=跟随设置页「对接引擎（默认）」（出厂 auto：优先 Vina，"
+                     "不可用时回退 AutoDock4 CPU）。可显式给 auto / vina / autodock / external"
+                     "（external=设置页登记的外部引擎，如 AutoDock-GPU；未登记或未就绪会直接报错）。"))
     pocket_engine: str = Field(default="", description="结合位点来源引擎：''(默认 auto)/auto/p2rank/geometric/known_site")
     site_center: Optional[List[float]] = None
     site_size: Optional[List[float]] = None

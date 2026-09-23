@@ -105,7 +105,7 @@
           <p class="chat-quick-title">
             运行参数
             <span class="tip-icon" tabindex="0" role="button" aria-label="运行参数说明"
-              data-tip-html="这里的参数<b>直接对本次运行生效</b>（作为默认值下发）；<br>指令里明确写到的（例如「搜索强度用 32」）仍然优先于这里。<br>未改动时使用系统默认值：引擎 vina、质子化 ph(7.4)、n_poses 1、搜索强度 16。">?</span>
+              data-tip-html="这里的参数<b>直接对本次运行生效</b>（作为默认值下发）；<br>指令里明确写到的（例如「搜索强度用 32」）仍然优先于这里。<br>未改动时使用系统默认值：引擎取「设置 → 对接引擎（默认）」（出厂 <code>auto</code>：优先 Vina，不可用时回退 AutoDock4 CPU）、质子化 ph(7.4)、n_poses 1、搜索强度 16。">?</span>
             <span class="hint-inline">只下发改动过的项 · 未改动 = 自动/系统默认</span>
           </p>
         </div>
@@ -740,7 +740,7 @@
     <label class="field">
       <span class="field-label">对接引擎
         <span class="tip-icon" tabindex="0" role="button" aria-label="对接引擎说明"
-          data-tip-html="<b>auto</b> = 自动挑选可用引擎；<b>vina</b> = AutoDock Vina（通常最快）；<b>autodock</b> = 经典 AutoDock4。<br>默认取「设置 → 对接引擎」，未配置时为 <code>vina</code>。">?</span>
+          data-tip-html="<b>auto</b> = 自动挑选可用引擎（优先内置 Vina，不可用时回退 AutoDock4 CPU）；<b>vina</b> = 内置 AutoDock Vina（CPU）；<b>autodock</b> = 经典 AutoDock4（需 autodock4 + autogrid4）；<b>external</b> = 设置页「外部工具」登记的外部引擎，如 GPU 版 AutoDock-GPU（只登记不执行、或未登记时会直接报错，不会静默改用内置引擎）。<br>留空/未改动时取「设置 → 对接引擎（默认）」（出厂 <code>auto</code>）。">?</span>
       </span>
       <select id="engine-select">
         <option value="auto">auto（自动选择可用引擎）</option>

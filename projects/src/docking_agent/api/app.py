@@ -102,6 +102,12 @@ def create_app() -> FastAPI:
                                   "如经反向代理部署，请用 DOCKING_ALLOWED_ORIGINS 声明允许的来源。"},
             )
         response = await call_next(request)
+        # 前端资源不允许浏览器按启发式规则"猜"缓存：页面/脚本改完后，打开着的旧标签页
+        # 与普通刷新都必须拿到新内容。真实困扰（2026-09-23）：引擎下拉新增 external 后，
+        # 旧标签页仍显示旧选项，用户以为功能没上线。只作用于页面与静态脚本，不碰 API 响应。
+        if request.url.path in ("/", "/advanced", "/simple") \
+                or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
         response.headers.setdefault("Content-Security-Policy", _CSP)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")

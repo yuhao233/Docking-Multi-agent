@@ -110,6 +110,11 @@
 （无参数控件、标准协议、背景动效可关闭、无孤儿 id），真实浏览器行为由
 `scripts/browser_check.py` 的简易模式用例守护。
 
+**缓存策略**：页面（`/`、`/advanced`、`/simple`）与静态脚本（`/static/*`）统一带
+`Cache-Control: no-cache, must-revalidate` —— 浏览器每次使用前必须回源校验，避免
+「功能已上线、旧标签页仍显示旧界面」的假象（`tests/test_security_boundary.py` 有回归）。
+`/api/*` 不加该头，缓存代理与压测行为不受影响。
+
 ## 2. 执行（SSE 流式）
 
 SSE 统一报文：`event: message\ndata: {JSON}\n\n`；最后一条一定是 `type=done` 或 `type=error`。

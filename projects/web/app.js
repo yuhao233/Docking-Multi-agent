@@ -6417,6 +6417,18 @@ function bindHistoryControls() {
     const node = $(id);
     if (node) node.addEventListener('keydown', (event) => { if (event.key === 'Enter') submitHistorySearch(); });
   });
+  /* 输入即检索（防抖 300ms）。此前搜索框只在回车/点「查询」时才发请求：用户边打字边等结果，
+     看起来像"搜不出来"；DOM 级门禁（scripts/ui_e2e.js 的历史检索用例）也踩在同一处。
+     回车与「查询」按钮保持不变，输入防抖只是让等待期不再需要猜什么时候按。 */
+  let historySearchTimer = null;
+  ['history-q', 'history-receptor'].forEach((id) => {
+    const node = $(id);
+    if (!node) return;
+    node.addEventListener('input', () => {
+      if (historySearchTimer) clearTimeout(historySearchTimer);
+      historySearchTimer = setTimeout(() => { submitHistorySearch(); }, 300);
+    });
+  });
   ['history-status', 'history-kind', 'history-since', 'history-until'].forEach((id) => {
     const node = $(id);
     if (node) node.addEventListener('change', () => { submitHistorySearch(); });

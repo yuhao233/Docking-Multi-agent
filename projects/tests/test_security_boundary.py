@@ -263,6 +263,22 @@ def test_security_headers_are_present(client: TestClient) -> None:
     assert resp.headers.get("x-frame-options") == "DENY"
 
 
+def test_frontend_assets_forbid_heuristic_caching(client: TestClient) -> None:
+    """页面与静态脚本必须禁止浏览器"猜"缓存。
+
+    真实困扰（2026-09-23）：引擎下拉新增 `external` 后，旧标签页仍显示旧选项，用户以为
+    功能没上线。页面响应只有 ETag/Last-Modified、没有 Cache-Control 时，浏览器会按
+    启发式新鲜度直接用本地副本；显式 `no-cache`（每次使用前必须回源校验）可以消除这类
+    "改了前端却看不到"的假象。API 响应不受影响（保持默认，便于压测/缓存代理）。
+    """
+    for path in ("/", "/advanced", "/simple", "/static/app.js", "/static/simple.js"):
+        resp = client.get(path)
+        assert resp.status_code == 200, (path, resp.status_code)
+        assert "no-cache" in resp.headers.get("cache-control", ""), (path, resp.headers)
+    api = client.get("/api/health")
+    assert "no-cache" not in api.headers.get("cache-control", ""), "API 不该被一起禁缓存"
+
+
 def test_models_endpoint_does_not_echo_upstream_base_url(client: TestClient) -> None:
     """端点指纹不必要地暴露给无鉴权接口。"""
     resp = client.get("/api/models")
