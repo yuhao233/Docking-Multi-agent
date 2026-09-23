@@ -1828,8 +1828,11 @@ async function main() {
   check(sq('#positive-control').value === '', '恢复默认：阳性对照清空', sq('#positive-control').value);
   check(sq('#center-x').value === '', '恢复默认：结合位点盒清空', sq('#center-x').value);
   check(sq('#max-ligands').value === '0', '恢复默认：最大分子数回到默认 0', sq('#max-ligands').value);
-  check(['auto', 'vina', 'autodock'].indexOf(sq('#engine-select').value) >= 0,
-    '恢复默认：对接引擎回到系统默认', sq('#engine-select').value);
+  /* 允许值直接取下拉自己的选项：新增引擎（如 external）不该让这条断言变红，
+     恢复默认的语义是"回到设置页默认值"，而设置页默认值必须是有效选项之一。 */
+  const engineOptions = Array.from(sq('#engine-select').options).map((o) => o.value);
+  check(engineOptions.indexOf(sq('#engine-select').value) >= 0,
+    '恢复默认：对接引擎回到系统默认（设置页默认值）', sq('#engine-select').value);
   check(['neutralize', 'ph', 'keep'].indexOf(sq('#protonation-select').value) >= 0,
     '恢复默认：质子化态策略回到系统默认', sq('#protonation-select').value);
   check(/已恢复系统默认值/.test(sq('#preset-note').textContent || ''),
@@ -1900,6 +1903,63 @@ async function main() {
   } else {
     check(false, '图片降级已改为委托实现（installImageFallback）');
   }
+  /* 点选候选 = 续跑同一运行：请求体必须带 resume_run_id / resume_choice_kind，
+     且**用户第一次设置的参数不会被丢掉**（点选那一轮仍要带附件与改动过的运行参数）。
+     注意：`state` 是全局词法声明（不挂在 window 上），因此这段断言在页面作用域里 eval。 */
+  const resumeBody = swin.eval(`(() => {
+    const prev = { page: state.page, id: state.resumeRunId, kind: state.resumeChoiceKind };
+    state.page = 'chat';
+    state.resumeRunId = '20260924-003534-9036';
+    state.resumeChoiceKind = 'positive_control';
+    state.touchedFields.add('engine-select');
+    const body = payloadToBody({
+      mode: 'chat', message: '把 Z9N 作为阳性对照继续', advanced: true,
+      positive_control: 'OC[C@H]1O[C@@](O)(CO)[C@@H](O)[C@@H]1O',
+      positive_control_decision: 'use',
+      params: { receptor_file: '/abs/receptor.pdb', molecule_file: '/abs/lib.sdf',
+                engine: 'external' },
+    });
+    state.page = prev.page; state.resumeRunId = prev.id; state.resumeChoiceKind = prev.kind;
+    return body;
+  })()`);
+  check(resumeBody.resume_run_id === '20260924-003534-9036'
+    && resumeBody.resume_choice_kind === 'positive_control',
+    '点选续跑：请求体带 resume_run_id / resume_choice_kind', JSON.stringify(resumeBody));
+  check(resumeBody.receptor_file === '/abs/receptor.pdb'
+    && resumeBody.molecule_file === '/abs/lib.sdf',
+    '点选续跑：上传的受体/分子库仍在请求体里', JSON.stringify(resumeBody));
+  check(resumeBody.engine === 'external' && resumeBody.positive_control_decision === 'use',
+    '点选续跑：用户改过的运行参数与选择决定一起下发', JSON.stringify(resumeBody));
+
+  /* 大块工具数据折叠（用户反馈 2026-09-24：模型把口袋/配体 JSON 抄进气泡，正文被占满）。
+     确定性规则在 markdown.js::splitDataBlocks，两套界面共用；这里看住"大块折叠、小块不动"。 */
+  const bigJson = JSON.stringify({ status: 'ok', engine: 'p2rank',
+    pockets: Array.from({ length: 40 }, (_, i) => ({ rank: i + 1, score: 45 - i,
+      center: [80 + i, 76 + i, 91 + i], residues: ['A_' + (100 + i), 'A_' + (200 + i)] })) });
+  const mdApi = swin.DockingMarkdown;
+  check(typeof mdApi.splitDataBlocks === 'function', 'markdown.js 暴露 splitDataBlocks（两套界面共用）');
+  const parts = mdApi.splitDataBlocks('先预测口袋。\n' + bigJson + '\n然后继续。');
+  check(parts.filter((x) => x.kind === 'data').length === 1,
+    '正文里的大块 JSON 被识别为数据块', parts.map((x) => x.kind).join(','));
+  check(mdApi.splitDataBlocks('结论 {"a": 1} 结束').every((x) => x.kind === 'md'),
+    '短 JSON / 正文里的大括号不受影响');
+
+  /* 真渲染：气泡必须出现可展开块，且可见摘要里不出现整段 JSON */
+  const foldId = swin.appendChatMessage('assistant', '', 'final');
+  swin.setChatMarkdown(foldId, '口袋结果如下：\n' + bigJson + '\n共 8 个口袋。');
+  await sleep(50);
+  const fold = swin.document.querySelector('#chat-history .data-fold');
+  check(!!fold, '气泡把大块工具数据渲染成可展开块（details.data-fold）');
+  if (fold) {
+    const summary = fold.querySelector('summary');
+    check(!!summary && summary.textContent.indexOf('工具数据') === 0,
+      '折叠块摘要是一行提示（而不是整段 JSON）', summary ? summary.textContent : '缺失');
+    check(summary.textContent.length < 60, '摘要长度可控（不被 JSON 撑爆）',
+      String(summary.textContent.length));
+    check((fold.querySelector('pre').textContent || '').length > 600,
+      '完整数据仍在块内（可展开，不丢信息）');
+  }
+
   presetDom.window.close();
 
   /* 这三个页面挂着**在途的 SSE/请求**（parallelDom/liveDom/runDom）。

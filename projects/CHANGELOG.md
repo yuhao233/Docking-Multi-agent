@@ -2467,3 +2467,29 @@ LLM_API_KEY=ci-graph-build-only ... bash langgraph-deploy/scripts/test.sh    # 4
 门禁：`check.sh --static` / `--fast`、`ui_e2e`、`browser_check`、`snapshot_ids` 全部通过。
 
 ---
+
+---
+
+# 2026-09-24 · 实测四修：受体兜底 / 点选续跑同一运行 / 暂停留痕 / 正文数据折叠
+
+用户用「上传受体 + 2961 条库」实测后逐条定位：
+
+1. **上传的受体没有自动用于对接**：口袋工具有请求兜底（`pockets.py` 的 fallback），对接工具没有 ——
+   协调 Agent 只传了分子文件时，对接子 Agent 报"未提供任何受体…请指定受体后再对接"，而界面
+   「本次下发参数」里明明写着受体文件。现在 `runtime/context.request_value` 统一兜底，对接工具与
+   `dispatch.run_docking` 都用它；用户上传的受体不再需要模型转发路径。
+2. **点选候选不该另起一个运行**（用户原话「明明是为一个运行准备参数条件」）：点选后前端带
+   `resume_run_id` + `resume_choice_kind`，服务端**复用同一运行**、把答案注入线程并从 checkpoint
+   续跑；`task_spec` / `param_plan` 沿用第一次受理的结果，报告与产物都留在同一条运行记录里。
+   没有待回答候选的 run_id 仍按新运行处理（防伪造/过期）。
+3. **暂停分支不落盘**：阻断暂停时至少写 `messages_log.json`（此前连"模型说了什么"都查不到），
+   完整持久化在续跑结束时统一完成。
+4. **正文数据折叠**：气泡里的口袋/配体 JSON 是模型自己抄进正文的（工具回执只进右侧轨迹并截断到
+   4000 字）。现在 `markdown.js::splitDataBlocks` 把"成段的大块 JSON（≥600 字符）"渲染成
+   `<details>` 一行摘要（正文只留结论、数据可展开不丢），两套界面共用同一实现；提示词侧也把
+   「不要把工具数据粘进正文」抽成主管/子 Agent 共用的 `NO_DATA_DUMP_RULE`。
+
+顺带修 `ui_e2e` 里"恢复默认引擎"的陈旧允许列表（新增引擎后不该变红，改为按下拉选项自洽校验）。
+
+门禁：`check.sh --static` / `--fast`（603 通过 / 253 跳过）、`ui_e2e` 238/238、`browser_check` 86/86、
+`snapshot_ids` 244 不变、文档一致性通过。

@@ -355,6 +355,40 @@ class RunStore:
     def exists(self, run_id: str) -> bool:
         return (self.root / run_id / RUN_META).is_file()
 
+    def load(self, run_id: str) -> Optional["Run"]:
+        """按 run_id 载入**既有**运行（不新建、不重置元数据）。续跑同一运行时用它。
+
+        与 `Run(...)` 的区别：构造函数会把状态写成 `running`、重挂 created_at 并覆盖
+        request.json，对续跑来说是灾难（等于把这次运行的第一段历史抹掉）。
+        """
+        rid = safe_run_component(run_id)
+        meta = self.meta(rid)
+        if not meta:
+            return None
+        run = Run.__new__(Run)
+        run.id = rid
+        run.kind = str(meta.get("kind") or "agent")
+        run.dir = self.root / rid
+        run.logs = [str(x) for x in (meta.get("log") or [])]
+        run._artifacts = {}
+        for entry in meta.get("artifacts") or []:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                continue
+            try:
+                art = Artifact(name=str(entry["name"]), label=str(entry.get("label") or ""),
+                               path=str(entry.get("path") or ""), size=int(entry.get("size") or 0),
+                               content_type=str(entry.get("content_type") or ""))
+            except Exception:  # noqa: BLE001 - 单条产物坏掉不该让整次续跑失败
+                continue
+            run._artifacts[art.name] = art
+        data = {k: v for k, v in meta.items() if k not in ("artifacts", "log")}
+        run.data = data
+        try:
+            run._t0 = datetime.fromisoformat(str(data.get("created_at")))
+        except (TypeError, ValueError):
+            run._t0 = datetime.now()
+        return run
+
     def delete(self, run_id: str) -> bool:
         """删除一条运行记录（整棵运行目录）。不存在返回 False；非法 id 抛 ValueError。
 

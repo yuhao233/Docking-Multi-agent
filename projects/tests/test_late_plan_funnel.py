@@ -93,3 +93,49 @@ def test_small_library_is_not_funneled(monkeypatch: Any, tmp_path: Any) -> None:
                              receptor_sources="thrombin", exhaustiveness=0, n_poses=1)
     assert calls == [1], calls
     assert not (run.data.get("param_plan") or {}).get("two_stage")
+
+
+def test_uploaded_receptor_is_used_without_being_forwarded(monkeypatch: Any, tmp_path: Any) -> None:
+    """请求里上传的受体文件必须**自动生效**，不要求协调 Agent 转发路径。
+
+    真实缺陷（2026-09-24 用户实测）：口袋工具有这条兜底（`pockets.py` 的 fallback），对接工具没有
+    —— 模型只传了分子文件，对接子 Agent 就报"未提供任何受体…请指定受体后再对接"，而界面「本次
+    下发参数」里明明写着受体文件。
+    """
+    from docking_agent.core import normalize as N
+    from docking_agent.tools import docking as D
+
+    run = _fake_run(tmp_path)
+    run.data["request"] = {"receptor_file": "/tmp/8ZE2_upload.pdb"}
+    monkeypatch.setattr(D, "active_run", lambda runtime=None: run)
+    monkeypatch.setattr(D, "request_value",
+                        lambda name, runtime=None: {
+                            "receptor_file": "/tmp/8ZE2_upload.pdb"}.get(name, ""))
+    monkeypatch.setattr(D, "active_blackboard", lambda runtime=None: None)
+    # 受体准备（归一化 + PDBQT）不是本用例的关注点：等价替换成"原样可用"
+    from docking_agent.core import receptors as R
+
+    monkeypatch.setattr(N, "normalize_receptor_source",
+                        lambda path, keep_hetatm=(): (path, {}))
+    monkeypatch.setattr(R, "resolve_receptor_specs", lambda *a, **k: ([
+        {"key": "8ZE2", "label": "8ZE2", "pdb": "/tmp/8ZE2_upload.pdb",
+         "pdbqt": "/tmp/8ZE2_upload.pdb", "center": [1.0, 2.0, 3.0],
+         "size": [22.0, 22.0, 22.0], "source_pdb": "/tmp/8ZE2_upload.pdb",
+         "cocrystal_ligand": {}}], []))
+
+    seen: Dict[str, Any] = {}
+
+    def _fake_dock_library(mols, **kwargs):
+        seen.update(kwargs)
+        seen["n"] = len(mols)
+        return {"status": "ok", "receptors": [{"receptor_key": "r", "results": [
+            {"name": "A", "smiles": "CCO", "affinity_kcal_mol": -4.0, "engine": "vina"}]}],
+            "notes": []}
+
+    monkeypatch.setattr(D, "dock_library", _fake_dock_library)
+    # 关键：receptor_file 参数为空（协调 Agent 没转发），但请求里有上传文件
+    out = D.molecular_docking.func(molecules_json='[{"name":"A","smiles":"CCO"}]',
+                                   receptor_file="", receptor_sources="", exhaustiveness=0)
+    body = __import__("json").loads(out)
+    assert body.get("status") != "needs_user_input", body
+    assert seen.get("receptor") == "/tmp/8ZE2_upload.pdb", seen.get("receptor")

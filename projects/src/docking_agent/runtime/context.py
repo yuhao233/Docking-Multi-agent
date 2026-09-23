@@ -82,6 +82,18 @@ def active_run(runtime: Any = None) -> Any:
     return current_run.get()
 
 
+def request_value(name: str, runtime: Any = None) -> str:
+    """本次运行请求里的字段（上传文件路径等）—— 工具兜底用它，不依赖模型转发。
+
+    真实缺陷（2026-09-24）：界面「本次下发参数」里的上传受体/分子库只被部分工具自动采用
+    （口袋工具有兜底、对接工具没有），于是对接子 Agent 报"未提供任何受体"。
+    """
+    run = active_run(runtime)
+    data = getattr(run, "data", None) if run is not None else None
+    request = (data or {}).get("request") if isinstance(data, dict) else None
+    return str((request or {}).get(name) or "").strip()
+
+
 def active_blackboard(runtime: Any = None) -> Any:
     """当前共享黑板，按 **context → LangGraph store → ContextVar** 的优先级取。
 

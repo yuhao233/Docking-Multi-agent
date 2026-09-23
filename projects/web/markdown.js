@@ -323,6 +323,70 @@
     return root;
   }
 
+
+  /* ------------------------------------------------------------------------
+   * 大块工具数据折叠（两套界面共用）
+   *
+   * 真实反馈（2026-09-24）：协调 Agent 把工具返回的口袋/配体 JSON 原样粘进正文，
+   * 气泡被几万字符的数据占满。工具回执本身只进右侧「工具轨迹」，所以这些 JSON 是
+   * **模型自己抄的**——提示词约束不足以保证，必须在渲染前做确定性处理。
+   *
+   * `splitDataBlocks(markdown)` 把正文切成 [{kind:'md'},{kind:'data'}]：
+   * 只认「看起来就是 JSON」的大块（自己成段、成对括号、长度 ≥ 阈值），
+   * 普通正文（包括代码片段、含大括号的句子）原样保留。
+   * ---------------------------------------------------------------------- */
+  var DATA_BLOCK_MIN_CHARS = 600;
+
+  function _balancedJsonEnd(text, start) {
+    var depth = 0, inStr = false, esc = false;
+    for (var i = start; i < text.length; i += 1) {
+      var ch = text[i];
+      if (inStr) {
+        if (esc) { esc = false; } else if (ch === '\\') { esc = true; }
+        else if (ch === '"') { inStr = false; }
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{' || ch === '[') { depth += 1; continue; }
+      if (ch === '}' || ch === ']') {
+        depth -= 1;
+        if (depth === 0) { return i + 1; }
+      }
+    }
+    return -1;
+  }
+
+  function splitDataBlocks(markdown, minChars) {
+    var source = String(markdown || '');
+    var limit = minChars || DATA_BLOCK_MIN_CHARS;
+    var parts = [];
+    var buffer = '';
+    var i = 0;
+    var flush = function () {
+      if (buffer) { parts.push({ kind: 'md', text: buffer }); buffer = ''; }
+    };
+    while (i < source.length) {
+      var ch = source[i];
+      var atBoundary = (i === 0) || source[i - 1] === '\n';
+      if ((ch === '{' || ch === '[') && atBoundary) {
+        var end = _balancedJsonEnd(source, i);
+        var chunk = end > 0 ? source.slice(i, end) : '';
+        var looksJson = chunk.length >= limit && chunk.indexOf('"') !== -1 && chunk.indexOf(':') !== -1;
+        var tailOk = end > 0 && (end >= source.length || /[\s`]/.test(source[end]));
+        if (looksJson && tailOk) {
+          flush();
+          parts.push({ kind: 'data', text: chunk });
+          i = end;
+          continue;
+        }
+      }
+      buffer += ch;
+      i += 1;
+    }
+    flush();
+    return parts;
+  }
+
   window.DockingMarkdown = {
     el: el,
     escapeHtml: escapeHtml,
@@ -331,6 +395,8 @@
     installImageFallback: installImageFallback,
     renderInline: renderInline,
     renderMarkdown: renderMarkdown,
+    /* 大块工具数据折叠：正文只留结论，数据进可展开块（两套界面共用同一实现） */
+    splitDataBlocks: splitDataBlocks,
     /* 报告抬头表解析也要用：表格切分规则只有一份 */
     splitTableRow: splitTableRow,
     isTableSeparator: isTableSeparator,

@@ -169,7 +169,7 @@ def _events_for(mode: str, chunk: Any, announced: set) -> List[Dict[str, Any]]:
     return out
 
 
-async def stream_agent_sse(graph: Any, payload: Dict[str, Any], run_config: Dict[str, Any],
+async def stream_agent_sse(graph: Any, payload: Optional[Dict[str, Any]], run_config: Dict[str, Any],
                            run_id: str, context: Any = None) -> AsyncIterator[str]:
     """驱动一次 Agent 运行并输出 SSE。
 

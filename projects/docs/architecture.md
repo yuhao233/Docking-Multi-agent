@@ -610,7 +610,7 @@ INTAKE_LLM=off .venv/bin/python scripts/verify_docking.py    # 对接真实性�
 .venv/bin/python scripts/check_web.py                        # 78 项静态校验
 .venv/bin/python scripts/snapshot_ids.py diff                # DOM id 不得被删（基线 213）
 node --check web/app.js && node --check scripts/ui_e2e.js
-node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先起服务（231 项，jsdom 真点按钮）
+node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先起服务（241 项，jsdom 真点按钮）
 ```
 
 **门禁策略**：静态门禁（1）与测试（2）是**阻断式**；取证脚本（3）在动 `core/docking.py`、
@@ -676,7 +676,7 @@ node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先�
 | `scripts/verify_docking.py` | 52 | 对接真实性取证：独立复算、参数敏感性、反证控制（平移盒子/换受体/非法输入） | 动 core/docking 必跑 |
 | `scripts/check_web.py` | 118 | 前端静态：语法、离线可跑、id 对应、设计令牌、布局健壮性 | 动前端必跑 |
 | `scripts/snapshot_ids.py` | 241 id（基线 213） | 防止误删动态引用的 DOM id | 动 index.html 必跑 |
-| `scripts/ui_e2e.js` | 231 | jsdom 真加载页面 + 真点按钮 + 真读接口 + 合成 SSE 并行场景 + **导出条/KPI/报告目录** + 门禁自清理 | 可选（需起服务） |
+| `scripts/ui_e2e.js` | 241 | jsdom 真加载页面 + 真点按钮 + 真读接口 + 合成 SSE 并行场景 + **导出条/KPI/报告目录** + 门禁自清理 | 可选（需起服务） |
 | `scripts/ui_shot.py check` | 6 页 | 真浏览器（Chromium）：控制台错误 / 横向溢出（含疑似元素）/ 图片加载失败 | 动前端必跑 |
 | `scripts/ui_shot.py diff` | 6 页 | 视觉回归：与基线逐像素比对，输出「改前/改后/红色高亮」三格差异图 | 动前端的验收依据 |
 | `scripts/intake_eval.py` | 14 | 受理层决策（run/ask/reject）用例集，零模型 | 动 intake/提示词必跑 |

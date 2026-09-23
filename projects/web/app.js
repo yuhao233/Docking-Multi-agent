@@ -1810,6 +1810,9 @@ function receptorLogText(request, taskSpec) {
 function handleStartEvent(data) {
   if (data.run_id) {
     state.runId = data.run_id;
+    /* 续跑标记只对这一次提交有效：流一开就清掉，后续普通发送仍是新运行 */
+    state.resumeRunId = '';
+    state.resumeChoiceKind = '';
     setRunIdLabel('run_id ' + data.run_id);
   }
   state.cancelled = false;
@@ -2505,7 +2508,33 @@ function setChatMarkdown(id, markdown) {
   if (!host) return;
   clear(host);
   host.classList.add('markdown');
-  host.appendChild(renderMarkdown(message.text));
+  /* 正文里的**大块工具数据**折叠成一行（真实反馈：气泡被口袋/配体 JSON 占满）。
+     数据块是模型抄进正文的，工具回执本身只进右侧轨迹 —— 因此在这里做确定性处理。 */
+  appendMarkdownParts(host, message.text);
+}
+
+/** 渲染 Markdown，并把其中"看起来就是大块 JSON"的片段折叠为可展开块 */
+function appendMarkdownParts(host, markdown) {
+  const md = window.DockingMarkdown;
+  const parts = md && typeof md.splitDataBlocks === 'function'
+    ? md.splitDataBlocks(markdown)
+    : [{ kind: 'md', text: String(markdown || '') }];
+  parts.forEach((part) => {
+    if (part.kind !== 'data') {
+      host.appendChild(renderMarkdown(part.text));
+      return;
+    }
+    const fold = document.createElement('details');
+    fold.className = 'data-fold';
+    const summary = document.createElement('summary');
+    summary.textContent = '工具数据（' + fmtInt(part.text.length) + ' 字符，点击展开）';
+    fold.appendChild(summary);
+    const pre = document.createElement('pre');
+    pre.className = 'data-fold-body';
+    pre.textContent = part.text;
+    fold.appendChild(pre);
+    host.appendChild(fold);
+  });
 }
 
 function setChatStatus(id, status) {
@@ -2831,6 +2860,13 @@ function applyChoice(choice) {
       decision: String((choice.detail && choice.detail.mode) || ''),
       label: String(choice.label || '')
     };
+  }
+  /* 续跑**同一个运行**（用户 2026-09-24 拍板）：点选只是给这次运行补参数/补回答，
+     不该另起一个运行记录。服务端按 resume_run_id 复用运行并从 checkpoint 继续。 */
+  const pausedRunId = String(state.runId || (state.currentRun && state.currentRun.run_id) || '');
+  if (pausedRunId) {
+    state.resumeRunId = pausedRunId;
+    state.resumeChoiceKind = String(choice.kind || '');
   }
   state.pendingMessage = text;
   logLine('已选择：' + (choice.label || text), 'cmd');
@@ -3463,6 +3499,10 @@ function payloadToBody(payload) {
       if (payload[field]) body[field] = payload[field];
     });
     if (conversationId) body.conversation_id = conversationId;
+    if (state.resumeRunId) {              // 点选续跑：复用同一运行，不新建
+      body.resume_run_id = state.resumeRunId;
+      if (state.resumeChoiceKind) body.resume_choice_kind = state.resumeChoiceKind;
+    }
     if (state.mode === 'agent') {
       body.mode = 'manual';
       if (payload.message) body.message = payload.message;
@@ -3475,6 +3515,10 @@ function payloadToBody(payload) {
     advanced: Boolean(payload.advanced)
   };
   if (conversationId) body.conversation_id = conversationId;
+  if (state.resumeRunId) {                // 点选续跑：复用同一运行，不新建
+    body.resume_run_id = state.resumeRunId;
+    if (state.resumeChoiceKind) body.resume_choice_kind = state.resumeChoiceKind;
+  }
   const params = payload.params || {};
   /* 真实缺陷：这里原来写的是 `if (payload.advanced) Object.assign(body, payload.params)`，
      advanced=false 时连 receptor_file 一起丢掉 → 服务端收不到上传受体 → 回退默认 thrombin。

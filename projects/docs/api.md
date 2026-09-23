@@ -530,6 +530,8 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
 - `progress` 每 ~1s 或每批推送一次，用于进度条与 ETA。
 - 事件条目结构与原 `molecule` 完全同构。
 - **`choices`（结构化选择通道）**：受体/分子自动解析出**多个候选**或**置信度不足**时下发；
+  回答方式：点选后前端**续跑同一个运行**（请求带 `resume_run_id` + `resume_choice_kind`），
+  `GET /api/runs/{id}` 里始终只有这一条记录；不再另起运行。
   `blocking=true` 表示**阻断式问题**（当前只有「受体自带共晶配体是否作阳性对照」）：
   下发后本轮立即以 `needs_user_input` 收口，工具层也会拒绝在未回答前重新开跑（真实故障：
   问题 22:47 下发、却把 2961 个分子算到 23:23，用户回答时结果早已算完）。
@@ -1036,6 +1038,8 @@ ADMET/PDB 之类缩写不得被当成受体）与 `scripts/browser_check.py`（�
 | 客户端（显示） | 候选**按 `kind` 分组**：分子 / 受体 / 阳性对照各是一问，后到的问题不得覆盖先到的（同一气泡内可并存多组） | `web/app.js` `clearChoices(kind)` / `showChoices` / `renderChatHistory`（`data-choice-group`） |
 | 客户端（时机） | 收到 `choices` 先缓冲，到**回合边界**（工具返回 / 节点推进 / 阶段变化）或本轮运行结束时挂出；运行中按钮保持禁用，跑完自动可点。此前只在"整轮运行结束"挂出，长任务里意味着几十分钟看不到问题（用户实测反馈） | `web/app.js` `handleChoicesEvent` → `flushDeferredChoices()`（`tool_result` / `update` / `setRunning(false)`）；`web/simple.js` `state.deferredChoices` → 同一函数（`stage` / 流结束的 `finally`） |
 | 客户端（点选） | 运行中候选按钮**点不动**；程序路径被调用时给出明确提示且**不清空**按钮；载入运行记录时按 `run.choices` 补挂候选 | `web/app.js` `applyChoice` / `setRunning`；`web/simple.js` `applyChoice` / `setBusy` / `loadRun` |
+| 服务端（续跑同一运行） | 请求带 `resume_run_id` 且该运行确实有待回答候选时：**复用该运行**（不新建、不重新受理，`task_spec`/`param_plan` 沿用），把 `message` 作为一条用户消息写回 checkpoint，再以 `None` 入参续跑；回答的那一问连同阻断标记一起清掉。没有待回答候选的 `resume_run_id` 一律按新运行处理（防伪造/过期） | `api/routers/agent.py`（`resumed` 分支）、`runs.py::RunStore.load`、`tests/test_run_resume.py` |
+| 正文数据折叠 | 助手正文里"看起来就是大块 JSON"的片段（成段、成对括号、≥600 字符）渲染成 `<details>` 一行摘要，正文只留结论；小 JSON 与普通正文不动 | `web/markdown.js::splitDataBlocks`（两套界面共用）、`scripts/ui_e2e.js` 回归 |
 
 回归：`tests/test_choices_lifecycle.py`（5 项：首次为准、清空后可再问、清一类不动另一类、
 等选择状态、对照组仍是 `no_op`）与 `scripts/browser_check.py` 的「候选选择交互」一节

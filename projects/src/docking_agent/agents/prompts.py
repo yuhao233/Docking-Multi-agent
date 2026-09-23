@@ -168,12 +168,21 @@ def _data_handoff_rule(examples: str) -> str:
 #: 为什么单列一条：子 Agent 的输出会被主管 Agent 直接消费（也是报告第 8 节的原文），
 #: 多一句解释、多抄一遍明细数值，都要在主管的上下文里再付一次 token，还容易被原样写进报告。
 #: 结构化输出工具只取 JSON，所以契约之外的文字本来就是被丢弃的 —— 与其让模型白写，不如明确禁止。
+#: 「正文不倒数据」纪律：**主管与子 Agent 共用同一份**（真实反馈 2026-09-24：模型把工具返回的
+#: 口袋/配体 JSON 原样粘进气泡，正文被几万字符占满；提示词不是保证，前端另有确定性折叠兜底）。
+NO_DATA_DUMP_RULE = (
+    "\n- **不要把工具数据粘进正文**：工具返回的 JSON、notes 全文、逐分子明细、整张结果表"
+    "一律不抄（它们已经在产物/报告/下载里）。正文只写结论、关键数字、风险与下一步；"
+    "需要明细时给产物路径。前端会把大块 JSON 折叠起来，但那是兜底，不是你可以乱倒数据的理由。"
+)
+
 OUTPUT_ECONOMY = (
     "\n\n## 输出经济性（务必遵守）\n"
     "- **只输出契约要求的 JSON 字段**：不要额外段落/标题/代码块，也不要把工具返回的明细数值\n"
     "  复述一遍（主管 Agent 手里已有同一份数据）；\n"
     "- `agent_note` 至多**一句**（≤60 字），只写你的判断、异常或取舍，不写过程、不写客套；\n"
     "- 明细一律留在工具产物里（路径在返回 JSON 的 `artifacts`/`*_file` 字段），需要时按文件交接。"
+    + NO_DATA_DUMP_RULE
 )
 
 
@@ -230,4 +239,4 @@ POCKET_SP = _POCKET_SP_BASE + PARAMS_CONTRACT + OUTPUT_ECONOMY
 
 __all__ = ["COORDINATOR_SP", "PROPERTY_SP", "DOCKING_SP", "BINDING_SP", "POCKET_SP",
            "DATA_HANDOFF_COORDINATOR", "DATA_HANDOFF_PROPERTY", "DATA_HANDOFF_DOCKING",
-           "DATA_HANDOFF_BINDING", "PARAMS_CONTRACT", "OUTPUT_ECONOMY"]
+           "DATA_HANDOFF_BINDING", "PARAMS_CONTRACT", "OUTPUT_ECONOMY", "NO_DATA_DUMP_RULE"]

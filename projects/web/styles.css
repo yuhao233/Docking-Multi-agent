@@ -3848,3 +3848,8 @@ body.cols-live-collapsed .main-col > *:not(.col-toggle) { display: none; }
 .choice-panel.hidden { display: none; }
 .choice-head { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
 .choice-title { font-weight: 600; color: var(--accent); }
+
+/* 大块工具数据折叠块（模型把工具 JSON 抄进正文时，正文只留结论） */
+.data-fold { margin: 0.5em 0; border: 1px dashed var(--line, #d0d7de); border-radius: 6px; padding: 0.3rem 0.6rem; }
+.data-fold summary { cursor: pointer; font-size: 0.85em; opacity: 0.8; }
+.data-fold-body { max-height: 320px; overflow: auto; font-size: 0.78em; white-space: pre-wrap; word-break: break-all; }

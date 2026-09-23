@@ -15,7 +15,7 @@ import os
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from langchain.tools import tool
-from docking_agent.runtime.context import AgentContext, active_blackboard, active_run
+from docking_agent.runtime.context import (AgentContext, active_blackboard, active_run, request_value)
 from docking_agent.tools.schemas import CoordArray, floats_to_text
 from docking_agent.tools.molecule_paths import looks_like_molecule_path, resolve_molecule_file
 from docking_agent.paths import libraries_dir
@@ -533,6 +533,8 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     """
     # 文件交接别名：molecules_file 与 molecule_file 同义（产物路径与用户上传文件都是本地文件）
     molecule_file = (molecule_file or "").strip() or (molecules_file or "").strip()
+    if not (receptor_file or "").strip():   # 受体兜底：请求里上传的文件自动下发
+        receptor_file = request_value("receptor_file", runtime)
     # 护栏：受理层判定「用户点名的受体无法解析」时**在调用任何对接引擎之前**返回，
     # 绝不回退默认受体继续算（这是产品底线；见 unresolved_receptor_message）。
     guard = unresolved_receptor_message(active_run(runtime))
@@ -541,7 +543,6 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
         return guard
     # 阻断式询问未回答前连子 Agent 都不调度（真实故障 2026-09-23：白算 40 分钟）。
     from docking_agent.tools.choices import blocking_choice_pending  # noqa: PLC0415
-
     if blocking_choice_pending("positive_control", runtime=runtime):
         logger.info("拒绝对接：等用户点选共晶配体阳性对照")
         return json.dumps({"status": "needs_user_input",
@@ -555,8 +556,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     run = active_run(runtime)
     plan = (getattr(run, "data", None) or {}).get("param_plan") or {}
     planned_exh = resolve_exhaustiveness(exhaustiveness, plan)
-    # 引擎：显式参数 > 本次运行请求（表单）> 设置页「对接引擎（默认）」。留空**不再**等价于
-    # 硬编码 auto —— 否则用户在设置页选了 external/autodock 也会被工具默认值盖掉。
+    # 引擎：显式参数 > 运行请求（表单）> 设置页默认；留空不再等价于硬编码 auto。
     engine = resolve_engine(engine, (getattr(run, "data", None) or {}).get("request") or {})
     try:
         explicit_exh = int(exhaustiveness or 0) > 0

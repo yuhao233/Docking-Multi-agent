@@ -48,6 +48,8 @@ const state = {
   threadId: '',
   runId: '',
   standardRunId: '',
+  resumeRunId: '',
+  resumeChoiceKind: '',
   controller: null,
   busy: false,
   files: { receptor_file: '', molecule_file: '' },
@@ -95,6 +97,26 @@ function pushMessage(role, text) {
 
 /** Markdown → DOM。唯一实现在 `/static/markdown.js`（与高级模式共用）；缺失时退化为纯文本，
  *  绝不出现白屏或 `[object Object]`。 */
+/** 渲染 Markdown，并把正文里的大块工具数据折叠成一行（与高级模式共用 splitDataBlocks） */
+function appendMarkdownParts(host, markdown) {
+  const md = window.DockingMarkdown;
+  const parts = md && typeof md.splitDataBlocks === 'function'
+    ? md.splitDataBlocks(markdown)
+    : [{ kind: 'md', text: String(markdown || '') }];
+  parts.forEach((part) => {
+    if (part.kind !== 'data') {
+      host.appendChild(mdBlock(part.text));
+      return;
+    }
+    const fold = el('details', 'data-fold');
+    fold.appendChild(el('summary', null, '工具数据（' + fmtInt(part.text.length) + ' 字符，点击展开）'));
+    const pre = el('pre', 'data-fold-body');
+    pre.textContent = part.text;
+    fold.appendChild(pre);
+    host.appendChild(fold);
+  });
+}
+
 function mdBlock(text) {
   const source = String(text || '');
   const md = window.DockingMarkdown;
@@ -110,7 +132,7 @@ function setAssistant(node, text, { typing } = {}) {
   const value = String(text || '');
   node.replaceChildren();
   const body = el('div', 's-body markdown');
-  if (value) body.appendChild(mdBlock(value));
+  if (value) appendMarkdownParts(body, value);
   node.classList.toggle('s-typing', Boolean(typing) && !value);
   node.appendChild(body);
   if (thinkBlock) node.insertBefore(thinkBlock, node.firstChild);
@@ -284,6 +306,11 @@ function applyChoice(choice) {
       label: String(choice.label || ''),
     };
   }
+  /* 续跑**同一个运行**（用户 2026-09-24 拍板）：点选只是给这次运行补回答，不另起运行 */
+  if (state.runId) {
+    state.resumeRunId = String(state.runId);
+    state.resumeChoiceKind = String(choice.kind || '');
+  }
   renderChoices([], '');
   pushMessage('user', choice.label || text);
   startRun(text, { fromChoice: true });
@@ -384,6 +411,12 @@ async function startRun(text, options) {
     conversation_id: state.threadId,
     messages: [{ type: 'human', content: message || '使用上传的文件执行一次筛选' }],
   };
+  if (state.resumeRunId) {
+    input.resume_run_id = state.resumeRunId;
+    if (state.resumeChoiceKind) input.resume_choice_kind = state.resumeChoiceKind;
+    state.resumeRunId = '';               // 只对本次提交有效
+    state.resumeChoiceKind = '';
+  }
   if (state.files.receptor_file) input.receptor_file = state.files.receptor_file;
   if (state.files.molecule_file) input.molecule_file = state.files.molecule_file;
   if (state.pendingPositiveControl) {

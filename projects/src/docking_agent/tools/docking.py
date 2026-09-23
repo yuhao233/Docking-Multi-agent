@@ -16,7 +16,8 @@ from docking_agent.core.params import (DEFAULT_EXHAUSTIVENESS,
                                        resolve_engine, resolve_exhaustiveness)
 from docking_agent.runs import slug
 from docking_agent.tools.schemas import CoordArray, floats_to_text
-from docking_agent.runtime.context import AgentContext, active_blackboard, active_run
+from docking_agent.runtime.context import (AgentContext, active_blackboard, active_run,
+                                           request_value)
 from langchain.tools import ToolRuntime
 
 logger = logging.getLogger(__name__)
@@ -216,12 +217,12 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                                    "message": "没有可精算的上一轮对接结果：请先做一次全库粗筛。"},
                                   ensure_ascii=False)
             molecules = refine_from
-        if not (molecule_file and molecule_file.strip()):
-            # 兜底：本次运行请求带的上传分子库（对话附件）→ 直接用，不依赖模型是否转发路径。
-            _run_req = (getattr(active_run(runtime), "data", None) or {}).get("request") or {}
-            _req_mol_file = str(_run_req.get("molecule_file") or "").strip()
-            if _req_mol_file:
-                molecule_file = _req_mol_file
+        # 兜底：本次运行请求带的上传文件（对话附件）→ 直接用，不依赖模型是否转发路径。
+        # 真实缺陷（2026-09-24）：口袋工具有受体兜底、对接工具没有 → 用户上传了受体却被要求再指定。
+        if not (molecule_file or "").strip():
+            molecule_file = request_value("molecule_file", runtime)
+        if not (receptor_file or "").strip():
+            receptor_file = request_value("receptor_file", runtime)
         if molecule_file and molecule_file.strip():
             # 裸文件名（如上传显示名 `PGR.sdf`）先在上传/缓存目录里解析成真实路径 ——
             # 不要求模型拼绝对路径（真实缺陷 20260917-112206-5017）。

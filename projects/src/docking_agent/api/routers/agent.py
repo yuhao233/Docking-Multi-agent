@@ -40,11 +40,24 @@ router = APIRouter()
              summary="[已废弃] 多 Agent 协作流式执行（请改用标准 Agent Protocol）")
 async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
     payload = dict(req.model_dump())
-    run = get_run_store().new("agent", payload)
-    # 本次运行的调用计数从零开始（否则 calls 会累计上一次运行，无法判断本次调用量）
-    from docking_agent.runtime.llm import reset_registry_counters
+    store = get_run_store()
+    # 点选候选 = **续跑同一个运行**（用户 2026-09-24 拍板）：不新建 run、不重新受理，
+    # 把答案注入线程并从 checkpoint 继续；这样运行的参数/产物/报告都留在同一条记录里。
+    resumed = False
+    resume_id = str(getattr(req, "resume_run_id", "") or "").strip()
+    if resume_id:
+        try:
+            existing = store.load(resume_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if existing is not None and (existing.data.get("choices") or []):
+            run, resumed = existing, True
+    if not resumed:
+        run = store.new("agent", payload)
+        # 本次运行的调用计数从零开始（否则 calls 会累计上一次运行，无法判断本次调用量）
+        from docking_agent.runtime.llm import reset_registry_counters
 
-    reset_registry_counters()
+        reset_registry_counters()
     # 会话 id：同一 id = 同一段对话。LangGraph checkpointer 按 thread_id 记忆，
     # 因此**不能**再用每次都会变的 run.id 当 thread_id，否则永远命中不到上一轮。
     conversation_id = (req.conversation_id or "").strip()
@@ -58,6 +71,11 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
     thread_id = conversation_id or run.id
     run.data["conversation_id"] = conversation_id
     run.data["thread_id"] = thread_id
+    if resumed:
+        run.data["status"] = "running"
+        run.data["finished_at"] = None
+        run.data["error"] = None
+        run.log("用户在界面上作答，继续同一运行（不新建运行）")
     run_config: Dict[str, Any] = {
         "configurable": {"thread_id": thread_id},
         "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT),
@@ -74,23 +92,40 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
         logger.warning("读取会话历史失败（按新会话处理）：%s", e)
     if prior_turns:
         run.data["conversation_turns"] = len(prior_turns)
-    # 受理层（intake）：理解用户要什么 → 任务规约（确定性优先，只在对话模式下才调模型）。
-    # 结构化字段（分子库/受体/位点/参数）始终随指令一起下发，避免表单与自然语言互相覆盖。
-    from docking_agent import intake
+    if resumed:
+        # 续跑：答案本身就是本轮指令；**不重新受理**（task_spec / param_plan 沿用第一次受理的），
+        # 但用户这次带上的字段要并入 —— 且**只覆盖真正给了值的字段**：
+        # 续跑请求里没出现的字段在 AgentRequest 里是 None/""（表单参数在对话模式本就不下发），
+        # 直接 `**payload` 会把用户第一次设置的参数（搜索强度/盒子/引擎…）清成 None。
+        message = str(req.message or "").strip()
+        merged = dict(run.data.get("request") or {})
+        for key, value in payload.items():
+            if value is None or value == "" or key in ("message", "conversation_id"):
+                continue
+            merged[key] = value
+        merged["message"] = message
+        run.data["request"] = merged
+    else:
+        # 受理层（intake）：理解用户要什么 → 任务规约（确定性优先，只在对话模式下才调模型）。
+        # 结构化字段（分子库/受体/位点/参数）始终随指令一起下发，避免表单与自然语言互相覆盖。
+        from docking_agent import intake
 
-    message, task_spec = await asyncio.to_thread(
-        intake.build_message, req, run=run, prior_turns=prior_turns or None)
-    run.data["request"] = {**payload, "message": message}
-    run.data["task_spec"] = task_spec          # 可观测：本次任务到底被理解成了什么
-    run.log(f"任务受理：task_type={task_spec.get('task_type')} "
-            f"authority={task_spec.get('authority')} decision={task_spec.get('decision')} "
-            f"来源={task_spec.get('source')}"
-            + (f"（延续会话 {conversation_id[:8]}，历史 {len(prior_turns)} 条）"
-               if conversation_id and prior_turns else ""))
-    run.save()
-    if task_spec.get("assumptions"):
-        for note in task_spec["assumptions"][:4]:
-            run.log(f"受理假设：{note}")
+        message, task_spec = await asyncio.to_thread(
+            intake.build_message, req, run=run, prior_turns=prior_turns or None)
+        run.data["request"] = {**payload, "message": message}
+        run.data["task_spec"] = task_spec      # 可观测：本次任务到底被理解成了什么
+    if not resumed:
+        run.log(f"任务受理：task_type={task_spec.get('task_type')} "
+                f"authority={task_spec.get('authority')} decision={task_spec.get('decision')} "
+                f"来源={task_spec.get('source')}"
+                + (f"（延续会话 {conversation_id[:8]}，历史 {len(prior_turns)} 条）"
+                   if conversation_id and prior_turns else ""))
+        run.save()
+        if task_spec.get("assumptions"):
+            for note in task_spec["assumptions"][:4]:
+                run.log(f"受理假设：{note}")
+    else:
+        run.save()
 
     async def gen() -> AsyncGenerator[str, None]:
         yield sse_event({"type": "start", "run_id": run.id,
@@ -102,6 +137,11 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
         board = store_blackboard(shared_store(), run.id)
         board_token = current_blackboard.set(board)
         cancel_event = cancel_flag(run.id)
+        if resumed:
+            # 用户已作答：清掉这一问（及其阻断标记），否则工具护栏会继续拒绝开跑
+            from docking_agent.tools.choices import clear_choices  # noqa: PLC0415
+
+            clear_choices(str(getattr(req, "resume_choice_kind", "") or ""))
         try:
             graph = state.get_graph()
             # 记录各 Agent 角色实际使用的模型（每个角色独立实例）
@@ -138,13 +178,31 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                                           "elapsed_sec": round(time.time() - started, 1)}))
                 return out
 
-            stream = stream_agent_sse(graph, {"messages": [{"role": "user", "content": message}]},
-                                      config, run.id, context=current_agent_context())
+            if resumed:
+                # 把答案作为一条用户消息写回 checkpoint，再以 None 续跑（不从零开始）
+                from langchain_core.messages import HumanMessage  # noqa: PLC0415
+
+                await graph.aupdate_state(config, {"messages": [HumanMessage(content=message)]})
+                stream = stream_agent_sse(graph, None, config, run.id,
+                                          context=current_agent_context())
+            else:
+                stream = stream_agent_sse(graph, {"messages": [{"role": "user", "content": message}]},
+                                          config, run.id, context=current_agent_context())
             async for chunk in _interleave(stream, 1.0, _tick):
                 # 阻断式候选（如「共晶配体是否作阳性对照」）一经下发，本轮立即收口：
                 # 用户没点选就不该继续算（真实故障：问题 22:47 下发、却把 2961 个分子算到 23:23）。
                 if run.data.get("choices_blocking") and run.data.get("choices"):
-                    run.log("本轮因需要用户决定而暂停：等界面点选后以同一会话继续")
+                    run.log("本轮因需要用户决定而暂停：等界面点选后续跑同一运行")
+                    # F3：暂停也要留痕（否则这次运行连"模型说了什么"都查不到）。
+                    # 完整持久化（result/报告）留给续跑结束时统一做，这里只写消息日志。
+                    try:
+                        from docking_agent.agents.persistence import build_messages_log  # noqa: PLC0415
+
+                        _, _msgs = await _final_state(graph, config)
+                        run.write_json("messages_log", build_messages_log(_msgs, ""),
+                                       label="模型可见消息日志（角色/工具/长度/开头）")
+                    except Exception:  # noqa: BLE001 - 留痕失败不影响暂停本身
+                        logger.debug("暂停时写消息日志失败", exc_info=True)
                     run.finish("needs_user_input")
                     yield sse_event({"type": "final", "run_id": run.id, "content": ""})
                     yield sse_event({"type": "done", "run_id": run.id,

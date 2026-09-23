@@ -52,6 +52,12 @@ class AgentRequest(BaseModel):
                      "不可用时回退 AutoDock4 CPU）。可显式给 auto / vina / autodock / external"
                      "（external=设置页登记的外部引擎，如 AutoDock-GPU；未登记或未就绪会直接报错）。"))
     pocket_engine: str = Field(default="", description="结合位点来源引擎：''(默认 auto)/auto/p2rank/geometric/known_site")
+    resume_run_id: str = Field(
+        default="",
+        description=("点选候选后**续跑同一个运行**：填该运行 id，服务端复用它（不新建 run），"
+                     "把 message 作为答案注入线程并从 checkpoint 继续；留空=新运行"))
+    resume_choice_kind: str = Field(
+        default="", description="被回答的候选类型（如 positive_control）；续跑时只清这一问")
     site_center: Optional[List[float]] = None
     site_size: Optional[List[float]] = None
     n_poses: Optional[int] = Field(default=None, description="输出位姿数；留空=按任务默认（筛选 1 / 姿态 3）")
