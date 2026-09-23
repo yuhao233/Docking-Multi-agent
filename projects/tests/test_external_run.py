@@ -32,16 +32,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def _fake_autodock_gpu(tmp_path: Path) -> Path:
     """接收 `--resnam X` 并写出 `X.dlg`（含两组结果，第二组更优），同时把 argv 记到文件里。"""
     path = tmp_path / "fake_adgpu"
-    dlg = """    FINAL DOCKED STATE:
+    pose_a = ("DOCKED: ROOT\n"
+              "DOCKED: ATOM      1  C   UNL     1      11.000  12.000  13.000  1.00  0.00     0.000 A \n"
+              "DOCKED: ENDROOT\n"
+              "DOCKED: TORSDOF 0\n")
+    pose_b = ("DOCKED: ROOT\n"
+              "DOCKED: ATOM      1  C   UNL     1      21.500  22.500  23.500  1.00  0.00     0.000 A \n"
+              "DOCKED: ENDROOT\n"
+              "DOCKED: TORSDOF 0\n")
+    dlg = ("""    FINAL DOCKED STATE:
 
 Run:   1 / 2
-DOCKED: USER    Estimated Free Energy of Binding    =  -5.59 kcal/mol  [=(1)+(2)+(3)-(4)]
+"""
+           + pose_a +
+           """DOCKED: USER    Estimated Free Energy of Binding    =  -5.59 kcal/mol  [=(1)+(2)+(3)-(4)]
 DOCKED: USER    (1) Final Intermolecular Energy     =  -5.88 kcal/mol
 DOCKED: USER    (2) Final Total Internal Energy     =  -0.03 kcal/mol
 DOCKED: USER    (3) Torsional Free Energy           =  +0.30 kcal/mol
 
 Run:   2 / 2
-DOCKED: USER    Estimated Free Energy of Binding    =  -7.12 kcal/mol  [=(1)+(2)+(3)-(4)]
+"""
+           + pose_b +
+           """DOCKED: USER    Estimated Free Energy of Binding    =  -7.12 kcal/mol  [=(1)+(2)+(3)-(4)]
 DOCKED: USER    (1) Final Intermolecular Energy     =  -7.40 kcal/mol
 DOCKED: USER    (2) Final Total Internal Energy     =  -0.02 kcal/mol
 DOCKED: USER    (3) Torsional Free Energy           =  +0.30 kcal/mol
@@ -49,7 +61,7 @@ DOCKED: USER    (3) Torsional Free Energy           =  +0.30 kcal/mol
     CLUSTERING HISTOGRAM
     ____________________
    1 |     -7.12 |   2 |     -7.12 |   2 |##
-"""
+""")
     path.write_text(
         "#!/bin/sh\n"
         'printf "%s\\n" "$@" > "$FAKE_ARGV_LOG"\n'
@@ -213,6 +225,12 @@ def test_dock_ligand_external_autodock_gpu(tmp_path: Path,
     assert row["engine_version"].endswith("v1.6-release")
     assert row["affinity_kcal_mol"] == pytest.approx(-7.12)
     assert Path(row["pose_file"]).exists(), "留档位姿必须真的落盘"
+    assert row["pose_file"].endswith(".pdbqt"), "位姿统一落成 PDBQT（下游分析与报告按 PDBQT 读）"
+    assert Path(row["pose_raw"]).exists(), "原始 DLG 同时留档"
+    from docking_agent.core.interactions import read_pdbqt
+
+    atoms = read_pdbqt(row["pose_file"], first_model_only=True)
+    assert len(atoms) == 1 and atoms[0]["xyz"] == [21.5, 22.5, 23.5], atoms  # 最优那一组的坐标
     argv = argv_log.read_text(encoding="utf-8").split()
     assert argv[argv.index("--ffile") + 1].endswith("rec.maps.fld")
     assert argv[argv.index("--nrun") + 1] == "2", "n_poses 映射到 GA 运行数"
@@ -352,3 +370,52 @@ def test_external_engine_note_tells_the_truth_about_who_runs() -> None:
     idle = external_engine_note(report, "vina")
     assert "仍由内置引擎计算" in idle and "engine=vina" in idle
     assert "external" in idle, "要告诉用户怎么切换到外部引擎"
+
+
+def test_macrocycle_ligands_have_no_glue_pseudo_atoms(tmp_path: Path) -> None:
+    """大环配体必须**不切环**：meeko 默认会插两个伪原子（元素 G，类型 CG0/G0），
+    autogrid4 参数库没有这些类型（实测 unknown ligand atom type），AutoDock4/-GPU 必然失败。
+
+    真实故障（2026-09-23）：2961 条库里有 113 条栽在这里；改 `rigid_macrocycles=True` 后
+    113/116 立即可用（其余 3 条是真化学限制：meeko 无法给 Se/Mn/Pt 类原子定类型、3D 构象生成失败）。
+    """
+    from docking_agent.core.docking import _pdbqt_atom_types
+    from docking_agent.core.ligands import describe_ligand, smiles_to_pdbqt
+
+    muscone = "C[C@@H]1CCCCCCCCCCCCC(=O)C1"          # 15 元大环
+    prep = describe_ligand(muscone)
+    assert prep["facts"]["rigid_macrocycle_rings"], prep["facts"]
+    assert max(prep["facts"]["rigid_macrocycle_rings"]) >= 12
+    path = tmp_path / "lig.pdbqt"
+    path.write_text(smiles_to_pdbqt(prep["smiles"]), encoding="utf-8")
+    types = _pdbqt_atom_types(str(path))
+    assert types and set(types) <= set(ER.STANDARD_LIGAND_TYPES), types
+    for pseudo in ("CG0", "G0", "G1", "CG"):
+        assert pseudo not in types, f"仍出现切环伪原子类型 {pseudo}"
+
+
+def test_extract_best_pose_pdbqt_from_real_dlg(tmp_path: Path) -> None:
+    """真实 AutoDock-GPU DLG（thrombin × 苯甲脒，--nrun 3）→ PDBQT 位姿。
+
+    真实损失（2026-09-23，2961 条库）：外部引擎把位姿留成 `.dlg`，而位姿分析按 PDBQT 读，
+    2845 个位姿全部读不出 → 报告写"未产生可读取的位姿文件"、结合模式分析整段缺失。
+    """
+    from docking_agent.core.interactions import read_pdbqt
+
+    out = tmp_path / "pose.pdbqt"
+    text = ER.extract_best_pose_pdbqt(MULTI_RUN_DLG, out, energy=-5.59)
+    atoms = read_pdbqt(str(out), first_model_only=True)
+    assert len(atoms) >= 10, atoms
+    assert any(a["ad4"] == "N" for a in atoms)
+    head = Path(text).read_text(encoding="utf-8").splitlines()[:3]
+    assert head[0].startswith("REMARK SOURCE")
+    assert "-5.59" in head[1]
+    assert head[2].startswith("MODEL")
+
+
+def test_extract_best_pose_pdbqt_refuses_empty_dlg(tmp_path: Path) -> None:
+    """没有 DOCKED 载荷的 DLG 必须报错，不能产出空位姿文件。"""
+    bad = tmp_path / "bad.dlg"
+    bad.write_text("Run:   1 / 1\n    CLUSTERING HISTOGRAM\n", encoding="utf-8")
+    with pytest.raises(ExternalEngineError):
+        ER.extract_best_pose_pdbqt(bad, tmp_path / "out.pdbqt")

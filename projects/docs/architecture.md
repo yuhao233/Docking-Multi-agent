@@ -610,7 +610,7 @@ INTAKE_LLM=off .venv/bin/python scripts/verify_docking.py    # 对接真实性�
 .venv/bin/python scripts/check_web.py                        # 78 项静态校验
 .venv/bin/python scripts/snapshot_ids.py diff                # DOM id 不得被删（基线 213）
 node --check web/app.js && node --check scripts/ui_e2e.js
-node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先起服务（143 项，jsdom 真点按钮）
+node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先起服务（231 项，jsdom 真点按钮）
 ```
 
 **门禁策略**：静态门禁（1）与测试（2）是**阻断式**；取证脚本（3）在动 `core/docking.py`、
@@ -676,7 +676,7 @@ node scripts/ui_e2e.js http://127.0.0.1:<port>               # 可选：需先�
 | `scripts/verify_docking.py` | 52 | 对接真实性取证：独立复算、参数敏感性、反证控制（平移盒子/换受体/非法输入） | 动 core/docking 必跑 |
 | `scripts/check_web.py` | 118 | 前端静态：语法、离线可跑、id 对应、设计令牌、布局健壮性 | 动前端必跑 |
 | `scripts/snapshot_ids.py` | 241 id（基线 213） | 防止误删动态引用的 DOM id | 动 index.html 必跑 |
-| `scripts/ui_e2e.js` | 143 | jsdom 真加载页面 + 真点按钮 + 真读接口 + 合成 SSE 并行场景 + **导出条/KPI/报告目录** | 可选（需起服务） |
+| `scripts/ui_e2e.js` | 231 | jsdom 真加载页面 + 真点按钮 + 真读接口 + 合成 SSE 并行场景 + **导出条/KPI/报告目录** + 门禁自清理 | 可选（需起服务） |
 | `scripts/ui_shot.py check` | 6 页 | 真浏览器（Chromium）：控制台错误 / 横向溢出（含疑似元素）/ 图片加载失败 | 动前端必跑 |
 | `scripts/ui_shot.py diff` | 6 页 | 视觉回归：与基线逐像素比对，输出「改前/改后/红色高亮」三格差异图 | 动前端的验收依据 |
 | `scripts/intake_eval.py` | 14 | 受理层决策（run/ask/reject）用例集，零模型 | 动 intake/提示词必跑 |
@@ -749,7 +749,7 @@ README 必须指向本手册、承诺的门禁脚本必须存在、不得再承�
 | `asyncio.to_thread` 包装的旧代码在长跑服务里看不到改动 | 修复无效 | 重启服务 / 换端口验证 |
 | **用字符串替换搬移 HTML 块时不先断言插入锚点** | 锚点不匹配 → 块被删除但没插入，**整块 DOM 静默丢失**（本次丢了 67 个 id） | 先切块并校验标签配平 → **先插入再删除** → 断言 id 数与无重复；改前先落一份备份（本次靠 Firefox `cache2` 里的缓存响应恢复） |
 | **把工具调用轨迹镜像进对话气泡** | 气泡被「调用工具：X／工具返回：X／节点更新：tools」淹没，与右侧面板重复，报告正文被挤到看不见（真实体验问题） | 工具事件只进 `#tool-trace` + 阶段日志；对话流只留用户/助手往来与运行级状态（`appendChatNote` 只用于「运行完成/已取消」）；`scripts/ui_e2e.js` 有 5 条断言看护 |
-| 在 jsdom 里提前 `window.close()` | 应用内部仍在 await 的续体访问 `document` → 未处理拒绝把脚本带崩 | 全部断言完成后再统一关窗；**挂着在途 SSE 的页面（parallel/live/run）一律不关**，只冻结 fetch 交给 `process.exit`（高负载下曾把 143/143 变成 crash） |
+| 在 jsdom 里提前 `window.close()` | 应用内部仍在 await 的续体访问 `document` → 未处理拒绝把脚本带崩 | 全部断言完成后再统一关窗；**挂着在途 SSE 的页面（parallel/live/run）一律不关**，只冻结 fetch 交给 `process.exit`（高负载下曾把全绿变成 crash） |
 | **取消只在「有 future 完成」时才被检查** | 一整批都是超大柔性分子时循环转不到，用户点停止后进程池继续满载（实测 load 18→40）；更糟的是 `terminate()` 后执行器会**重新拉起 worker** 啃队列里剩下的分子 | 守护线程盯标志 → `shutdown(cancel_futures=True)` 先取消队列 → 再 terminate → 1 s 后对不响应 SIGTERM 的 worker 强杀；工具层再拒绝「已取消运行」的新对接 |
 | **盒子内没有任何受体原子** | Vina **不报错**，直接返回全 0 能量（`affinity=0.0`）；0.0 不是分数而是「什么都没算」，会被当成合法结果排序/写报告（真实事故：盒子来自另一个蛋白，距受体最近原子 75 Å，147 个分子白跑 7.5 分钟） | 开跑前 `box_atom_stats()` 数盒内原子：为 0 → 拒绝该受体 + notes 写明「差多远」；行级再把全 0 能量判为 `error`（Vina/AutoDock 两条路径都拦） |
 | **中断留下悬空的 `tool_calls`** | 点「停止」/运行失败时，模型已发出 `tool_calls` 而回执永不产生；checkpointer 记下这条 AIMessage ⇒ **同一会话下一轮**把非法序列发给 OpenAI，直接 `400 insufficient tool messages`，整段对话卡死 | 每轮开始前 `repair_thread_state()`：在所属 AIMessage **正后方**插入占位 `ToolMessage`（如实说明"被中断、没有结果"），再用 `RemoveMessage`+整体重写写回（`add_messages` 只能追加）；三个图入口（对话流 / `/run` / OpenAI 兼容）都调；`tests/test_thread_healing.py` 5 条看护 |

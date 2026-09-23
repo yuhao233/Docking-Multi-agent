@@ -2435,3 +2435,35 @@ bash langgraph-deploy/scripts/check.sh                              # 无 key：
 LLM_API_KEY=ci-graph-build-only ... bash langgraph-deploy/scripts/check.sh   # 全部通过（图真加载）
 LLM_API_KEY=ci-graph-build-only ... bash langgraph-deploy/scripts/test.sh    # 46 passed, 4 skipped
 ```
+
+---
+
+# 2026-09-23 · 运行 20260923-224338-3779 暴露的六项修复（阻断式询问 / 大环配体 / 位姿格式 / 漏斗 / 气泡数据治理 / 门禁自清理）
+
+用户实测一次 2961 条库的外部引擎运行（40 分钟、116 条失败、位姿分析整段缺失）后逐项复盘：
+
+1. **阻断式询问**：受体自带共晶配体是否作阳性对照的问题 22:47 就下发了，却因前端"只在整轮运行
+   结束时挂出"+ 工具幂等标记放行重试，用户还没回答就把 2961 个分子算完。现在：候选在**回合边界**
+   挂出（运行中禁用）、本轮立即以 `needs_user_input` 收口、未回答前 `run_docking`/`molecular_docking`
+   直接拒绝开跑（连子 Agent 都不调度）。
+2. **大环配体**：meeko 默认切环会插伪原子（元素 G，类型 `CG0`/`G0`），autogrid4 参数库没有这些类型
+   （实测 `CG0/G0/G1/CG/W` 全部 unknown）→ AutoDock4/-GPU 必然失败。116 条失败里 **113 条**因此而来；
+   统一 `rigid_macrocycles=True` 后即可用（代价：7–33 元环不采样环构象，notes 如实说明）。
+3. **位姿格式**：外部引擎只留 `.dlg`，而位姿分析按 PDBQT 读 → 2845 个位姿全部读不出、组合模式分析
+   缺失。现在抽出 DLG 里**最优那一组**写成 PDBQT（原始 DLG 另存 `pose_raw`）。
+4. **大库参数规划缺位**：分子来自上传文件时受理层拿不到库 → `param_plan` 为空 → 2961 条按默认 16
+   全量精算、两阶段漏斗一次没跑。现在对接工具在库已知后补规划，并在工具内确定性执行"粗筛全库 →
+   精算头部 N 个"（精算行 `pass=fine` + `affinity_coarse` 留痕）。
+5. **气泡数据治理**：新增运行产物 `messages_log.json`（模型可见消息的形状日志，角色/工具/长度/开头
+   400 字），让"气泡里到底说了什么"事后可查；协调 Agent 提示词加"正文只给结论"纪律；气泡超过
+   20000 字符才折叠并指向报告页签（普通长回答照旧全文显示）。
+6. **门禁自清理**：`ui_e2e` / `browser_check` 每次真跑会创建十几条运行记录，长期挤满用户历史
+   （实测 5534 条里绝大多数是夹具）。新增 `RunStore.delete` 与 `DELETE /api/runs/{id}`，两个脚本
+   结束时只删本次新增的 id 并报告条数。
+
+顺带：「引用文件」行的小分子计数在上传阶段还没解析，此前恒显示"0 个分子"（会让用户以为文件是空的），
+改为"分子数待运行解析"。
+
+门禁：`check.sh --static` / `--fast`、`ui_e2e`、`browser_check`、`snapshot_ids` 全部通过。
+
+---

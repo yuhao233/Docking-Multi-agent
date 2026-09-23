@@ -443,10 +443,12 @@ async function startRun(text, options) {
           state.runId = event.run_id;
         } else if (event.type === 'stage') {
           setStatus(event.message || '运行中');
+          // 阶段变化 = 当前回合结束：把缓冲的候选挂出来（运行中按钮仍是禁用的）
+          flushDeferredChoices();
         } else if (event.type === 'progress') {
           if (event.total) setStatus('已完成 ' + fmtInt(event.done) + ' / ' + fmtInt(event.total));
         } else if (event.type === 'choices') {
-          // 先存下来：本轮输出还没结束，此刻渲染按钮会被用户在模型仍在输出时点选
+                  // 先缓冲，回合边界（stage）或本轮结束时再挂出；运行中按钮禁用
           state.deferredChoices = { choices: event.choices || [], note: event.note || '' };
         } else if (event.type === 'limit') {
           // 步数预算：系统自己放宽/收尾，只是如实告知，不需要用户做任何事

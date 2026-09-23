@@ -1030,6 +1030,9 @@ function setRunIdLabel(text) {
  *   - 顶部标签显示短 id，便于排查。
  * ------------------------------------------------------------------------ */
 const CONVERSATION_KEY = 'dsh_conversation_id';
+/* 气泡正文上限（**极高**，只拦病态大 dump）：普通长回答照旧全文显示（用户明确要求过
+   不默认折叠），但整份报告/几万行明细不允许塞进气泡 —— 那属于报告页签与下载。 */
+const CHAT_BUBBLE_MAX_CHARS = 20000;
 
 function newConversationId() {
   try {
@@ -2238,9 +2241,14 @@ async function handleEvent(data) {
       break;
     case 'tool_result':
       handleToolResultEvent(data);
+      /* 工具返回 = 当前回合结束：此刻把缓冲的候选挂出来（运行中按钮保持禁用，
+         跑完自动可点）。真实故障（2026-09-23）：选项 22:47 就下发了，却被压到 23:23
+         运行结束才渲染 —— 用户没法在真正需要决定的时候看到它。 */
+      flushDeferredChoices();
       break;
     case 'update':
       handleUpdateEvent(data);
+      flushDeferredChoices();
       break;
     case 'choices':
       handleChoicesEvent(data);
@@ -2258,7 +2266,13 @@ async function handleEvent(data) {
         // 对话模式：助手气泡在收到 final 后由 Markdown 渲染器重排
         if (state.page === 'chat') {
           const bubbleId = state.chatActiveId || appendChatMessage('assistant', '', 'final');
-          setChatMarkdown(bubbleId, state.reportMarkdown);
+          /* 气泡只承载结论：正文过长时折叠，完整内容在「报告」页签与下载的报告文件里。
+             真实反馈（2026-09-23）：大库运行时气泡被整份报告/明细拉得很长。 */
+          const shown = state.reportMarkdown.length > CHAT_BUBBLE_MAX_CHARS
+            ? state.reportMarkdown.slice(0, CHAT_BUBBLE_MAX_CHARS)
+              + '\n\n---\n\n（正文过长已折叠；完整内容见「报告」页签与下载的报告文件。）'
+            : state.reportMarkdown;
+          setChatMarkdown(bubbleId, shown);
           setChatStatus(bubbleId, state.cancelled ? '已取消' : '已完成');
         }
         // 参数模式的多 Agent 报告仍在「报告」页签呈现
@@ -2853,7 +2867,12 @@ function handleChoicesEvent(data) {
           + '）：本轮模型输出结束后挂出，请在界面上点选。', 'stage');
 }
 
-/** 本轮结束：把缓冲的候选挂出来（模型已经输出完了，此时点选才是安全的） */
+/** 把缓冲的候选挂出来。
+
+挂出时机（用户 2026-09-23 拍板）：**回合边界**（工具返回 / 节点推进）或本轮运行结束时；
+运行中挂出的按钮一律禁用（`renderChoicePanel` 按 `state.running` 决定），跑完自动可点。
+不再等"整轮运行结束"——长任务里那意味着几十分钟看不到问题。
+*/
 function flushDeferredChoices() {
   const pending = Array.isArray(state.deferredChoices) ? state.deferredChoices.slice() : [];
   state.deferredChoices = [];
@@ -3048,7 +3067,11 @@ function composeChatMessage(raw, attachments) {
 function appendFileRefs(message, refs) {
   if (!refs || !refs.length) return message;
   const lines = refs.map((r) => '- ' + r.name + '（'
-    + (r.kind === 'receptor' ? '受体' : ('小分子库，' + fmtInt(r.count) + ' 个分子'))
+    + (r.kind === 'receptor'
+      ? '受体'
+      /* 分子数在上传阶段**还没有解析**（解析发生在开始运行时）—— 此前这里恒显示
+         "0 个分子"，与"待运行"的实际状态矛盾，会让用户以为上传的文件是空的。 */
+      : (r.count ? ('小分子库，' + fmtInt(r.count) + ' 个分子') : '小分子库，分子数待运行解析'))
     + '）→ ' + (r.path || '（无路径）'));
   return message + '\n\n引用文件（本次对话已上传，可直接作为工具输入）：\n' + lines.join('\n');
 }

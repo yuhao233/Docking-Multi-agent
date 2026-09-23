@@ -1348,6 +1348,15 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
         notes.append(f"超限分子分组：{grouped_total} 个分子的 3D 跨度 + {margin:.0f} Å 超过主盒，"
                      f"已在**同一中心**用更大盒子单独重跑（{boxes} Å）；"
                      "大配体组与主组盒子不同，**不要跨组直接比较分数**")
+    # 大环配体的准备口径要如实说明（否则报告里"环构象没采样"是隐藏前提）
+    rigid_rows = [r for b in receptors for r in (b.get("results") or [])
+                  if (r.get("ligand_facts") or {}).get("rigid_macrocycle_rings")]
+    if rigid_rows:
+        biggest = max(max(r["ligand_facts"]["rigid_macrocycle_rings"]) for r in rigid_rows)
+        notes.append(f"{len(rigid_rows)} 个配体含 7 元及以上环：按**刚性环**准备（不切环、不采样环构象，"
+                     f"本次最大环 {biggest} 元）。这是为了与 AutoDock4 / AutoDock-GPU 的格点打分兼容 —— "
+                     "meeko 默认切环会插入格点参数库不认识的伪原子（CG0/G0），经典引擎必然失败；"
+                     "统一刚性后各引擎口径一致，代价是环构象未采样。")
     plan = plan_concurrency(len(molecules))
     notes.append(f"对接并发：{plan['workers']} 进程 × {plan['threads']} 线程"
                  f"（{len(molecules)} 个分子；大分子优先调度以减少拖尾）")

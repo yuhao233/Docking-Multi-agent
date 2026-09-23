@@ -139,8 +139,25 @@ def choices_payload(choices: List[Dict[str, Any]], *, message: str, kind: str = 
                                   "count": len(choices)}}
 
 
+def blocking_choice_pending(kind: str = "", runtime: Any = None) -> bool:
+    """是否正在等用户点选**阻断式**候选（未回答前不允许继续算）。
+
+    与 `needs_user_input` 的区别：这是运行**级**状态，供后续工具调用直接拒绝启动 ——
+    真实故障（2026-09-23）：共晶配体是否作阳性对照的问题在 22:47 就下发了，但工具重试时
+    因"一次运行只询问一次"的幂等标记直接开跑，用户还没回答就先算了 40 分钟。
+    """
+    run = active_run(runtime)
+    data = getattr(run, "data", None) if run is not None else None
+    if not isinstance(data, dict):
+        return False
+    pending_kind = str(data.get("choices_blocking") or "")
+    if not pending_kind or not data.get("choices"):
+        return False
+    return (not kind) or pending_kind == kind
+
+
 def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
-                    runtime: Any = None) -> None:
+                    runtime: Any = None, blocking: bool = False) -> None:
     """把「候选选择项」写进本次运行数据，供 SSE / 运行详情下发给前端点选。
 
     结构化选择通道（而不是只把候选写进正文段落）：前端在聊天气泡下方渲染成按钮，
@@ -152,6 +169,7 @@ def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
     if not choices:
         run.data.pop("choices", None)
         run.data.pop("choices_note", None)
+        run.data.pop("choices_blocking", None)
         run.data.pop("_choices_signatures", None)
         return
     normalized = [{**(c or {}), "kind": (c or {}).get("kind") or kind} for c in choices]
@@ -168,6 +186,9 @@ def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
     run.data["choices"] = normalized
     if note:
         run.data["choices_note"] = note
+    if blocking:
+        # 阻断式：未回答前，对接一类的工具调用会被拒（见 blocking_choice_pending / dispatch.run_docking）
+        run.data["choices_blocking"] = kind
     try:
         run.log(f"已生成 {len(choices)} 个可选项（kind={kind}）：等待用户在界面上选择")
     except Exception:  # noqa: BLE001
@@ -193,6 +214,8 @@ def clear_choices(kind: str = "",
         if not (isinstance(s, (list, tuple)) and s and (not kind or s[0] == kind))]
     if not current:
         return
+    if not kind or run.data.get("choices_blocking") == kind:
+        run.data.pop("choices_blocking", None)
     kept = [c for c in current if not kind or c.get("kind") != kind]
     if kept:
         run.data["choices"] = kept
@@ -354,6 +377,13 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
         return []                                   # 用户/上游已指定对照：不打扰
     run = active_run(runtime)
     data = getattr(run, "data", None) if run is not None else None
+    # 用户已经就同一问题给过"不使用阳性对照"的决定（前端点选 skip 后以同一会话追问）：
+    # 新一轮不能再问一遍，否则"问 → 跳过 → 又问"会循环。
+    request = (data or {}).get("request") if isinstance(data, dict) else None
+    request = request if isinstance(request, dict) else {}
+    if str(request.get("positive_control_decision") or "").strip().lower() == "skip" \
+            or bool(request.get("skip_positive_control")):
+        return []
     # 一次运行**只判定一次**，且必须在对接开始前判定（函数名与文档承诺就是「对接前询问」）。
     # 真实缺陷：同一次运行里 run_docking 可能被调用多次（重试/分阶段），早期调用因受体结构
     # 还没准备好而解不出 SMILES（日志写「因此未询问」），后期调用却能解出并发布选项 ——
@@ -408,6 +438,8 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
             run.data["cocrystal_control_offer"] = {
                 "resname": resname, "key": ligand.get("key"),
                 "n_atoms": ligand.get("n_atoms"), "smiles": smiles, "label": label}
-        publish_choices("positive_control", choices, note=note, runtime=runtime)
+        # 阻断式：先问再算（用户拍板 2026-09-23）。回答方式不变 —— 前端以同一会话追问一句，
+        # 系统据此发起新一轮；但**在回答之前不会开始对接**，避免白跑几十分钟。
+        publish_choices("positive_control", choices, note=note, runtime=runtime, blocking=True)
         return choices
     return []

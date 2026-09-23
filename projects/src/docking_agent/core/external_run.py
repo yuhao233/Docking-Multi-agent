@@ -105,6 +105,63 @@ def parse_dlg_energies(dlg_path: str | Path) -> Dict[str, Optional[float]]:
             "intramolecular_kcal_mol": internal, "torsion_kcal_mol": torsional}
 
 
+def extract_best_pose_pdbqt(dlg_path: str | Path, out_path: str | Path,
+                            *, energy: Optional[float] = None) -> str:
+    """从 AD4 / AutoDock-GPU 的 DLG 里抽出**最优那一组**的位姿，写成标准 PDBQT。
+
+    为什么需要：`--nrun N`（由 `n_poses` 映射）时 DLG 内含 N 组结果，而下游的位姿分析、
+    报告与下载都按 **PDBQT** 读（`core/interactions.read_pdbqt`）。此前外部适配只把 `.dlg`
+    原样留档 → `analyze_pose_pocket` 读不出 → 报告整段"未产生可读取的位姿文件"，
+    2845 个真实位姿等于白算（真实故障 2026-09-23）。这里把最优组的 `DOCKED:` 载荷
+    （ROOT/BRANCH/ATOM/TORSDOF）剥掉前缀后原样写出，等于 AD4 原生位姿转成 PDBQT。
+
+    返回写出的路径；DLG 里找不到可解析的位姿时抛 `ExternalEngineError`（不静默产出空文件）。
+    """
+    best_lines: list = []
+    best_energy: Optional[float] = None
+    current: list = []
+    current_energy: Optional[float] = None
+    in_run = False
+
+    def _flush() -> None:
+        nonlocal best_lines, best_energy, current, current_energy
+        if current and current_energy is not None:
+            if best_energy is None or current_energy < best_energy:
+                best_energy, best_lines = current_energy, list(current)
+        current, current_energy = [], None
+
+    with open(dlg_path, encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            if line.startswith("Run:"):
+                _flush()
+                in_run = True
+                continue
+            if "Estimated Free Energy of Binding" in line:
+                current_energy = _first_float_after_equals(line)
+                continue
+            if line.startswith("DOCKED: ") and in_run:
+                payload = line[len("DOCKED: "):].rstrip("\n")
+                if payload.startswith(("MODEL", "ENDMDL")):
+                    continue            # 组边界由 Run: 划分，MODEL/ENDMDL 不写进单模型文件
+                current.append(payload)
+    _flush()
+
+    if not best_lines:
+        raise ExternalEngineError(
+            f"DLG 里没有可解析的位姿（{os.path.basename(str(dlg_path))}）："
+            "AutoDock-GPU 可能未写出 DOCKED 载荷。")
+    if energy is None:
+        energy = best_energy
+    header = [f"REMARK SOURCE {os.path.basename(str(dlg_path))}"]
+    if energy is not None:
+        header.append(f"REMARK BEST BINDING ENERGY {float(energy):.2f} kcal/mol")
+    header.append("MODEL        1")
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(header + best_lines + ["ENDMDL", ""]), encoding="utf-8")
+    return str(out)
+
+
 def parse_vina_pose_energy(pose_pdbqt: str | Path) -> Optional[float]:
     """从 Vina 写出的位姿 PDBQT 里取最佳亲和力（`REMARK VINA RESULT:` 第一行）。"""
     with open(pose_pdbqt, encoding="utf-8", errors="ignore") as handle:
@@ -241,16 +298,21 @@ def _dock_autodock_gpu(*, binary: str, ligand_pdbqt: str, workdir: str, fld: str
             "AutoDock-GPU 结果里没有能量行（可能配体或格点图不匹配、或任务未成功）。"
             f"日志尾部：{(proc.stdout or '').strip().splitlines()[-2:]}")
     pose_file = ""
+    pose_raw = ""
     if pose_base:
-        pose_file = f"{pose_base}.dlg"
+        pose_file = f"{pose_base}.pdbqt"
         os.makedirs(os.path.dirname(pose_file) or ".", exist_ok=True)
-        shutil.copyfile(dlg, pose_file)
+        # 位姿统一落成 PDBQT（下游分析/报告/下载都按 PDBQT 读），原始 DLG 同时保留留档
+        extract_best_pose_pdbqt(dlg, pose_file, energy=energies["affinity_kcal_mol"])
+        pose_raw = f"{pose_base}.dlg"
+        shutil.copyfile(dlg, pose_raw)
     return {
         "affinity_kcal_mol": round(float(energies["affinity_kcal_mol"]), 2),
         "intermolecular_kcal_mol": _round_or_nan(energies["intermolecular_kcal_mol"]),
         "intramolecular_kcal_mol": _round_or_nan(energies["intramolecular_kcal_mol"]),
         "torsion_kcal_mol": _round_or_nan(energies["torsion_kcal_mol"]),
         "pose_file": pose_file,
+        "pose_raw": pose_raw,
     }
 
 

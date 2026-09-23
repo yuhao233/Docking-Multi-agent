@@ -187,6 +187,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         _explicit_exh = int(exhaustiveness or 0) > 0
     except (TypeError, ValueError):
         _explicit_exh = False
+    _funnel: Optional[Dict[str, int]] = None   # 库解析后补规划若判定两阶段，则填粗筛/精算强度
     _planned_exh = resolve_exhaustiveness(
         exhaustiveness,
         (getattr(active_run(runtime), "data", None) or {}).get("param_plan"))
@@ -292,6 +293,64 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                 if canonical not in present:
                     molecules = list(molecules) + [{"name": POSITIVE_CONTROL_NAME, "smiles": control}]
                     logger.info("阳性对照未在清单中，已自动补入一并对接：%s", control)
+
+        # ---- 库已知后补一次参数规划（大库漏斗的前提）----
+        # 真实缺口（2026-09-23）：分子来自上传文件 → 受理层规划时库还没解析 → `param_plan` 为空
+        # → 2961 条按默认 16 全量精算 40 分钟，两阶段漏斗一次没跑。这里补规划并写回运行。
+        _plan = (getattr(active_run(runtime), "data", None) or {}).get("param_plan") or {}
+        if isinstance(molecules, list) and len(molecules) > 1 and not _plan.get("exhaustiveness"):
+            try:
+                from docking_agent.core.params import plan_docking_params
+
+                # `site` 这个局部变量在下面（口袋/表单解析）才赋值，这里不能引用它；
+                # 盒子尺寸用「表单给的 site_size」或「黑板里口袋分析交出的盒子」，都没有就交给规划
+                # 按默认盒体积算（规划对 None 有兜底）。
+                _site_size = None
+                if site_size:
+                    _parsed = _parse_site("", floats_to_text(site_size, expect=3))
+                    _site_size = (_parsed or {}).get("size")
+                if not _site_size:
+                    _board = active_blackboard(runtime)
+                    _rec = {}
+                    try:
+                        _rec = (_board.receptor() if _board is not None else {}) or {}
+                    except Exception:  # noqa: BLE001 - 黑板读不到就不带盒子信息
+                        _rec = {}
+                    _site_size = _rec.get("size") or None
+                _request_params = ((getattr(active_run(runtime), "data", None) or {})
+                                   .get("request") or {})
+                # 注意：此刻 `exhaustiveness` 已被解析成具体数字（未指定时是系统默认 16），
+                # 只有 `_explicit_exh` 为真才是**用户真的给了值**，否则会被规划当成用户参数、
+                # 于是规划原样返回 16 —— 那正是这次"没有漏斗"的一半原因。
+                _user_params = {k: v for k, v in (
+                    ("exhaustiveness", exhaustiveness if _explicit_exh else None),
+                    ("n_poses", n_poses),
+                    ("engine", _request_params.get("engine")))
+                    if v not in (None, "", 0)}
+                _late_plan = plan_docking_params(
+                    task_type="screening", molecules=molecules,
+                    box_size=_site_size, user_params=_user_params)
+                if _late_plan.get("exhaustiveness") is not None:
+                    _run = active_run(runtime)
+                    if _run is not None:
+                        _run.data["param_plan"] = _late_plan
+                        _run.log("库解析后补参数规划："
+                                 f"exhaustiveness={_late_plan['exhaustiveness']}"
+                                 + (f"（两阶段：粗筛 {_late_plan.get('coarse_exhaustiveness')} → "
+                                    f"精算前 {_late_plan.get('refine_top_n')} 个）"
+                                    if _late_plan.get("two_stage") else "（单阶段）"))
+                    logger.info("库解析后补参数规划：%s", _late_plan.get("exhaustiveness"))
+                    # 漏斗在**本工具内**确定性执行：粗筛全库 → 精算头部 N 个（不依赖模型再调一次）。
+                    if _late_plan.get("two_stage") and not _explicit_exh and not top_from_previous:
+                        _funnel = {
+                            "coarse": int(_late_plan.get("coarse_exhaustiveness")
+                                          or exhaustiveness),
+                            "fine": int(_late_plan["exhaustiveness"]),
+                            "top_n": int(_late_plan.get("refine_top_n") or 200),
+                        }
+                        exhaustiveness = _funnel["coarse"]
+            except Exception:  # noqa: BLE001 - 规划失败退化为系统默认，不能挡住对接
+                logger.debug("库解析后补规划失败", exc_info=True)
 
         receptor = None
         if receptor_file and receptor_file.strip():
@@ -428,8 +487,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
             from docking_agent.core.receptors import (  # noqa: PLC0415
                 ReceptorInputError, resolve_receptor_specs)
             from docking_agent.tools.choices import (  # noqa: PLC0415
-                choices_payload, clear_choices, offer_cocrystal_positive_control,
-                receptor_input_guard)
+                blocking_choice_pending, choices_payload, clear_choices,
+                offer_cocrystal_positive_control, receptor_input_guard)
 
             try:
                 preview_specs, _notes = resolve_receptor_specs(
@@ -447,12 +506,14 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                               for s in preview_specs]
             offered = offer_cocrystal_positive_control(
                 preview_blocks, specified_control=control, runtime=runtime)
-            if offered:
+            # 阻断式询问未回答前**不许开跑**：重复调用到这里也必须原地返回。
+            # 真实故障（2026-09-23）：幂等标记让第二次调用直接开局，用户还没点选就算了 40 分钟。
+            if offered or blocking_choice_pending("positive_control", runtime=runtime):
                 # 选项明细只走界面；给模型的载荷不带 SMILES/选项内容，避免正文里再抄一遍
                 return json.dumps(choices_payload(
                     offered,
                     message=("受体结构自带共晶配体：是否把它作为阳性对照（结合模式基线）"
-                             "需要用户点选确认。"),
+                             "需要用户点选确认；**在你点选之前不会开始对接**。"),
                     kind="positive_control"), ensure_ascii=False)
             clear_choices("positive_control", runtime=runtime)
         except Exception as exc:  # noqa: BLE001 - 询问失败不阻塞对接
@@ -475,6 +536,58 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         if run is not None:
             run.data.pop("live_progress", None)
 
+        # ---- 漏斗第二遍：只对头部 N 个用精算强度重算 ----
+        # 按 (name, smiles) 合并，精算行 pass=fine 且保留 affinity_coarse（与 top_from_previous 同口径）。
+        if _funnel and isinstance(out.get("receptors"), list):
+            _flat = [r for b in out["receptors"] for r in (b.get("results") or [])
+                     if not r.get("error") and r.get("affinity_kcal_mol") is not None]
+            if len(_flat) > _funnel["top_n"]:
+                _top = sort_by_affinity(_flat, drop_missing=True)[:_funnel["top_n"]]
+                _coarse = {r.get("smiles"): r.get("affinity_kcal_mol") for r in _flat
+                           if r.get("smiles")}
+                if run is not None:
+                    run.data["live_progress"] = {
+                        "stage": "docking", "done": len(_flat), "total": len(_flat),
+                        "percent": 100.0,
+                        "message": f"粗筛完成，正在对头部 {len(_top)} 个分子精算"
+                                   f"（exhaustiveness={_funnel['fine']}）"}
+                _fine = dock_library(
+                    [{"name": r.get("name") or r.get("smiles"), "smiles": r.get("smiles")}
+                     for r in _top],
+                    receptor=receptor, keep_hetatm=keep,
+                    exhaustiveness=int(_funnel["fine"]), n_poses=int(n_poses),
+                    engine=engine, protonation=(protonation or ""),
+                    protonation_ph=(protonation_ph or None), site=site,
+                    pose_dir=(str(run.dir / "poses")
+                              if (run is not None and save_poses) else None),
+                    progress_cb=(partial(_live_progress, runtime=runtime)
+                                 if run is not None else None),
+                    note_cb=_live_note if run is not None else None,
+                    cancel_event=cancel_flag(run.id) if run is not None else None)
+                _fine_by_key = {}
+                for b in _fine.get("receptors") or []:
+                    for r in b.get("results") or []:
+                        _fine_by_key[(r.get("name") or r.get("smiles"), r.get("smiles"))] = r
+                for b in out["receptors"]:
+                    merged = []
+                    for r in b.get("results") or []:
+                        new_row = _fine_by_key.get((r.get("name") or r.get("smiles"),
+                                                    r.get("smiles")))
+                        if new_row is None:
+                            merged.append(r)
+                            continue
+                        new_row["pass"] = "fine"
+                        if _coarse.get(r.get("smiles")) is not None:
+                            new_row["affinity_coarse"] = _coarse[r["smiles"]]
+                        merged.append(new_row)
+                    b["results"] = merged
+                out["notes"] = list(out.get("notes") or []) + [
+                    f"两阶段漏斗（库解析后补规划）：全库 {len(_flat)} 个按 exhaustiveness="
+                    f"{_funnel['coarse']} 粗筛，头部 {len(_top)} 个按 exhaustiveness="
+                    f"{_funnel['fine']} 精算；精算行 pass=fine 并保留 affinity_coarse。"
+                    "排序请只采用精算行或注明粗筛。"]
+        if run is not None:
+            run.data.pop("live_progress", None)
 
         # ---- 写入共享黑板：供结合模式检测 Agent 交叉核验（横向协作）----
         board = active_blackboard(runtime)

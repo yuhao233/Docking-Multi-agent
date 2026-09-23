@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pathlib
 from typing import Any, Dict
 
 import pytest
@@ -222,7 +223,7 @@ def test_offer_when_no_positive_control_specified(tmp_path: Path,
                "cocrystal_ligand": cocrystal_ligand(str(pdb))}]
     published: Dict[str, Any] = {}
     monkeypatch.setattr(CH, "publish_choices",
-                        lambda kind, items, note="", runtime=None: published.update(
+                        lambda kind, items, note="", runtime=None, blocking=False: published.update(
                             {"kind": kind, "items": items, "note": note}))
     offered = CH.offer_cocrystal_positive_control(blocks, specified_control="")
     assert published.get("kind") == "positive_control"
@@ -409,3 +410,40 @@ def test_cocrystal_smiles_failure_is_logged_once_per_run(tmp_path: Path,
         assert CH.offer_cocrystal_positive_control(blocks, specified_control="") == []
     logs = [line for line in run.data.get("log", []) if "解不出 SMILES" in line]
     assert len(logs) == 1, f"「解不出」说明只应写一次：{logs}"
+
+
+def test_cocrystal_offer_respects_the_skip_decision(run_ctx: Any) -> None:
+    """用户点选「不使用阳性对照」后，新一轮**不得再问一遍**（否则问→跳过→又问会循环）。
+
+    前端把该决定以 `positive_control_decision="skip"` 写进请求（见 web/app.js 的 applyChoice）。
+    """
+    from docking_agent.tools.choices import offer_cocrystal_positive_control
+
+    run, _board = run_ctx
+    # 共晶配体的 SMILES 要从**原始结构**里解出来（去配体的 PDBQT 里没有配体原子），
+    # 因此这里造一个真实的 PDB 片段落在磁盘上，供 cocrystal_ligand_smiles 解析。
+    import tempfile
+
+    from docking_agent.core import pockets as _pockets
+
+    pdb = pathlib.Path(tempfile.mkdtemp()) / "cocrystal.pdb"
+    pdb.write_text(
+        "HETATM    1  C1  Z9N E   2      10.000  10.000  10.000  1.00  0.00           C\n"
+        "HETATM    2  O1  Z9N E   2      11.200  10.600  10.500  1.00  0.00           O\n"
+        "HETATM    3  C2  Z9N E   2      12.100   9.800  11.100  1.00  0.00           C\n",
+        encoding="utf-8")
+    block = {"receptor": "8ZE2", "receptor_key": "8ZE2", "source_pdb": str(pdb),
+             "receptor_pdb": str(pdb),
+             "cocrystal_ligand": {"resname": "Z9N", "key": "E:2:Z9N", "n_atoms": 3}}
+    ligand = block["cocrystal_ligand"]
+    assert _pockets.cocrystal_ligand_smiles(str(pdb), ligand), "测试夹具必须先能解出 SMILES"
+    blocks = [block]
+    run.data["request"] = {"positive_control_decision": "skip"}
+    assert offer_cocrystal_positive_control(blocks, runtime=None) == []
+    run.data["request"] = {"skip_positive_control": True}
+    assert offer_cocrystal_positive_control(blocks, runtime=None) == []
+    # 没给决定时仍要询问（并进入阻断态）
+    run.data["request"] = {}
+    run.data.pop("cocrystal_check_done", None)
+    offered = offer_cocrystal_positive_control(blocks, runtime=None)
+    assert offered and run.data.get("choices_blocking") == "positive_control"

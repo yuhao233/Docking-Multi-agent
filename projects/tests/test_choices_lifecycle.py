@@ -108,3 +108,58 @@ def test_empty_run_without_choices_is_still_no_op(tmp_path: Path) -> None:
 
     assert result.get("no_op") is True and result.get("status") == "no_op"
     assert not result.get("needs_user_input")
+
+
+# --------------------------------------------------------------------------- #
+# 阻断式候选：未回答前不许继续算（用户 2026-09-23 拍板）
+# --------------------------------------------------------------------------- #
+def test_blocking_choice_blocks_until_answered(run_ctx: Any) -> None:
+    """`blocking=True` 的候选（共晶配体是否作阳性对照）在清掉之前一直是"待回答"状态。
+
+    真实故障（2026-09-23，运行 20260923-224338-3779）：问题 22:47 就下发给界面，主管 Agent
+    重试对接工具时被"一次运行只询问一次"的幂等标记放行，**用户还没回答就把 2961 个分子算了
+    40 分钟**，运行结束时才把问题显示出来。
+    """
+    from docking_agent.tools.choices import blocking_choice_pending
+
+    run, _board = run_ctx
+    publish_choices("positive_control", _molecule_choices("代森锰锌"), runtime=None, blocking=True)
+    assert run.data.get("choices_blocking") == "positive_control"
+    assert blocking_choice_pending("positive_control", runtime=None) is True
+    assert blocking_choice_pending("molecule", runtime=None) is False, "只拦同一类问题"
+
+    clear_choices("positive_control", runtime=None)
+    assert run.data.get("choices_blocking") is None, "回答/清理后必须解除阻断"
+    assert blocking_choice_pending("positive_control", runtime=None) is False
+
+
+def test_non_blocking_choice_does_not_block_docking(run_ctx: Any) -> None:
+    """普通候选（非阻断）不得拦住后续工具调用，否则会把正常流程卡死。"""
+    from docking_agent.tools.choices import blocking_choice_pending
+
+    run, _board = run_ctx
+    publish_choices("molecule", _molecule_choices("代森锰锌"), runtime=None)
+    assert blocking_choice_pending(runtime=None) is False
+
+
+def test_dispatch_refuses_to_start_docking_while_choice_pending(
+        run_ctx: Any, monkeypatch) -> None:
+    """待回答的阻断式问题存在时，主管的 `run_docking` 必须原地返回 needs_user_input。
+
+    这一层护栏的意义：连子 Agent 都不调度（省掉一整轮 LLM 调用），也不可能"绕过"去开跑。
+    """
+    import json
+
+    from docking_agent.agents import dispatch
+    from docking_agent.tools.choices import publish_choices
+
+    run, _board = run_ctx
+    publish_choices("positive_control", _molecule_choices("共晶配体"), runtime=None, blocking=True)
+
+    calls = []
+    monkeypatch.setattr(dispatch, "get_docking_agent",
+                        lambda: calls.append("agent") or object())
+    out = json.loads(dispatch.run_docking.func(molecules_json='[{"name":"A","smiles":"CCO"}]'))
+    assert out["status"] == "needs_user_input", out
+    assert "点选" in out["message"] or "选择" in out["message"]
+    assert calls == [], "待回答期间不得调度对接子 Agent"

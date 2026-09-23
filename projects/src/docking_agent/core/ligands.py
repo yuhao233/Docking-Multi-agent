@@ -290,6 +290,14 @@ def describe_ligand(smiles: str, protonation: Optional[str] = None,
     except Exception:  # noqa: BLE001
         logger.debug("配体描述符计算失败", exc_info=True)
     try:
+        # 7 元及以上环：meeko 会按「大环」处理；我们统一按刚性环准备（见 smiles_to_pdbqt），
+        # 因此如实记进事实字段，供运行级 notes 与报告说明「环构象未采样」。
+        ring_sizes = sorted({len(r) for r in mol.GetRingInfo().AtomRings()} or [])
+        facts["max_ring_size"] = max(ring_sizes) if ring_sizes else 0
+        facts["rigid_macrocycle_rings"] = [n for n in ring_sizes if n >= 7]
+    except Exception:  # noqa: BLE001
+        logger.debug("环大小识别失败：%s", raw, exc_info=True)
+    try:
         centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False)
         unassigned = [i for i, tag in centers if tag == "?"]
         facts["undefined_stereocenters"] = len(unassigned)
@@ -356,7 +364,13 @@ def smiles_to_pdbqt(smiles: str, seed: int = 42) -> str:
         AllChem.MMFFOptimizeMolecule(mol, maxIters=500)  # type: ignore
     except Exception:  # 某些元素缺少力场参数时忽略
         logger.warning("MMFF 优化跳过: %s", smiles)
-    prep = MoleculePreparation()
+    # 大环处理：meeko 默认会**切开大环**并插入两个 "glue" 伪原子（元素 G，类型 `CG0`/`G0`）。
+    # 真实故障（2026-09-23）：autogrid4 的参数库没有这些类型（实测 CG0/G0/G1/CG/W 全部
+    # "unknown ligand atom type"），AutoDock4 与 AutoDock-GPU 因此**必然失败**（一次 2961 条库
+    # 里 113 条栽在这里）；内置 Vina 虽能解析，却会把伪原子当原子打分，跨引擎不可比。
+    # 因此统一 `rigid_macrocycles=True`：环保持刚性、不切环、无伪原子，各引擎口径一致。
+    # 代价（如实记录）：7–33 元环不再采样环构象，取 ETKDG 的单一构象。
+    prep = MoleculePreparation(rigid_macrocycles=True)
     setups = prep.prepare(mol)
     if not setups:
         raise ValueError("meeko 配体预准备失败: " + smiles)

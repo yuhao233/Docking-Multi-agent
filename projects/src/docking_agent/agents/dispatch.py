@@ -539,6 +539,15 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     if guard:
         logger.info("拒绝对接：受理层判定用户点名的受体无法解析")
         return guard
+    # 阻断式询问未回答前连子 Agent 都不调度（真实故障 2026-09-23：白算 40 分钟）。
+    from docking_agent.tools.choices import blocking_choice_pending  # noqa: PLC0415
+
+    if blocking_choice_pending("positive_control", runtime=runtime):
+        logger.info("拒绝对接：等用户点选共晶配体阳性对照")
+        return json.dumps({"status": "needs_user_input",
+                           "message": "本轮已就「共晶配体是否用作阳性对照」提问（选项在界面上）；"
+                                      "用户点选前不会开始对接。请立即结束本轮，不要再调用工具、"
+                                      "也不要复述选项内容。"}, ensure_ascii=False)
     agent = get_docking_agent()
     notes: List[str] = []
     # 搜索强度：0/留空 = 未指定 → 用本次运行的自动规划值（没有规划值时才留给下游按设置页默认）。

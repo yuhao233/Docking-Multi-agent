@@ -242,7 +242,7 @@ curl -s "localhost:5000/api/runs?q=阿司匹林&status=ok&since=2026-09-01&offse
 {"type":"tool_call","name":"run_docking"}
 {"type":"tool_result","name":"run_docking","content":"（截断后的工具返回）"}
 {"type":"update","node":"model"}
-{"type":"choices","choices":[{"id","kind","label","value","prompt","detail"}],"note":"..."}
+{"type":"choices","blocking":true,"choices":[{"id","kind","label","value","prompt","detail"}],"note":"..."}
 {"type":"final","content":"完整报告（Markdown）"}
 {"type":"done","run_id":"...","summary":{...}}
 {"type":"error","error_code":"...","error_message":"..."}
@@ -529,7 +529,10 @@ dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}
   库较小时仍可能用单条 `molecule` 事件。**前端两种都要处理**。
 - `progress` 每 ~1s 或每批推送一次，用于进度条与 ETA。
 - 事件条目结构与原 `molecule` 完全同构。
-- **`choices`（结构化选择通道）**：受体/分子自动解析出**多个候选**或**置信度不足**时下发，
+- **`choices`（结构化选择通道）**：受体/分子自动解析出**多个候选**或**置信度不足**时下发；
+  `blocking=true` 表示**阻断式问题**（当前只有「受体自带共晶配体是否作阳性对照」）：
+  下发后本轮立即以 `needs_user_input` 收口，工具层也会拒绝在未回答前重新开跑（真实故障：
+  问题 22:47 下发、却把 2961 个分子算到 23:23，用户回答时结果早已算完）。
   每项 `{id, kind, label, value, prompt, detail}`（`kind ∈ receptor|molecule`）：
   `label` 给人看、`value` 是机器可用值（accession / CID / SMILES）、`prompt` 是点选后原样发出的追问、
   `detail` 带物种/蛋白名/结构来源/打分。附带 `note` 说明为什么需要用户选。
@@ -1031,7 +1034,7 @@ ADMET/PDB 之类缩写不得被当成受体）与 `scripts/browser_check.py`（�
 | 服务端（单次运行） | 同一问题（同 `kind` + 同选项 id 序列）**只发布第一次**：重复发布不改写已下发的候选、不重复记日志，也不再发 SSE | `tools/choices.py::publish_choices`；`clear_choices(kind)` 会撤销该类的幂等标记，保证「先问 → 已答 → 又问」仍能下发 |
 | 服务端（运行状态） | 停下来等用户点选 **不是 `no_op`**：工具确实跑过（例如受体已解析），状态记为 `needs_user_input`，`no_report_reason` 写「等待在界面上选择」 | `agents/persistence.py` + `api/routers/agent.py` |
 | 客户端（显示） | 候选**按 `kind` 分组**：分子 / 受体 / 阳性对照各是一问，后到的问题不得覆盖先到的（同一气泡内可并存多组） | `web/app.js` `clearChoices(kind)` / `showChoices` / `renderChatHistory`（`data-choice-group`） |
-| 客户端（时机） | 收到 `choices` **只缓冲、不立刻渲染**：本轮模型输出结束（`done`/流结束）后才挂出按钮 —— 模型还在输出时点选会与进行中的运行抢跑，那次选择可能取不到 | `web/app.js` `handleChoicesEvent` → `flushDeferredChoices()`（`setRunning(false)`）；`web/simple.js` `state.deferredChoices` → `flushDeferredChoices()`（流结束的 `finally`，先解除 busy 再渲染） |
+| 客户端（时机） | 收到 `choices` 先缓冲，到**回合边界**（工具返回 / 节点推进 / 阶段变化）或本轮运行结束时挂出；运行中按钮保持禁用，跑完自动可点。此前只在"整轮运行结束"挂出，长任务里意味着几十分钟看不到问题（用户实测反馈） | `web/app.js` `handleChoicesEvent` → `flushDeferredChoices()`（`tool_result` / `update` / `setRunning(false)`）；`web/simple.js` `state.deferredChoices` → 同一函数（`stage` / 流结束的 `finally`） |
 | 客户端（点选） | 运行中候选按钮**点不动**；程序路径被调用时给出明确提示且**不清空**按钮；载入运行记录时按 `run.choices` 补挂候选 | `web/app.js` `applyChoice` / `setRunning`；`web/simple.js` `applyChoice` / `setBusy` / `loadRun` |
 
 回归：`tests/test_choices_lifecycle.py`（5 项：首次为准、清空后可再问、清一类不动另一类、

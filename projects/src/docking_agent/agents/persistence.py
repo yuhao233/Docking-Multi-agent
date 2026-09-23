@@ -237,9 +237,52 @@ def _dedupe_molecules(molecules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+#: 模型可见消息日志的规模上限：条数与每条正文截断（只用于"气泡里到底说了什么"的可观测性，
+#: 不参与任何计算；真实困扰 2026-09-23：用户反馈"气泡把大量数据对话出去了"，但运行产物里
+#: 只有最终结论文本，事后无法回看当时模型看到了/输出了什么）。
+MESSAGES_LOG_LIMIT = 200
+MESSAGES_LOG_HEAD = 400
+
+
+def build_messages_log(messages: List[Any], final_text: str = "") -> List[Dict[str, Any]]:
+    """把模型可见消息压成**可审计的摘要日志**（角色/工具名/长度/前 N 字符）。
+
+    只记录形状与开头，不落全量正文：既能回答"这一轮模型看到了多大的载荷、输出了什么"，
+    又不会把 8 MB 的工具 JSON 再存一份。条数取最后 `MESSAGES_LOG_LIMIT` 条（长任务里早期
+    步骤的价值低于最近几步）。
+    """
+    out: List[Dict[str, Any]] = []
+    for message in list(messages or [])[-MESSAGES_LOG_LIMIT:]:
+        entry: Dict[str, Any] = {"role": type(message).__name__}
+        name = getattr(message, "name", None)
+        if name:
+            entry["tool"] = str(name)
+        calls = getattr(message, "tool_calls", None) or []
+        if calls:
+            entry["tool_calls"] = [
+                {"name": str((c or {}).get("name") or ""),
+                 "args_chars": len(json.dumps((c or {}).get("args") or {}, ensure_ascii=False))}
+                for c in calls]
+        text = as_text(getattr(message, "content", ""))
+        entry["chars"] = len(text)
+        if text:
+            entry["head"] = text[:MESSAGES_LOG_HEAD]
+        out.append(entry)
+    if final_text:
+        out.append({"role": "FinalAnswer", "chars": len(final_text),
+                    "head": final_text[:MESSAGES_LOG_HEAD]})
+    return out
+
+
 def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[str, Any]:
     """把多 Agent 运行的真实工具输出写入运行目录，返回 result 字典。"""
     outputs, args = extract_tool_data(messages)
+    # 模型可见消息的形状日志：气泡/载荷争议事后可查（不存全量正文，见 build_messages_log）
+    try:
+        run.write_json("messages_log", build_messages_log(messages, final_text),
+                       label="模型可见消息日志（角色/工具/长度/开头）")
+    except Exception:  # noqa: BLE001 - 日志落盘失败不能影响运行收尾
+        logger.debug("消息日志落盘失败", exc_info=True)
 
     # ---- 数据来源：**工具产物优先**，模型回显的工具消息仅作兜底 ----
     # 大库时工具只把「摘要」回传给模型，明细写在这些产物文件里（见 runtime/tool_io.py），

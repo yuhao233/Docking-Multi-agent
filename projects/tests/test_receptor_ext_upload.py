@@ -207,6 +207,9 @@ def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path, monkeypatch)
         "receptor_file": up.json()["path"],
         "ligands_text": "乙醇:CCO",
         "exhaustiveness": 1, "engine": "vina", "save_poses": False,
+        # 该受体自带共晶配体：本用例只关心"用的是上传的受体"，按用户决定跳过对照
+        # （否则按 2026-09-23 的新语义会停下等点选，状态是 needs_user_input）
+        "positive_control_decision": "skip",
     }, monkeypatch)
     detail = client.get(f"/api/runs/{run_id}").json()
     assert detail["run"]["status"] == "ok", detail["run"]

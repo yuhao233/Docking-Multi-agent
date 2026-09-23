@@ -122,6 +122,7 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                 last_progress["choices_sent"] = list(choices)
                 return sse_event({"type": "choices", "run_id": run.id,
                                   "choices": choices,
+                                  "blocking": bool(run.data.get("choices_blocking")),
                                   "note": run.data.get("choices_note") or ""})
 
             def _tick() -> List[str]:
@@ -140,6 +141,15 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
             stream = stream_agent_sse(graph, {"messages": [{"role": "user", "content": message}]},
                                       config, run.id, context=current_agent_context())
             async for chunk in _interleave(stream, 1.0, _tick):
+                # 阻断式候选（如「共晶配体是否作阳性对照」）一经下发，本轮立即收口：
+                # 用户没点选就不该继续算（真实故障：问题 22:47 下发、却把 2961 个分子算到 23:23）。
+                if run.data.get("choices_blocking") and run.data.get("choices"):
+                    run.log("本轮因需要用户决定而暂停：等界面点选后以同一会话继续")
+                    run.finish("needs_user_input")
+                    yield sse_event({"type": "final", "run_id": run.id, "content": ""})
+                    yield sse_event({"type": "done", "run_id": run.id,
+                                     "summary": run.to_dict()})
+                    return
                 if cancel_event.is_set():
                     run.log("已被用户取消")
                     run.finish("cancelled", error="用户取消")
