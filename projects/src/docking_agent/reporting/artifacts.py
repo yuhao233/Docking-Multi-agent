@@ -192,8 +192,11 @@ CHART_SPECS = {
                            lambda r, pc, top: affinity_histogram(r, pc)),
     "property_chart": (CHART_FILES["property_chart"], "理化性质空间图（仅推荐排行前 N 个）",
                        lambda r, pc, top: property_scatter_chart(top or r, top_only=bool(top))),
-    "structure_grid": (CHART_FILES["structure_grid"], "候选分子结构对比（含阳性对照）",
-                       lambda r, pc, top: structure_grid(r, pc)),
+    # 结构对比图按**推荐分子**（用户要求：报告展示的部分也用推荐的分子）；
+    # 没有推荐排行时退回对接排序表（`structure_grid` 自身按传入顺序绘制）
+    "structure_grid": (CHART_FILES["structure_grid"], "候选分子结构对比（含阳性对照，按推荐排行）",
+                       lambda r, pc, top: structure_grid(
+                           top or r, pc, top_n=(len(top) if top else 12))),
     "binding_scatter": (CHART_FILES["binding_scatter"], "结合模式散点图（相似度 vs 亲和力）",
                         lambda r, pc, top: binding_scatter(r, pc)),
     "recommend_chart": (CHART_FILES["recommend_chart"], "推荐化合物 2D 结构图（综合分降序）",

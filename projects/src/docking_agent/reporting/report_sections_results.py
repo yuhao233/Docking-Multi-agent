@@ -278,7 +278,8 @@ def _section_5_3_binding_rows(ctx: ReportContext) -> List[str]:
     L.append("")
     L += ctx.figure_block("similarity_chart", "与阳性对照的指纹相似度（Morgan Tanimoto）")
     L += ctx.figure_block("binding_scatter", "结合模式：相似度 vs 亲和力（含对照亲和力参考线）")
-    L += ctx.figure_block("structure_grid", "候选分子结构对比（含阳性对照，按亲和力排序）")
+    L += ctx.figure_block("structure_grid",
+                          "推荐分子结构对比（含阳性对照，按推荐排行；无推荐排行时按对接排序）")
     # 展示对象 = **推荐分子**（全部），不再按亲和力另截一批；没有推荐排行时退回排序表
     shown = ctx.recommended or ctx.ranking
     L.append(f"> 下表按**推荐分子**列出（{len(shown)} 个；推荐排行见第 3 节）"
