@@ -326,6 +326,14 @@ class ReportContext:
         self.truncated = len(self.full_ranking) > len(self.ranking)
         self.binding_rows = {r.get("smiles"): r
                              for r in (result.get("binding") or {}).get("rows", [])}
+        # 推荐排行（`recommend_compounds` 写在运行数据里）：报告里"展示哪些分子"以它为准，
+        # 不再另按亲和力截取一批（用户要求：报告展示的部分也用推荐的分子）。
+        rec = result.get("recommendations") or {}
+        by_smiles = {m.get("smiles"): m for m in self.full_ranking}
+        self.recommended = [
+            {**by_smiles.get(r.get("smiles"), {}), **r}
+            for r in (rec.get("rows") or []) if isinstance(r, dict) and r.get("smiles")
+        ]
         self.pc = result.get("positive_control") or {}
         self.notes = result.get("notes") or []
         self.molecules = result.get("molecules") or []

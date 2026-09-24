@@ -148,6 +148,42 @@ def _strip_process_meta(text: str) -> str:
     return cleaned.strip()
 
 
+#: AI 腔的过渡词：只去掉词本身，保留其后的事实（用户要求报告"专业性强一些，AI 感控制"）
+_AI_FILLER_PREFIXES = ("综上所述", "总的来说", "总而言之", "总之", "值得注意的是", "需要注意的是",
+                       "需要指出的是", "值得一提的是", "首先", "其次", "再次", "最后",
+                       "另外", "此外", "同时", "可以看到", "不难看出", "由此可见",
+                       "让我们", "本文将", "本报告将", "简而言之")
+#: 纯过程/元信息句：整句丢弃（不携带任何事实）
+_AI_META_PATTERNS = (r"^以上(为|是)", r"^(下面|接下来|以下)(是|将)", r"^如需(进一步|更多)",
+                     r"希望(这|本)", r"欢迎(随时)?(提问|交流|指正)", r"^本文", r"^本报告")
+
+
+def polish_agent_text(text: str) -> str:
+    """去掉过渡词、纯过程句，并对**完全重复**的句子去重（标点/空白归一后比较）。
+
+    专业化的做法不是"改写"（那会编造事实），而是**只做减法**：留事实与判断，去掉腔调。
+    """
+    out: List[str] = []
+    seen = set()
+    for raw in str(text or "").splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            out.append(raw)
+            continue
+        if any(re.search(pattern, stripped) for pattern in _AI_META_PATTERNS):
+            continue
+        for prefix in _AI_FILLER_PREFIXES:
+            if stripped.startswith(prefix) and stripped[len(prefix):len(prefix) + 1] in ("，", ",", "：", ":", " "):
+                stripped = stripped[len(prefix):].lstrip("，,：: ")
+                break
+        key = re.sub(r"[\s。，、；：,.;:!?！？*`\-—]", "", stripped)
+        if len(key) >= 8 and key in seen:      # 中文一句话约 8 字以上才判重（短单元格不误伤）
+            continue
+        seen.add(key)
+        out.append(stripped)
+    return "\n".join(out)
+
+
 def extract_agent_conclusions(narrative: str) -> str:
     """从协调 Agent 的整段报告里**只取结论/建议类小节**，避免报告内容重复。
 
@@ -180,7 +216,7 @@ def extract_agent_conclusions(narrative: str) -> str:
     if current_title is not None or current_body:
         blocks.append((current_title, "\n".join(current_body).strip()))
     if not any(title for title, _ in blocks):
-        return text                    # 没有标题：按整段结论处理
+        return polish_agent_text(text)  # 没有标题：按整段结论处理（同样做减法）
 
     kept: List[str] = []
     for title, body in blocks:
@@ -205,7 +241,7 @@ def extract_agent_conclusions(narrative: str) -> str:
         if any(k in plain for k in _CONCLUSION_KEYS):
             body = _strip_process_meta(body)
             kept.append((title + ("\n\n" + body if body else "")).strip())
-    return _strip_process_meta("\n\n".join(kept).strip())
+    return polish_agent_text(_strip_process_meta("\n\n".join(kept).strip()))
 
 
 def _artifact_size(artifacts: Optional[List[Dict[str, Any]]], name: str) -> str:

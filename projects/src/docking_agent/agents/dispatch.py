@@ -582,18 +582,32 @@ def run_binding_mode_analysis(molecules_json: str = "", molecules_file: str = ""
     """
     if not positive_control_smiles:
         positive_control_smiles = _load_positive_control()
+    # 分析对象 = **Agent 推荐的全部分子**（用户要求）：推荐清单本身就是"要交付的那几个"，
+    # 不再按亲和力另取一批 top-N（那会与被推荐的分子不一致，也让报告出现两套名单）。
+    # 还没有推荐清单（例如推荐在结合模式之后才做）时，退回全量分子库，保持工具可用。
+    run = active_run(runtime)
+    rec_rows = ((getattr(run, "data", None) or {}).get("recommendations") or {}).get("rows") or []
+    rec_molecules = [{"name": r.get("name") or r.get("smiles"), "smiles": r.get("smiles")}
+                     for r in rec_rows if isinstance(r, dict) and r.get("smiles")]
     agent = get_binding_agent()
-    mol_file = (molecules_file or "").strip() or tool_io.artifact_path(
-        "molecules", run=active_run(runtime))
-    dock_file = tool_io.artifact_path("docking", run=active_run(runtime))
+    if not (molecules_json or "").strip() and rec_molecules:
+        mol_payload = json.dumps(rec_molecules, ensure_ascii=False)
+        mol_file = ""
+        notes = [f"分析对象为推荐排行的全部 {len(rec_molecules)} 个分子（不按亲和力另取 top-N）。"]
+    else:
+        mol_payload = (molecules_json or "").strip() or ""
+        mol_file = (molecules_file or "").strip() or tool_io.artifact_path(
+            "molecules", run=run)
+        notes = ["molecules_json / molecules_file 都为空时，用共享黑板上的全量分子。"]
+    dock_file = tool_io.artifact_path("docking", run=run)
     msg = _agent_task_message(
         "请分析本次候选分子与阳性对照的结合模式相似性，完成后调用 check_binding_consistency "
         "做跨 Agent 交叉核验（对接结果按文件传 docking_file）。",
-        {"molecules_json": (molecules_json or "").strip() or None,
+        {"molecules_json": mol_payload or None,
          "molecules_file": mol_file or None,
          "positive_control_smiles": (positive_control_smiles or "").strip() or None,
          "docking_file": dock_file or None},
-        notes=["molecules_json / molecules_file 都为空时，用共享黑板上的全量分子。"])
+        notes=notes)
     return _invoke_checked(agent, msg, thread_id="binding", role="binding", runtime=runtime)
 
 @tool
