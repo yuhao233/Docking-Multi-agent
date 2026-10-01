@@ -1,6 +1,6 @@
 """图递归上限（`GRAPH_RECURSION_LIMIT`）回归：默认值、子 Agent 的显式额度、以及"步数不会平白变多"。
 
-真实故障（用户报错）：
+注意：
 
     Recursion limit of 60 reached without hitting a stop condition.
 
@@ -74,7 +74,7 @@ def test_pairing_middleware_does_not_add_a_graph_node() -> None:
     """配对自愈用 `wrap_model_call`（包裹式）：**不得**在图里多出一个节点。
 
     `before_model` 钩子会变成独立节点 —— 每次模型调用多一个 super-step，
-    在 `recursion_limit` 面前等于把可用轮数砍掉三分之一（真实故障的放大器）。
+    在 `recursion_limit` 面前等于把可用轮数砍掉三分之一（故障的放大器）。
     """
     from langchain.agents import create_agent
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel

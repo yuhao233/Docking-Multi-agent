@@ -128,7 +128,7 @@ def test_context_reaches_real_project_tool(monkeypatch: pytest.MonkeyPatch) -> N
     """真实工具必须把 `runtime` 透传给**上下文感知**的助手，而不是丢掉它。
 
     历史：这里曾断言工具会调用 `active_request(runtime)` —— 但那行赋值的结果从未被读过
-    （2026-09-21 审计认定的死代码，已删除）。现在钉住真正被消费的入口：
+    （死代码，已删除）。现在钉住真正被消费的入口：
     按文件读分子时，工具必须把 runtime 透传给 `_coerce_molecule_list`。
     """
     from docking_agent.tools import properties

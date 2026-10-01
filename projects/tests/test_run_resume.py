@@ -1,6 +1,6 @@
-"""点选候选 = **续跑同一个运行**（用户 2026-09-24 拍板），不再另起一个运行记录。
+"""点选候选 = **续跑同一个运行**（设计约束），不再另起一个运行记录。
 
-真实反馈：用户回答共晶配体阳性对照那一问后，界面又生成了一个**新运行**（`20260924-003705-0905`），
+注意：用户回答共晶配体阳性对照那一问后，界面又生成了一个**新运行**，
 用户的原话是「明明是为一个运行准备参数条件」——答案属于那次运行，不该另起一条记录。
 
 实现要点（本文件看护）：
@@ -97,7 +97,7 @@ def test_choice_answer_resumes_the_same_run(client: TestClient,
         after = {p.name for p in store.root.iterdir() if p.is_dir()}
         assert after - before == set(), f"续跑不该新建运行目录：{sorted(after - before)}"
 
-        # 续跑必须**真的把图跑起来**（真实故障 20260924-013514-2617：暂停后图的 next 已空，
+        # 续跑必须**真的把图跑起来**（注意：暂停后图的 next 已空，
         # 用 astream(None) 不会触发任何节点，运行 1 秒就"完成"）
         assert stub.payloads, "续跑没有把图跑起来"
         payload = stub.payloads[0]
@@ -227,7 +227,7 @@ def test_blocking_choice_does_not_cut_the_stream(client: TestClient,
                                                 monkeypatch: pytest.MonkeyPatch) -> None:
     """阻断式候选下发后**不得中断流**（否则同一步里在飞的工具结果会丢）。
 
-    真实故障（运行 20260924-011325-0913）：`run_property_assessment` 与 `run_docking` 并行进行时
+    注意：`run_property_assessment` 与 `run_docking` 并行进行时
     候选中途下发，旧实现立即 `return` 掐断 SSE —— 性质评估虽然跑完了，但它的 ToolMessage
     没进 checkpoint；用户点选后只能补"该调用被中断、没有结果"的占位回执，模型据此直接收尾，
     对接一次都没跑（`ranking.json` 是空数组）。

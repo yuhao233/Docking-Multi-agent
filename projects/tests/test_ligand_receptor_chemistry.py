@@ -423,7 +423,7 @@ def test_docking_can_keep_metal_via_prepared_pdbqt(receptor_pdb):
 # --------------------------------------------------------------------------- #
 # 4. 特殊配位结构（金属配合物）：先尽力生成 3D，再如实报失败原因
 # --------------------------------------------------------------------------- #
-_MANCOZEB = "S=C([S-])NCCN/C1[S-]->[Mn+2]/[SH]=1"   # run 20260917-114424-6442 的真实失败分子
+_MANCOZEB = "S=C([S-])NCCN/C1[S-]->[Mn+2]/[SH]=1" # 的真实失败分子
 
 
 def test_metal_coordination_complex_gets_random_coords_retry() -> None:

@@ -1,0 +1,30 @@
+# 多 Agent 协作分子对接筛选工作台 —— 运行依赖（Python 3.12）
+# 版本为本作品实测通过的版本；`>=` 下限表示兼容范围。
+
+# ---- 计算内核：对接与配体准备 ----
+vina==1.2.7
+meeko==0.8.0
+rdkit==2026.3.6
+scipy>=1.14
+numpy>=2.0,<3
+matplotlib==3.11.1
+gemmi>=0.7.5
+
+# ---- 多 Agent 编排（可选：仅网页端自然语言交互需要） ----
+langchain>=1.0.3
+langchain-openai>=1.0.1
+langgraph>=1.0.2
+langgraph-checkpoint>=3.0.0
+
+# ---- 本地服务与配置 ----
+fastapi>=0.121,<1
+uvicorn>=0.38,<1
+pydantic>=2.12,<3
+python-dotenv>=1.2,<2
+python-multipart>=0.0.9
+requests>=2.31
+openpyxl>=3.1
+rich>=14,<15
+
+# ---- 可选：用 Jupyter 运行 notebooks/quickstart.ipynb ----
+nbformat>=5.10

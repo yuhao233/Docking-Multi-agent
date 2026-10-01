@@ -1,9 +1,9 @@
-"""两处真实异常的回归护栏（2026-09-17 实测，报告里的「执行过程异常」1 与 2）。
+"""两处真实异常的回归护栏（报告里的「执行过程异常」1 与 2）。
 
 ## 异常 1：首轮对接误用默认受体 → 分数全为 0.0
 
 机制（已复现）：Vina 在**盒子内没有任何受体原子**时不报错、不告警，直接返回**全 0 能量**
-（`affinity_kcal_mol = 0.0`）。0.0 不是分数，是「什么都没算」。真实事故里盒子来自另一个蛋白
+（`affinity_kcal_mol = 0.0`）。0.0 不是分数，是「什么都没算」。事故里盒子来自另一个蛋白
 （盒中心距该受体最近原子 75.2 Å），147 个分子跑了 7.5 分钟得到一堆 0.0。
 本文件看护两道护栏：**开跑前**按盒内原子数拒绝 + **行级**把全 0 能量判为失败。
 
@@ -206,7 +206,7 @@ def _run_probe(tmp_path: Path, molecule_file: str) -> Any:
 def test_property_stage_falls_back_to_run_request_when_board_empty(tmp_path: Path) -> None:
     """黑板为空但本次运行请求带分子库文件 → 属性评估必须拿到**全量**（而不是 0 条 + status=ok）。
 
-    真实缺陷路径：协调 Agent 可以直接把文件交给 run_docking（跳过 import），
+    缺陷路径：协调 Agent 可以直接把文件交给 run_docking（跳过 import），
     此时若没人发布到黑板，属性评估读到 0 条，147 条库只有 20 条被评估甚至全空。
     """
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard

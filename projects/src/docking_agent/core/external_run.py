@@ -112,7 +112,7 @@ def extract_best_pose_pdbqt(dlg_path: str | Path, out_path: str | Path,
     为什么需要：`--nrun N`（由 `n_poses` 映射）时 DLG 内含 N 组结果，而下游的位姿分析、
     报告与下载都按 **PDBQT** 读（`core/interactions.read_pdbqt`）。此前外部适配只把 `.dlg`
     原样留档 → `analyze_pose_pocket` 读不出 → 报告整段"未产生可读取的位姿文件"，
-    2845 个真实位姿等于白算（真实故障 2026-09-23）。这里把最优组的 `DOCKED:` 载荷
+    2845 个真实位姿等于白算（已知故障）。这里把最优组的 `DOCKED:` 载荷
     （ROOT/BRANCH/ATOM/TORSDOF）剥掉前缀后原样写出，等于 AD4 原生位姿转成 PDBQT。
 
     返回写出的路径；DLG 里找不到可解析的位姿时抛 `ExternalEngineError`（不静默产出空文件）。

@@ -63,7 +63,7 @@ def copy_receptor_files(run: Any, receptors: List[Dict[str, Any]], *,
 
     为什么必须复制：`download.zip` 原本只有配体位姿与 JSON，受体结构只以**绝对路径**
     记在 `docking.json` 里（指向 `assets/receptors/...` 或 `assets/cache/...`）——
-    换台机器、换个人拿到的包根本无法复现这次对接（用户实测提问）。
+    换台机器、换个人拿到的包根本无法复现这次对接。
 
     每个受体放三类文件（取得到才放）：
       `receptor/<key>.pdbqt`        —— 对接实际使用的受体（AutoDock 输入，权威）

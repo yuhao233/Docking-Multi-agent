@@ -1,6 +1,6 @@
 """PQR 解析回归（**不需要 pdb2pqr**，因此放在非 engine 组里，CI 也会跑）。
 
-真实缺陷（run 20260922-140903-6542，受体 7YHP）：
+注意（受体 7YHP）：
     meeko 读取 PQR 失败（returncode=1）：
       File ".../meeko/polymer.py", line 2614, in atom_from_pqr_items
         resnum = int(atom_pqr_items.pop(0))

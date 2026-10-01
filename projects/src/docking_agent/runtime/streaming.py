@@ -86,7 +86,7 @@ _THINK_TAG_RE = None
 def split_thinking(text: str) -> "tuple[str, str]":
     """把正文里的 `<thinking>…</thinking>` 段剥出来，返回 `(正文, 思考)`。
 
-    为什么需要：部分供应商/端点在思考模式下把推理直接拼进 content（真实反馈：聊天区被
+    为什么需要：部分供应商/端点在思考模式下把推理直接拼进 content（注意：聊天区被
     大段推理刷屏）。这类文本对用户没有信息量，必须挪到可折叠的「思考」气泡里。
     """
     global _THINK_TAG_RE

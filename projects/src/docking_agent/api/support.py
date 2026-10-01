@@ -239,7 +239,7 @@ def _build_run_pdf(run_id: str) -> Optional[bytes]:
 def _receptor_upload_payload(dest: Path, name: str) -> Dict[str, Any]:
     """受体的**重活**：现场准备 PDBQT + 标定位点盒 + 化学溯源。
 
-    为什么单独抽出来：上传接口**不再**做这件事（用户要求「不要一上传就开始处理文件」），
+    为什么单独抽出来：上传接口**不再**做这件事（设计约束：不要一上传就开始处理文件），
     只有用户主动「校验文件」或真正开始运行时才执行。
     """
     from docking_agent.core.normalize import normalize_receptor_source

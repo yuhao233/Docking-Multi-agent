@@ -87,8 +87,8 @@ def test_positive_control_three_states():
 def test_missing_library_is_recorded_and_blocks() -> None:
     """分子库是**必需项**：没给就只提问（零工具调用），并如实记进 missing。
 
-    2026-09-17 起：内置示例库/示例受体只在用户明确要求时使用（产品要求）；
-    2026-09-21 起：契约收紧为「必需信息不齐 → 只提问、零工具调用」，
+    内置示例库/示例受体只在用户明确要求时使用；
+    契约已收紧为「必需信息不齐 → 只提问、零工具调用」：
     必需项 = 受体 / 分子库 / 任务类型，因此缺分子库同样是 ask。
     """
     spec = intake.build_task_spec(_req(ligands_text=""))
@@ -137,7 +137,7 @@ def test_registry_receptor_named_in_message_is_recognized():
 
 
 def test_chat_default_receptor_is_not_rendered_as_user_specified() -> None:
-    """真实缺陷回归：chat 折叠时受理层判定「未指定受体」并标了 source=default，
+    """缺陷回归：chat 折叠时受理层判定「未指定受体」并标了 source=default，
     但渲染层却给出「受体：thrombin」的权威口吻，主管 Agent 于是把示例默认受体当成用户指定。
 
     修复后（用户明确要求：彻底删除默认受体回退）：未指定受体 → decision=ask，
@@ -337,7 +337,7 @@ def test_llm_missing_alone_does_not_block_the_run(llm_spy, monkeypatch):
     assert spec["decision"] == "run", "missing 只是记录，不能阻断"
     assert spec["receptor"]["source"] == "user"
     assert spec["missing"], "如实保留模型记录的缺失项"
-    # 真实缺陷回归：decision=run 时**不得**把「缺少 / 待向用户确认」下发给编排层。
+    # 缺陷回归：decision=run 时**不得**把「缺少 / 待向用户确认」下发给编排层。
     # 现场：模型把「用户点名了分子但没给 SMILES」记进 missing 并附「请提供候选分子库」，
     # 渲染层原样转述 → 主管 Agent 当场问一遍分子库，随后又让用户选结构（同轮两次提问）。
     msg = intake.render_agent_message(spec)
@@ -561,7 +561,7 @@ def test_chat_mode_prose_molecules_also_extracted():
 # --------------------------------------------------------------------------- #
 def test_intake_eval_script_passes_all_its_cases() -> None:
     """`scripts/intake_eval.py` 是受理层的人工取证脚本 —— 它**不在自动门禁里**，
-    因此期望值会悄悄过期（真实缺陷：折叠表单那条一直期望 `exhaustiveness=6`，
+    因此期望值会悄悄过期（注意：折叠表单那条一直期望 `exhaustiveness=6`，
     而系统默认 v0.24 起已是 16，脚本只报「未命中 1 项」，没人发现）。
     """
     import subprocess
@@ -575,7 +575,7 @@ def test_intake_eval_script_passes_all_its_cases() -> None:
 # --------------------------------------------------------------------------- #
 # 界面点选（多组分分子的「代表结构」）必须确定性续跑
 #
-# 真实反馈：「我选择了，但没有正常工作」——点选只把选项文案当普通消息发回，
+# 注意：点选只把选项文案当普通消息发回，
 # 后端于是按名称重新查询、又是多组分 → 把同一个问题再问一次；追问若丢了受体还会被判 ask。
 # --------------------------------------------------------------------------- #
 _MANCOZEB = "C(CNC(=S)[S-])NC(=S)[S-].C(CNC(=S)[S-])NC(=S)[S-].[Mn+2].[Zn+2]"
@@ -614,7 +614,7 @@ def test_selected_structure_without_receptor_is_still_ask() -> None:
 def test_followup_inherits_receptor_named_earlier_by_gene_symbol() -> None:
     """多轮续跑：上一轮用户只写了「拟南芥ROS1」（没有 酶/蛋白/受体 后缀）也要能继承受体。
 
-    真实缺陷：`_NAMED_RECEPTOR_RE` 只认带后缀的名字，于是「拟南芥ROS1」既不算「点名了受体」，
+    注意：`_NAMED_RECEPTOR_RE` 只认带后缀的名字，于是「拟南芥ROS1」既不算「点名了受体」，
     也让多轮继承拿不到上一轮已解析出的 accession/PDB → 用户点选分子代表结构后的追问被判 ask。
     """
     prior = [

@@ -154,7 +154,7 @@ def _format_table(rows: Sequence[Sequence[Any]], max_cols: int, *,
                   header: bool = True, min_col: int = _TABLE_MIN_COL) -> List[str]:
     """把二维表格格式化成等宽文本行；列宽不足时**换行**而不是截断。
 
-    真实缺陷（用户报障）：表格过宽时旧实现把最宽的列一路压到 4 个字符再截断单元格，
+    注意：表格过宽时旧实现把最宽的列一路压到 4 个字符再截断单元格，
     于是用户通过 `customize_report(extra_columns=[...])` 要求追加的列（例如小分子 ID）
     在 PDF 里只剩几个字符或被截掉 —— 报告看起来"没按用户要求调整"。
     现在：列宽压缩到 `min_col` 为止，超出部分在单元格内**折行**，所有列与取值都保留。

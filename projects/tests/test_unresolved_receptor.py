@@ -1,6 +1,6 @@
 """「点名了具体受体」的回归测试（先自动解析；不确定才让用户选；不明确就绝不计算）。
 
-真实缺陷：用户指令点名受体「植物去甲基化1酶」→ UniProt accession 直查 + 基因/蛋白名检索
+注意：用户指令点名受体「植物去甲基化1酶」→ UniProt accession 直查 + 基因/蛋白名检索
 都无匹配 → 系统却按「回退默认受体」**继续对接**了，用户拿到的是以凝血酶为受体的答非所问结果。
 
 修复后的契约（v0.11：由「解析不了就问」升级为「先自动解析，再按置信度决定是否让用户选」）：
@@ -211,10 +211,10 @@ def test_multi_turn_inherits_pdb_id_when_prior_turn_mentioned_one() -> None:
 
 
 def test_our_own_receptor_question_is_never_inherited_as_user_receptor() -> None:
-    """回归（2026-09-21 实测复现）：系统自己生成的「请指定受体…」提问（含示例 PDB/accession）
+    """回归：系统自己生成的「请指定受体…」提问（含示例 PDB/accession）
     绝不能被当成**用户点名**的受体。
 
-    真实故障：第 1 轮问「请指定受体：① 提供 PDB 编号（如 4HHB）或 UniProt accession（如 P08922）…」，
+    注意：第 1 轮问「请指定受体：① 提供 PDB 编号（如 4HHB）或 UniProt accession（如 P08922）…」，
     第 2 轮用户只回一句「好的，继续」→ 受理层从**助手回复**里抽到 4HHB 并当成用户指定，
     于是 decision=run、系统拿一个示例编号开跑。用户什么都没说却跑了别人的靶点。
     """
@@ -233,7 +233,7 @@ def test_our_own_receptor_question_is_never_inherited_as_user_receptor() -> None
 
     # (b) 真实形态：上一轮的「用户」消息其实是**受理层渲染后的整段机器文本**
     #     （checkpointer 里存的就是它）——里面的「先请用户指定受体」会被受体名抽取当成
-    #     用户点名的受体，进而去扫助手回复里的示例编号。这是实测复现的泄漏路径。
+    #     用户点名的受体，进而去扫助手回复里的示例编号。这是可复现的泄漏路径。
     round1_spec = intake.build_task_spec(
         _req(message="帮我筛这两个分子 CCO、CCN，未指定受体", ligands_text=""))
     rendered_user_turn = intake.render_agent_message(round1_spec)
@@ -431,7 +431,7 @@ def test_no_agent_binds_the_preset_receptor_catalog_tools() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ④ 附件清单不得成为受体名来源（真实缺陷 20260917-122453-0404）
+# ④ 附件清单不得成为受体名来源（已知缺陷）
 # --------------------------------------------------------------------------- #
 _UPLOAD_PATH = ("/home/biolab/Tools/docking-agent/projects/assets/uploads/"
                 "20260917-122453-c6b872-20260917-122255-ff6f3d-PGR_120.sdf")
@@ -497,7 +497,7 @@ def test_llm_invented_receptor_is_still_dropped_with_reason() -> None:
 # 跨面不变量：**「系统没有默认受体」必须在每一个用户可见/模型可见的面上成立**
 # --------------------------------------------------------------------------- #
 def test_no_user_facing_surface_offers_a_default_receptor() -> None:
-    """跨面回归（2026-09-21 审计发现的真实漂移）。
+    """跨面回归（真实漂移）。
 
     代码层（`intake` / `run_docking` 护栏 / `molecular_docking`）改成「未指定受体只提问」
     之后，另外三个「面」还留着「改用系统默认受体 凝血酶」：

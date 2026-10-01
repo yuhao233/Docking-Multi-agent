@@ -1,9 +1,9 @@
 """受体准备缓存的**并发隔离**回归测试。
 
-背景（真实缺陷，可复现）：受体准备产物原先只按源文件的 basename 命名
+背景（已知缺陷，可复现）：受体准备产物原先只按源文件的 basename 命名
 （`<base>_prot.pdb` / `<base>.pdbqt` / `<base>.site.json`），而缓存目录是全局共享的。
 于是两个并发运行（或两个都叫 `receptor.pdb` 的上传）会写同一组文件、互相覆盖，
-出现「我请求保留 ZN，拿回来的却是别人的 HEM+ZN 结果」这种静默串数据——
+出现「请求保留 ZN，拿回来的却是别人的 HEM+ZN 结果」这种静默串数据——
 它也正是全量 pytest 里那条偶发失败（`test_docking_notes_report_untemplatable_kept_residues`）的根因：
 两个 pytest 进程同时准备同名受体。
 

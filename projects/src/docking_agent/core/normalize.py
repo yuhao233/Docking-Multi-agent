@@ -323,7 +323,7 @@ def _parse_tabular(data: bytes, text: str, source_file: str,
                         break
         if not smiles:
             # 行里带 InChIKey 时，把**真实失败原因**带出来（网络/未收录/校验不一致），
-            # 否则用户只看到"无法解析"，根本不知道是网络问题还是数据问题（真实缺陷）。
+            # 否则用户只看到"无法解析"，根本不知道是网络问题还是数据问题（已知缺陷）。
             detail = ""
             for key in _inchikeys_in(raw):
                 note = _inchikey_failure_note(key)

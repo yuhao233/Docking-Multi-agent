@@ -23,7 +23,7 @@ router = APIRouter()
 
 @router.post("/api/uploads")
 async def api_upload(file: UploadFile = File(...), kind: str = Form(default="auto")) -> Dict[str, Any]:
-    """**只保存文件，不解析、不做任何准备**（用户要求：开始运行时才处理）。
+    """**只保存文件，不解析、不做任何准备**（设计约束：开始运行时才处理）。
 
     返回 `path` 可直接作为 `molecule_file` / `receptor_file` 传给运行接口；
     想在上传后先看一眼解析结果/位点盒，调用 `POST /api/uploads/inspect`（用户主动触发）。

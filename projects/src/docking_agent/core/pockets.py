@@ -343,7 +343,7 @@ def library_span_bound(molecules: Sequence[Dict[str, Any]], *,
     # 按重原子数降序取前 K（大配体最可能决定跨度上限，优先算它们）
     ranked = sorted(library, key=lambda s: -_heavy_atom_count(s))[:k]
     # 抽样要真的算 3D 构象，大库首次可能耗时几十秒；先报一条日志，
-    # 否则这段时间「什么日志都没有」，看起来像卡死（真实踩坑：120 个大分子库）。
+    # 否则这段时间「什么日志都没有」，看起来像卡死（注意：120 个大分子库）。
     logger.info("库级配体感知下限：开始抽样 %s 个分子的 3D 跨度（最多 %s 个，首次较慢，结果会缓存）",
                 len(ranked), k)
     started = time.time()
@@ -686,7 +686,7 @@ def detect_geometric(atoms: Sequence[Dict[str, Any]], *, top_n: int = DEFAULT_TO
          合并同一口袋的碎片（避免把整片表面串联成一个巨块）；
       5. 按分数排序，输出中心 / 范围 / 近似体积 / 附近残基。
 
-    在凝血酶（1DWC，共晶配体 MIT 中心 31.5/13.74/24.36）上实测（2026-09-14，`detect_geometric`
+    在凝血酶（1DWC，共晶配体 MIT 中心 31.5/13.74/24.36）上实测（`detect_geometric`
     直接调用，共晶配体取自 `assets/receptors/structures/thrombin.pdb`）：
 
     | 网格间距 spacing | top-1 距共晶配体 | top-2 | top-3 | 耗时 |
@@ -949,7 +949,7 @@ def validate_pocket(pocket: Dict[str, Any], reference: Optional[Dict[str, Any]])
     d = distance(pocket["center"], reference["center"])
 
     def _residue_numbers(values: Any) -> Dict[str, str]:
-        """抽出残基编号用于跨引擎比对（P2Rank 给 `H_174`，我们给 `TRP215`）。"""
+        """抽出残基编号用于跨引擎比对（P2Rank 给 `H_174`，本模块给 `TRP215`）。"""
         out: Dict[str, str] = {}
         for item in values or []:
             digits = re.sub(r"\D", "", str(item))

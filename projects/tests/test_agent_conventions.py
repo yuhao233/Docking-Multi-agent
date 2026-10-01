@@ -1,6 +1,6 @@
 """LangChain 1.x / LangGraph 1.x 规范约定回归（P0）。
 
-覆盖本轮规范改造的每一项，避免以后回退：
+覆盖规范改造的每一项，避免以后回退：
 
 1. 协调 Agent 的 `state_schema` 必须继承 `langchain.agents.AgentState`
    —— 只继承 `langgraph.graph.MessagesState` 时 `response_format` 结构化输出永远无法终止
@@ -9,7 +9,7 @@
 3. checkpointer 用规范名 `InMemorySaver`（`MemorySaver` 只是向后兼容别名）。
 4. `agents/prompts.py` 用显式拼接（不再 `globals()[name] = ...` 改写），并提供 `COORDINATOR_SP` 兜底。
 5. 工具的 `args_schema` 必须与函数签名一致；docstring 里按 `- 参数名:` 写的条目必须是真参数
-   （真实缺陷：`molecular_property_assessment` 的 docstring 曾写了并不存在的 `protonation_ph`）。
+   （注意：`molecular_property_assessment` 的 docstring 曾写了并不存在的 `protonation_ph`）。
 """
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ def test_prompts_compose_explicitly_and_offer_coordinator_fallback() -> None:
     assert "COORDINATOR_SP" in P.__all__
     assert isinstance(P.COORDINATOR_SP, str) and len(P.COORDINATOR_SP) > 200
     assert P.COORDINATOR_SP.endswith(P.DATA_HANDOFF_COORDINATOR)
-    # 每个角色的「数据交接」块必须只点名**该角色真的拥有**的工具（真实缺陷：共用一份块时
+    # 每个角色的「数据交接」块必须只点名**该角色真的拥有**的工具（注意：共用一份块时
     # pocket Agent 拿到的是 4 个它根本没有的工具名，property/binding 也有 3/4 不相干）
     expected = {
         "PROPERTY_SP": P.DATA_HANDOFF_PROPERTY,
@@ -283,7 +283,7 @@ def _phantom_prompt_params(texts: Dict[str, str],
 def test_prompt_tool_calls_only_mention_real_parameters() -> None:
     """提示词里 ``tool(param=...)`` 的 param 必须真实存在。
 
-    真实缺陷：兜底协调提示词写了 ``run_property_assessment(molecules_file=...)``，
+    注意：兜底协调提示词写了 ``run_property_assessment(molecules_file=...)``，
     而该 dispatch 工具**没有**这个参数（它自己把本次运行的产物路径交给子 Agent）——
     模型照着传会拿到 args_schema 校验错误，白烧一轮往返。
     """

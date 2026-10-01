@@ -150,7 +150,7 @@ def test_set_docking_site_accepts_array_and_string(monkeypatch: pytest.MonkeyPat
 def test_form_save_poses_and_max_ligands_reach_run_docking(monkeypatch: pytest.MonkeyPatch) -> None:
     """表单的「保存位姿 / 最大分子数」必须一路传到 run_docking 的参数块。
 
-    真实缺陷：`sp` 要求协调 Agent「原样传给 run_docking」，但 `run_docking` 曾经**没有**这两个参数
+    注意：`sp` 要求协调 Agent「原样传给 run_docking」，但 `run_docking` 曾经**没有**这两个参数
     （LangChain 对多余 kwargs 静默忽略），受理层也从不渲染它们 → 用户勾掉保存位姿仍会写位姿文件、
     设了「最大分子数」仍跑全库。这里把「表单 → 规约 → 参数块」整条链路钉住。
     """

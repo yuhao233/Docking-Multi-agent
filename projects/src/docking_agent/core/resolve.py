@@ -379,7 +379,7 @@ def decide_status(candidates: Sequence[Dict[str, Any]],
                   query: Optional[Dict[str, Any]] = None) -> str:
     """按打分与线索决定 resolved / ambiguous / low_confidence / not_found。
 
-    三态（对应产品要求：不确定就让用户选）：
+    三态（对应：不确定就让用户选）：
       * ``resolved``：唯一候选，且所有**用户给出的**线索都强匹配（reviewed + 基因精确 +
         物种精确 + 蛋白名含家族词）→ 自动继续；
       * ``ambiguous``：有多个分数接近的候选（无法用物种/上下文消歧）→ 列候选让用户选；

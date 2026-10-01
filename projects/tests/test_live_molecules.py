@@ -1,6 +1,6 @@
 """实时逐分子结果（`molecules` 事件）的服务端回归测试。
 
-真实缺陷：多 Agent（对话）模式下 `run_docking` 只把 `live_progress` 计数写进运行记录，
+注意：多 Agent（对话）模式下 `run_docking` 只把 `live_progress` 计数写进运行记录，
 API 心跳也只会转成 `progress` 事件，于是前端「实时逐分子结果」表在整段运行里一直是空的
 （历史上只有已移除的确定性流水线会发 `molecules`）。修复后工具逐条上报
 `live_molecules`，心跳把它们转成与旧流水线同构的 `molecules` 事件。

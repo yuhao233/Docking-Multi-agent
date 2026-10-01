@@ -218,14 +218,14 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                                   ensure_ascii=False)
             molecules = refine_from
         # 兜底：本次运行请求带的上传文件（对话附件）→ 直接用，不依赖模型是否转发路径。
-        # 真实缺陷（2026-09-24）：口袋工具有受体兜底、对接工具没有 → 用户上传了受体却被要求再指定。
+        # 注意：口袋工具有受体兜底、对接工具没有 → 用户上传了受体却被要求再指定。
         if not (molecule_file or "").strip():
             molecule_file = request_value("molecule_file", runtime)
         if not (receptor_file or "").strip():
             receptor_file = request_value("receptor_file", runtime)
         if molecule_file and molecule_file.strip():
             # 裸文件名（如上传显示名 `PGR.sdf`）先在上传/缓存目录里解析成真实路径 ——
-            # 不要求模型拼绝对路径（真实缺陷 20260917-112206-5017）。
+            # 不要求模型拼绝对路径（已知缺陷）。
             from docking_agent.tools.molecule_paths import resolve_molecule_file
             resolved, attempts, candidates = resolve_molecule_file(molecule_file.strip())
             if candidates:
@@ -265,7 +265,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                             "请提供候选小分子库（SMILES/名称列表），或上传小分子文件（SDF/SMILES/CSV）。"},
                 ensure_ascii=False)
         # 身份去重：同一物质的两种 SMILES 写法（PubChem 原始写法 vs 用户点选写法）只能占一行。
-        # 真实缺陷（2026-09-22 用户实测）：只给 1 个分子却对接出 2 行 —— 黑板里同一物质以两种
+        # 注意：只给 1 个分子却对接出 2 行 —— 黑板里同一物质以两种
         # 写法各占一个键（见 `runtime/blackboard.canonical_key`），清单到这里仍是 2 条。
         if isinstance(molecules, list) and len(molecules) > 1:
             from docking_agent.runtime.blackboard import dedupe_molecules
@@ -296,7 +296,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                     logger.info("阳性对照未在清单中，已自动补入一并对接：%s", control)
 
         # ---- 库已知后补一次参数规划（大库漏斗的前提）----
-        # 真实缺口（2026-09-23）：分子来自上传文件 → 受理层规划时库还没解析 → `param_plan` 为空
+        # 注意：分子来自上传文件 → 受理层规划时库还没解析 → `param_plan` 为空
         # → 2961 条按默认 16 全量精算 40 分钟，两阶段漏斗一次没跑。这里补规划并写回运行。
         _plan = (getattr(active_run(runtime), "data", None) or {}).get("param_plan") or {}
         if isinstance(molecules, list) and len(molecules) > 1 and not _plan.get("exhaustiveness"):
@@ -394,7 +394,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         run = active_run(runtime)
         # 谁解析到分子谁就**发布**：协调 Agent 允许跳过 import 直接把文件交给本工具
         # （提示词明确允许），此时若只有本工具知道分子，属性评估等子 Agent 就会读到「黑板上无分子」
-        # —— 真实缺陷：属性评估拿到 0 条却返回 status=ok。发布后再写一条文件交接路径供下游直接读。
+        # —— 注意：属性评估拿到 0 条却返回 status=ok。发布后再写一条文件交接路径供下游直接读。
         if molecules:
             board_now = active_blackboard(runtime)
             if board_now is not None and not board_now.molecules():
@@ -403,7 +403,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                                    f"并写入共享黑板（供属性评估/结合模式等子 Agent 使用）")
         # 已取消/已结束的运行**绝不允许再开始新的对接**：用户点「停止」后，API 的
         # `clear_cancel()` 会清掉取消标志，而图里可能还有一次在途的工具调用 —— 若不拦住，
-        # 它会用「新的、未置位的」标志重新跑整库对接（真实缺陷：取消后 load 反而涨到 40）。
+        # 它会用「新的、未置位的」标志重新跑整库对接（注意：取消后 load 反而涨到 40）。
         if run is not None and str(run.data.get("status") or "") in ("cancelled", "error"):
             logger.info("运行已 %s，拒绝开始新的对接", run.data.get("status"))
             return json.dumps({
@@ -478,11 +478,11 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                                          "message": message}
 
         # 真正的「停止」：把本次运行的协作式取消标志接进对接层。
-        # 没有它时，chat/多 Agent 模式下按停止只会等工具自己跑完（真实缺陷）。
+        # 没有它时，chat/多 Agent 模式下按停止只会等工具自己跑完（已知缺陷）。
         from docking_agent.cancellation import cancel_flag  # noqa: PLC0415  # 避免循环导入
 
         # ---- 对接前询问：受体自带共晶配体且未指定阳性对照时，先问用户是否用作对照 ----
-        # 用户要求"在开始对接前询问"：这里在调用任何引擎之前拦下，避免先跑一遍再问，
+        # 设计约束"在开始对接前询问"：这里在调用任何引擎之前拦下，避免先跑一遍再问，
         # 也避免"跑完又问一次"（选择会由前端作为 positive_control 下发）。
         try:
             from docking_agent.core.receptors import (  # noqa: PLC0415
@@ -508,7 +508,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
             offered = offer_cocrystal_positive_control(
                 preview_blocks, specified_control=control, runtime=runtime)
             # 阻断式询问未回答前**不许开跑**：重复调用到这里也必须原地返回。
-            # 真实故障（2026-09-23）：幂等标记让第二次调用直接开局，用户还没点选就算了 40 分钟。
+            # 注意：幂等标记让第二次调用直接开局，用户还没点选就算了 40 分钟。
             if offered or blocking_choice_pending("positive_control", runtime=runtime):
                 # 选项明细只走界面；给模型的载荷不带 SMILES/选项内容，避免正文里再抄一遍
                 return json.dumps(choices_payload(

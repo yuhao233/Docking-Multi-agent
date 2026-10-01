@@ -182,7 +182,7 @@ def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
     ambiguous: List[str] = []
     normalization: Dict[str, Any] = {}
     # ① 归一化「文件来源」：molecule_file 优先；模型也可能把路径塞进 query_or_text。
-    #    真实缺陷 20260917-112206-5017：只给显示名 `PGR.sdf`，工具按裸文件名解析失败。
+    # 注意：只给显示名 `PGR.sdf`，工具按裸文件名解析失败。
     file_arg = (molecule_file or "").strip()
     text = (query_or_text or "").strip()
     if not file_arg and looks_like_molecule_path(text):
@@ -290,7 +290,7 @@ def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
     # 1 万条 ≈ 0.5 MB ≈ 13 万 tokens）
     tool_io.record("molecules", molecules, run=active_run(runtime))
     # **写入共享黑板**：这样「子 Agent 工具留空参数即用黑板」的承诺才成立。
-    # 真实缺陷：此前全仓只有属性评估子 Agent 自己的 normalize 工具会写黑板，导入口从不写，
+    # 注意：此前全仓只有属性评估子 Agent 自己的 normalize 工具会写黑板，导入口从不写，
     # 于是 `run_property_assessment` 按提示词留空 → 子 Agent 读到「黑板上无分子」→
     # 147 条库只有前 20 条被评估（报告出现数据缺口），且以 status=ok 悄悄通过。
     board = active_blackboard(runtime)
@@ -536,7 +536,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     rs = (receptor_sources or "").strip()
     # 本次运行有**上传受体**时，子 Agent 再传注册表受体名（如默认 thrombin）不应被当成"多受体"：
     # 文档承诺 `receptor_file` 优先，否则会把默认凝血酶也 dock 一遍 ——
-    # 实测发生（20260918-094607-3195）：白跑 6 个分子，报告里还多出一个受体块，用户会以为跑了两个靶点。
+    # 白跑 6 个分子，报告里还多出一个受体块，用户会以为跑了两个靶点。
     if params["receptor_file"] and rs:
         from docking_agent.core.receptors import is_structure_source
 

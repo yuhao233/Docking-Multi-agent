@@ -701,7 +701,7 @@ _WORKER_CFG: Dict[str, Any] = {}
 
 #: 分子输入记录里需要**带进结果行**的身份字段。
 #: 用户常在 SDF/CSV 里给分子编号（ID）、并希望报告/CSV 带上它；只解析进 molecules.json
-#: 是不够的 —— 对接、性质、排序、报告、CSV 每一环都要能拿到（真实缺陷：整条链路把 ID 丢了）。
+#: 是不够的 —— 对接、性质、排序、报告、CSV 每一环都要能拿到（注意：整条链路把 ID 丢了）。
 IDENTITY_FIELDS: tuple = ("id", "source_file", "source_index")
 
 
@@ -750,7 +750,7 @@ def _start_cancel_watcher(executor: Any, cancel_event: Optional[Any]) -> Optiona
 
     为什么不能在 `as_completed` 循环里只查标志：那个循环只在**有 future 完成**时才转一圈。
     如果一整批都是超大柔性分子（例如 70 个可旋转键的长链），第一批要跑十几分钟，
-    用户点「停止」后进程池仍然满负荷运转 —— 真实缺陷：chat 模式取消 70 s 后 load 仍是 27。
+    用户点「停止」后进程池仍然满负荷运转 —— 注意：chat 模式取消 70 s 后 load 仍是 27。
 
     所有对接都在 worker 进程里跑（见 `dock_batch`），因此这个 watcher 对**任意分子数**都有效，
     包括单分子。
@@ -782,7 +782,7 @@ def _terminate_pool(executor: Any) -> None:
 
     **顺序很关键**：先 `shutdown(cancel_futures=True)` 把队列里还没跑的分子取消掉，
     再 `terminate()` 正在跑的 worker。反过来做的话，执行器的管理线程会发现 worker 死了、
-    而队列里还有一百多个待跑任务，于是**重新拉起 worker 继续啃**（真实缺陷：取消后又
+    而队列里还有一百多个待跑任务，于是**重新拉起 worker 继续啃**（注意：取消后又
     多算了 43 个分子、load 反涨到 40）。
     """
     # 必须在 shutdown 之前抓住进程句柄：shutdown() 会把 `_processes` 清空，
@@ -1039,7 +1039,7 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                 "message": "未提供待对接的小分子配体，请先提供候选小分子库（SMILES/名称）。"}
 
     # 外部引擎（用户在设置页提供的 GPU 对接工具）：已配置但不可用时**拒绝启动**，
-    # 不静默回退到内置实现 —— 否则用户以为在用 GPU，实际是 CPU 结果（真实缺陷类问题）。
+    # 不静默回退到内置实现 —— 否则用户以为在用 GPU，实际是 CPU 结果（缺陷类问题）。
     from docking_agent.core.external_tools import configured_bin, require_engine
 
     external = require_engine() if configured_bin() else {}
@@ -1117,7 +1117,7 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
     # 库级配体感知下限：**用户显式指定的盒子不受影响**（显式优先是不变量）。
     # 但「口袋分析 Agent 选定的盒子」是**工具产物**，不是用户意图：它的**中心**必须尊重，
     # 尺寸则与自动定盒一样按库级下限抬高 —— 否则大配体库会被塞进 22 Å 的小盒子，
-    # 大量分子只能落到互不可比的大盒分组（真实缺陷：120 个农药大分子库主盒 22³）。
+    # 大量分子只能落到互不可比的大盒分组（注意：120 个农药大分子库主盒 22³）。
     tool_site = str((site or {}).get("chosen_by") or "") == "pocket_agent"
     span_bound: Optional[Dict[str, Any]] = None
     if site:
@@ -1203,7 +1203,7 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
     for spec in specs:
         # ---- 盒子有效性硬护栏（在调用任何引擎之前）----
         # Vina 在盒子内**没有受体原子**时不报错，而是返回全 0 能量（affinity=0.0）；
-        # 0.0 不是分数而是「什么都没算」。真实事故：盒子来自另一个蛋白的位点坐标
+        # 0.0 不是分数而是「什么都没算」。注意：盒子来自另一个蛋白的位点坐标
         # （盒中心距该受体最近原子 75 Å），147 个分子跑 7.5 分钟得到一堆 0.0。
         # 这里直接拒绝，并把「差多远」如实写进 notes，让 Agent 一眼看出是盒子/受体错配。
         stats = box_atom_stats(str(spec.get("pdbqt") or ""), spec.get("center") or [],

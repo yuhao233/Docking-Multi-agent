@@ -173,7 +173,7 @@ class _ProviderRejection(Exception):
 def test_structured_rejection_detection_is_narrow() -> None:
     assert is_structured_rejection(_ProviderRejection())
     assert is_structured_rejection(RuntimeError("response_format is not supported"))
-    # 无关错误绝不降级（限流/超时必须照常抛出，否则会掩盖真实故障）
+    # 无关错误绝不降级（限流/超时必须照常抛出，否则会掩盖故障）
     assert not is_structured_rejection(RuntimeError("429 rate limit exceeded"))
     assert not is_structured_rejection(TimeoutError("timed out"))
 

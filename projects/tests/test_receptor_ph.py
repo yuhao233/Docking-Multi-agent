@@ -1,6 +1,6 @@
 """受体质子化必须与配体**同一目标 pH**（v0.22）。
 
-真实缺口：配体按目标 pH 分配了质子化态，受体却停在 meeko 残基模板的默认态（≈pH 7 固定），
+注意：配体按目标 pH 分配了质子化态，受体却停在 meeko 残基模板的默认态（≈pH 7 固定），
 两侧不是同一套化学条件 —— 而 HIS 互变异构、ASP/GLU 质子化直接决定氢键/静电互补
 （凝血酶 S1 的 ASP189，PROPKA pKa ≈ 6.6，就是典型例子）。
 
@@ -353,7 +353,7 @@ def test_uploaded_receptor_wins_over_registry_name_in_dispatch(monkeypatch: pyte
                                                               tmp_path: Path) -> None:
     """有上传受体时，子 Agent 传来的注册表受体名必须被忽略（receptor_file 优先）。
 
-    真实事故（run 20260918-094607-3195）：用户上传 8ZE2，协调流程又对默认 thrombin 跑了一遍 ——
+    注意：用户上传 8ZE2，协调流程又对默认 thrombin 跑了一遍 ——
     白跑 6 个分子，报告里多出一个受体块，用户会以为跑了两个靶点。
     """
     from docking_agent.runs import current_run

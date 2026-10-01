@@ -648,7 +648,7 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
                          note="该名称是多组分/聚合物：代表结构的取法需要用户确认，系统不替用户决定",
                          runtime=runtime)
         # 选项明细只走界面（`run.data["choices"]`）；给**模型**的载荷里不带明细，
-        # 否则主管 Agent 会把四个 SMILES 再抄成一张表 —— 同一问题在界面上出现两次（真实反馈）。
+        # 否则主管 Agent 会把四个 SMILES 再抄成一张表 —— 同一问题在界面上出现两次（已知问题）。
         out.update(choices_payload(
             choices,
             message=(f"「{resolved_query}」是多组分结构/配位聚合物：代表结构的取法必须由用户确认，"

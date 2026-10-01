@@ -1,6 +1,6 @@
 """模型调用前的「工具调用配对」自愈：协调 Agent 与 4 个子 Agent 都不能把非法序列发给模型。
 
-真实故障（用户报的 400）：
+注意（400）：
 
     400 - An assistant message with 'tool_calls' must be followed by tool messages
           responding to each 'tool_call_id'. (insufficient tool messages …)
@@ -178,7 +178,7 @@ def test_middleware_is_built_for_every_role() -> None:
 def test_real_agent_graph_heals_before_the_model_call() -> None:
     """端到端：真实 `create_agent` 图 + 悬空历史 → 模型**实际收到**的序列必须合法。
 
-    这是用户报的那个 400 的正面回归：修复必须发生在模型调用之前，且顺序正确
+    这是那个 400 的正面回归：修复必须发生在模型调用之前，且顺序正确
     （第一版把占位回执追加到了末尾，模型收到的是 `[Human, AI(tool_calls), Human, ToolMessage]`，
     依旧非法 —— 本用例会直接抓到）。
     """

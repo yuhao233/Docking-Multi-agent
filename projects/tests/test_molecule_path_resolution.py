@@ -1,4 +1,4 @@
-"""回归：上传成功的小分子库在对话里必须能被读到（真实缺陷 20260917-112206-5017）。
+"""回归：上传成功的小分子库在对话里必须能被读到（已知缺陷）。
 
 事件经过：
   - 用户上传 PGR.sdf（上传响应 count=149），落盘为
@@ -115,7 +115,7 @@ def test_resolve_reports_every_attempted_path_with_reason(tmp_path, monkeypatch)
 
 
 def test_import_molecule_library_accepts_bare_filename(tmp_path, monkeypatch) -> None:
-    """真实缺陷主场景：只给显示名 PGR.sdf，也要读到上传的 3 个分子。"""
+    """缺陷主场景：只给显示名 PGR.sdf，也要读到上传的 3 个分子。"""
 
     _write_sdf(tmp_path, names=("aspirin", "caffeine", "ibuprofen"))
     monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
@@ -188,7 +188,7 @@ def test_intake_chat_mode_carries_uploaded_molecule_file(tmp_path) -> None:
 
 
 def test_intake_chat_mode_without_ligands_does_not_auto_use_example_library() -> None:
-    """没有分子库时**不再**默认提示示例库回退，而是要求向用户索取（2026-09-17 产品要求）。"""
+    """没有分子库时**不再**默认提示示例库回退，而是要求向用户索取。"""
     from docking_agent import intake
     from docking_agent.api.schemas import AgentRequest
 
@@ -262,7 +262,7 @@ def test_import_ambiguous_suffix_asks_user_with_candidates(tmp_path, monkeypatch
 
 def test_normalize_molecule_library_accepts_text_file_and_blackboard(tmp_path) -> None:
     """统一入口：属性评估的规范化工具也要能吃「脏」输入，而不是 JSONDecodeError
-    （真实缺陷：子 Agent 传非 JSON 文本 → `分子库规范化失败`）。"""
+    （注意：子 Agent 传非 JSON 文本 → `分子库规范化失败`）。"""
     from docking_agent.tools.properties import normalize_molecule_library
 
     # ① 自由文本（名称:SMILES / 名称 SMILES）

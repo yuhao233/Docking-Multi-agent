@@ -255,7 +255,7 @@ def _largest_exh_within_budget(mean_sec: float, library_n: int, budget: float, *
 
 #: 「未指定」哨兵：工具签名默认值必须用 0 而不是 16。
 #:
-#: 历史缺陷（审计发现的静默降级）：`run_docking(exhaustiveness=16)` /
+#: 历史缺陷（静默降级）：`run_docking(exhaustiveness=16)` /
 #: `molecular_docking(exhaustiveness=16)` 无法区分「用户显式设了 16」与「没人给值」——
 #: 而 `plan_docking_params` 算出来的是 `clamp(round(16×柔性系数×盒体积系数), 2, 32)`，
 #: 常与 16 不同。协调层一旦忘了把规划值传下来（措辞/渲染任一环失效），运行就会**静默退回**

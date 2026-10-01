@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 #: 图递归上限的默认值（super-step 数）。60 → 120 的原因：一次长筛选里子 Agent 要连续调用
 #: 「解析受体 → 口袋 → 对接（分批）→ 结合模式」多轮工具，加上每个模型调用至少 2 个 super-step，
-#: 60 在真实长任务上会顶到 `GRAPH_RECURSION_LIMIT`（用户实测报错）。仍可用 `RECURSION_LIMIT` 覆盖。
+#: 60 在真实长任务上会顶到 `GRAPH_RECURSION_LIMIT`（会报错）。仍可用 `RECURSION_LIMIT` 覆盖。
 DEFAULT_RECURSION_LIMIT = 120
 
 __all__ = ["ensure_runtime_env", "env", "env_bool", "env_float", "env_int", "load_env"]

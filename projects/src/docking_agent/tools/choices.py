@@ -118,7 +118,7 @@ def receptor_input_guard(exc: Any, runtime: Any = None) -> str:
 
 
 #: 给**模型**看的说明：选项已经通过界面下发，模型不要在正文里再列一遍。
-#: 真实反馈：同一批选项既出现在主管 Agent 的 A/B/C/D 表格里，又出现在界面的可点按钮上，
+#: 注意：同一批选项既出现在主管 Agent 的 A/B/C/D 表格里，又出现在界面的可点按钮上，
 #: 用户以为系统问了两遍（重复列选项还白占上下文）。
 CHOICES_PROSE_RULE = (
     "选项已通过界面下发给用户（可直接点选）。**不要在回复里重复列出选项内容、SMILES、"
@@ -143,7 +143,7 @@ def blocking_choice_pending(kind: str = "", runtime: Any = None) -> bool:
     """是否正在等用户点选**阻断式**候选（未回答前不允许继续算）。
 
     与 `needs_user_input` 的区别：这是运行**级**状态，供后续工具调用直接拒绝启动 ——
-    真实故障（2026-09-23）：共晶配体是否作阳性对照的问题在 22:47 就下发了，但工具重试时
+    注意：共晶配体是否作阳性对照的问题在 22:47 就下发了，但工具重试时
     因"一次运行只询问一次"的幂等标记直接开跑，用户还没回答就先算了 40 分钟。
     """
     run = active_run(runtime)
@@ -174,7 +174,7 @@ def publish_choices(kind: str, choices: List[Dict[str, Any]], note: str = "",
         return
     normalized = [{**(c or {}), "kind": (c or {}).get("kind") or kind} for c in choices]
     # 同一个问题在一次运行里**只认第一次发布**（同 kind + 同 id 序列即同一个问题）：
-    # 重复发布既不该记日志，也不该改写已下发的候选 —— 真实反馈：「配体选择问了两次」，
+    # 重复发布既不该记日志，也不该改写已下发的候选 —— 注意：「配体选择问了两次」，
     # 且界面上的第二份会**覆盖**第一份，用户点了先出现的那份就与后端当前候选错位。
     # 触发场景：同一工具被两种写法各调用一次（「代森锰锌」/「Mancozeb」），解析到同一 CID，
     # 选项 id 相同但 prompt 里带不同写法 → 旧实现会改写 `choices` 并再发一次 SSE。
@@ -331,7 +331,7 @@ def _ligand_candidate_paths(block: Dict[str, Any], runtime: Any = None) -> List[
     """共晶配体的候选结构来源（按可信度）：原始结构 → 本次对接所用结构 → 请求里的受体文件 → 缓存。
 
     为什么必须带**原始结构**：对接用的是已去配体的 PDBQT，配体原子在那里根本不存在。
-    真实缺陷（用户实测）：受体先被口袋 Agent 准备成 `xxx_ph7.4.pdbqt`，`cocrystal_ligand`
+    注意：受体先被口袋 Agent 准备成 `xxx_ph7.4.pdbqt`，`cocrystal_ligand`
     只剩残基名、有没有原始 PDB 路径都没带出去 → 候选列表为空 → 解不出 SMILES →
     「是否把受体自带配体当阳性对照」的询问**永远不会触发**。
     """
@@ -385,7 +385,7 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
             or bool(request.get("skip_positive_control")):
         return []
     # 一次运行**只判定一次**，且必须在对接开始前判定（函数名与文档承诺就是「对接前询问」）。
-    # 真实缺陷：同一次运行里 run_docking 可能被调用多次（重试/分阶段），早期调用因受体结构
+    # 注意：同一次运行里 run_docking 可能被调用多次（重试/分阶段），早期调用因受体结构
     # 还没准备好而解不出 SMILES（日志写「因此未询问」），后期调用却能解出并发布选项 ——
     # 用户会在对接都快跑完时突然被问一次，且与之前的「不问」自相矛盾。
     if isinstance(data, dict):
@@ -438,7 +438,7 @@ def offer_cocrystal_positive_control(blocks: List[Dict[str, Any]], *,
             run.data["cocrystal_control_offer"] = {
                 "resname": resname, "key": ligand.get("key"),
                 "n_atoms": ligand.get("n_atoms"), "smiles": smiles, "label": label}
-        # 阻断式：先问再算（用户拍板 2026-09-23）。回答方式不变 —— 前端以同一会话追问一句，
+        # 阻断式：先问再算。回答方式不变 —— 前端以同一会话追问一句，
         # 系统据此发起新一轮；但**在回答之前不会开始对接**，避免白跑几十分钟。
         publish_choices("positive_control", choices, note=note, runtime=runtime, blocking=True)
         return choices

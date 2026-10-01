@@ -1,6 +1,6 @@
 """质子化态策略（运行级）+ 推荐化合物排行（综合分 + Agent 理由）的回归护栏。
 
-对应本轮需求与真实缺陷：
+对应的需求与已修复缺陷：
   1. **质子化**：库里大量盐/羧酸根/多质子化碱，同一分子的离子态与中性态对接行为差别很大；
      系统过去只在结果里告警「请确认质子化态」，却不提供任何统一口径 → 同一批筛选里混着两种化学形式。
      现在策略是**运行级**的（`neutralize` 默认 / `keep`），只中和带净电荷的分子，
@@ -328,7 +328,7 @@ def test_property_chart_top_only_and_recommend_grid(monkeypatch: pytest.MonkeyPa
 
 
 def test_protonated_molecules_still_join_with_docking_rows() -> None:
-    """真实缺陷（本轮 e2e 实测）：性质按中和后的形式返回时主键漂移，
+    """注意：性质按中和后的形式返回时主键漂移，
     带电分子的分子量/logP/Lipinski 在排序表与推荐评分里**整列为空**。
 
     主键纪律：`smiles` = 原始输入（对接行也用它），中和后的形式放 `protonated_smiles`。
@@ -411,7 +411,7 @@ def test_ph_policy_provenance_and_fallbacks(monkeypatch: pytest.MonkeyPatch) -> 
     assert "pKa 4.5" in info["rules"][0]["rule"]
 
     # 非法 pH（非数字 / 0 哨兵 / 越界）回退默认，绝不改口径。
-    # 真实事故：接口用 0 表示"未设置"，却与"pH 0"撞车 → 一次运行全部按极端强酸处理。
+    # 注意：接口用 0 表示"未设置"，却与"pH 0"撞车 → 一次运行全部按极端强酸处理。
     for bad in ("abc", 99, 0, 0.0, "0", 0.4):
         assert apply_protonation("CC(=O)O", "ph", bad)[1]["ph"] == DEFAULT_PH, bad
     from docking_agent.core.protonation import PH_MIN

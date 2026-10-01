@@ -182,13 +182,13 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                 return out
 
             # 续跑与首次执行**同一条入参形态**：把（用户的）消息作为图输入跑一轮。
-            # 真实故障（运行 20260924-013514-2617）：暂停是"本轮自然结束"，图的 next 已空 ——
+            # 注意：暂停是"本轮自然结束"，图的 next 已空 ——
             # 此时 `aupdate_state(答案) + astream(None)` 不会触发任何节点，运行 1 秒就"完成"，
             # 对接根本没跑。同一 thread 的输入会追加到历史之后，等于续聊同一段对话。
             stream = stream_agent_sse(graph, {"messages": [{"role": "user", "content": message}]},
                                       config, run.id, context=current_agent_context())
             async for chunk in _interleave(stream, 1.0, _tick):
-                # 阻断式候选**不在这里中断流**：实战踩坑（运行 20260924-011325-0913）——
+                # 阻断式候选**不在这里中断流**：注意——
                 # 同一模型步里还并行跑着 `run_property_assessment`，流被中途掐断后它的 ToolMessage
                 # 永远没进 checkpoint，续跑时只能补"该调用被中断、没有结果"的占位回执，
                 # 模型据此认为两个工具都没结果、直接收尾，对接一次都没跑。

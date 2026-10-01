@@ -56,7 +56,7 @@ def compute_properties(smiles: str, protonation: Optional[str] = None,
 
     **主键纪律**：返回的 `smiles` 始终是**传入的原始 SMILES**（合并/排序/去重都以它为主键），
     实际用于计算的形式放在 `protonated_smiles`（仅当与原始不同时出现），
-    溯源放在 `protonation`。真实缺陷（本轮 e2e 实测）：若把 `smiles` 换成中和后的形式，
+    溯源放在 `protonation`。注意（e2e 回归）：若把 `smiles` 换成中和后的形式，
     这些分子就与对接行（主键是原始 SMILES）**对不上**，排序表里的分子量/logP 整列变空。
     """
     from docking_agent.core.ligands import apply_protonation

@@ -27,7 +27,7 @@ def windowed_messages(old: Any, new: Any) -> List[AnyMessage]:
     旧实现是 `add_messages(old, new)[-MAX_MESSAGES:]` —— 按下标硬切会把
     「AI(tool_calls) + ToolMessage」从中间截断，留下**悬空 ToolMessage**，OpenAI 兼容端点
     会直接 400（insufficient tool messages）；`agents/threads.py` 的线程自愈要处理的
-    正是这类被截断的状态（真实缺陷）。
+    正是这类被截断的状态（已知缺陷）。
 
     现在改用 LangChain 官方 `trim_messages`：
       - `token_counter=len`：按**条数**而不是 token 数计算（与既有 MAX_MESSAGES 语义一致，

@@ -1,6 +1,6 @@
 """大库参数规划与两阶段漏斗：**库解析完成后再规划一次**（库来自上传文件时受理层拿不到）。
 
-真实缺口（2026-09-23，运行 20260923-224338-3779）：分子来自上传的 SDF，受理层规划时库里
+注意：分子来自上传的 SDF，受理层规划时库里
 还没有分子 → `param_plan` 整份为空 → notes 写"本次无规划值"，2961 个分子全部按系统默认
 exhaustiveness=16 精算 40 分钟，粗筛/精算两阶段一次都没跑。
 """
@@ -98,7 +98,7 @@ def test_small_library_is_not_funneled(monkeypatch: Any, tmp_path: Any) -> None:
 def test_uploaded_receptor_is_used_without_being_forwarded(monkeypatch: Any, tmp_path: Any) -> None:
     """请求里上传的受体文件必须**自动生效**，不要求协调 Agent 转发路径。
 
-    真实缺陷（2026-09-24 用户实测）：口袋工具有这条兜底（`pockets.py` 的 fallback），对接工具没有
+    注意：口袋工具有这条兜底（`pockets.py` 的 fallback），对接工具没有
     —— 模型只传了分子文件，对接子 Agent 就报"未提供任何受体…请指定受体后再对接"，而界面「本次
     下发参数」里明明写着受体文件。
     """

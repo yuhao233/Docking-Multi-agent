@@ -125,7 +125,7 @@ def protonation_ph(explicit: Any = None) -> float:
     """目标 pH 的分层解析：显式参数 → 本次运行请求 → 环境变量 → 默认 7.4。
 
     非法值（非数字、0 哨兵、超出 {PH_MIN}–{PH_MAX}）一律回退下一层/默认 ——
-    绝不因为一个设置写错就改变化学口径（真实事故：`protonation_ph=0` 被当成 pH 0 跑完一次运行）。
+    绝不因为一个设置写错就改变化学口径（注意：`protonation_ph=0` 被当成 pH 0 跑完一次运行）。
     """
     from docking_agent.config import env
 

@@ -378,7 +378,7 @@ def test_analyze_pose_pocket_tool_without_pose_is_honest(tmp_path: Path) -> None
 def test_pdf_embeds_dynamic_figures(tmp_path: Path) -> None:
     """动态命名的结合分析图（`interaction_2d_01.png` / `pose_3d_01.png`）必须真的进 PDF。
 
-    真实缺陷：`pdf._image_name` 对不在 `CHART_FILES` 里的图返回了带 `.png` 的文件名，
+    注意：`pdf._image_name` 对不在 `CHART_FILES` 里的图返回了带 `.png` 的文件名，
     与产物名（无扩展名）对不上 → PDF 静默跳过这些图（报告正文有图、PDF 里没有）。
     """
     from docking_agent.reporting.pdf import _image_name, build_report_pdf

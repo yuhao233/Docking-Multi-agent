@@ -148,7 +148,7 @@ def parse_pqr_atom_line(line: str) -> Optional[Dict[str, Any]]:
       * 插入码贴在残基号上：`ILE H 36A` → 第 6 个 token 是 `36A`；
       * **4 位残基号**把链号挤到没有空格：`GLU A1005` → 该行只有 10 个 token，
         meeko 会把 `A1005` 当链号、把 x 坐标当残基号 → `int('128.990')` 崩
-        （真实缺陷：7YHP 的残基号到 1xxx，整条 pH 准备因此失败、静默回退标准流程）。
+        （注意：7YHP 的残基号到 1xxx，整条 pH 准备因此失败、静默回退标准流程）。
     这里按「最后 5 个 token 一定是 x y z charge radius」反推残基键，不依赖列宽。
     """
     parts = line.split()
@@ -284,7 +284,7 @@ def parse_unmatched_residues(text: str) -> List[str]:
 
     meeko 的两种表现都要认：
       - 严格模式：整条准备报错退出，错误里带 `Template matching failed for: ['A:402', ...]`；
-      - 容错模式（`-x/--delete_bad_res`）：打 warning 后丢弃这些残基继续（我们**必须**把它们如实上报，
+      - 容错模式（`-x/--delete_bad_res`）：打 warning 后丢弃这些残基继续（**必须**如实上报，
         否则用户不会知道受体少了一段）。
     """
     if not text or "Template matching failed" not in text:

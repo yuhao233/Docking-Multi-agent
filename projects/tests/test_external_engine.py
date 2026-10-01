@@ -167,7 +167,7 @@ def test_build_argv_per_flavor() -> None:
 def test_autodock_gpu_devnum_is_one_based() -> None:
     """`GPU_DEVICE` 是 0 基（项目口径），AutoDock-GPU 的 `--devnum` 是 1 基（实测传 0 被拒）。
 
-    真实故障：填 `GPU_DEVICE=0` 时下发 `--devnum 0`，引擎直接报
+    注意：填 `GPU_DEVICE=0` 时下发 `--devnum 0`，引擎直接报
     "must be an integer between 1 and 65536" 并以状态 255 退出 —— 登记了 GPU 却算不出结果。
     """
     argv = ET.build_argv("autodock-gpu", binary="/opt/adgpu", receptor="", ligands=["/tmp/l.pdbqt"],

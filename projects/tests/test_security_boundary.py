@@ -1,6 +1,6 @@
 """安全边界的负向回归：路径穿越 / 任意文件读取 / 跨站请求 / URL 方案白名单。
 
-这四条都是 2026-09-21 审计**实测确认**过的漏洞，属于「一旦信任模型被打破就全盘失守」
+这四条都是 审计****过的漏洞，属于「一旦信任模型被打破就全盘失守」
 的一类，因此每条都留一个负向用例钉住：
 
 1. `POST /run` 的 `x-run-id` 头被当成目录名 → `../x` 逃出运行目录（任意路径写）；
@@ -266,7 +266,7 @@ def test_security_headers_are_present(client: TestClient) -> None:
 def test_frontend_assets_forbid_heuristic_caching(client: TestClient) -> None:
     """页面与静态脚本必须禁止浏览器"猜"缓存。
 
-    真实困扰（2026-09-23）：引擎下拉新增 `external` 后，旧标签页仍显示旧选项，用户以为
+    注意：引擎下拉新增 `external` 后，旧标签页仍显示旧选项，用户以为
     功能没上线。页面响应只有 ETag/Last-Modified、没有 Cache-Control 时，浏览器会按
     启发式新鲜度直接用本地副本；显式 `no-cache`（每次使用前必须回源校验）可以消除这类
     "改了前端却看不到"的假象。API 响应不受影响（保持默认，便于压测/缓存代理）。

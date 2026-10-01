@@ -290,7 +290,7 @@ def describe_ligand(smiles: str, protonation: Optional[str] = None,
     except Exception:  # noqa: BLE001
         logger.debug("配体描述符计算失败", exc_info=True)
     try:
-        # 7 元及以上环：meeko 会按「大环」处理；我们统一按刚性环准备（见 smiles_to_pdbqt），
+        # 7 元及以上环：meeko 会按「大环」处理；本模块统一按刚性环准备（见 smiles_to_pdbqt），
         # 因此如实记进事实字段，供运行级 notes 与报告说明「环构象未采样」。
         ring_sizes = sorted({len(r) for r in mol.GetRingInfo().AtomRings()} or [])
         facts["max_ring_size"] = max(ring_sizes) if ring_sizes else 0
@@ -353,7 +353,7 @@ def smiles_to_pdbqt(smiles: str, seed: int = 42) -> str:
         embedded = AllChem.EmbedMolecule(mol, params)  # type: ignore
     if embedded != 0:
         # 金属配合物/桥连多片段没有可用的距离几何约束，ETKDG 会失败；
-        # 随机坐标初始化不改变任何化学信息，只是换一种起点，能救回一部分（真实缺陷：Mancozeb）。
+        # 随机坐标初始化不改变任何化学信息，只是换一种起点，能救回一部分（注意：Mancozeb）。
         params = AllChem.ETKDGv3()  # type: ignore
         params.randomSeed = seed
         params.useRandomCoords = True
@@ -365,7 +365,7 @@ def smiles_to_pdbqt(smiles: str, seed: int = 42) -> str:
     except Exception:  # 某些元素缺少力场参数时忽略
         logger.warning("MMFF 优化跳过: %s", smiles)
     # 大环处理：meeko 默认会**切开大环**并插入两个 "glue" 伪原子（元素 G，类型 `CG0`/`G0`）。
-    # 真实故障（2026-09-23）：autogrid4 的参数库没有这些类型（实测 CG0/G0/G1/CG/W 全部
+    # 注意：autogrid4 的参数库没有这些类型（实测 CG0/G0/G1/CG/W 全部
     # "unknown ligand atom type"），AutoDock4 与 AutoDock-GPU 因此**必然失败**（一次 2961 条库
     # 里 113 条栽在这里）；内置 Vina 虽能解析，却会把伪原子当原子打分，跨引擎不可比。
     # 因此统一 `rigid_macrocycles=True`：环保持刚性、不切环、无伪原子，各引擎口径一致。

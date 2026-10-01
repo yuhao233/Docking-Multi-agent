@@ -38,6 +38,7 @@
     "recommend_compounds",
     "submit_recommendations",
     "analyze_pose_pocket",
-    "customize_report"
+    "customize_report",
+    "tool_guide"
   ]
 }

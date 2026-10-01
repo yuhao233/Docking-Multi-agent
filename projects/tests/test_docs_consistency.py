@@ -1,7 +1,7 @@
 """文档一致性回归：让「文档说的」与「代码做的」不再漂移。
 
 为什么值得一组测试：本项目的历史经验是——**错误文档比没有文档更糟**。
-审计（2026-09-14）在 README / docs/api.md 里查出 30 处与代码不符：已删除的 `critic` 角色、
+审计在 README / docs/api.md 里查出 30 处与代码不符：已删除的 `critic` 角色、
 并不存在的「服务端自动补齐」、阳性对照默认行为、环境变量默认值、角色数量、测试项数……
 这些都是「代码改了、文档忘了改」的典型。
 
@@ -107,7 +107,7 @@ def test_gate_scripts_and_referenced_files_exist() -> None:
 
 
 def test_docs_do_not_promise_removed_autocomplete() -> None:
-    """服务端不做「自动补齐/事后接管」——文档不得再承诺它（历史审计发现的矛盾点）。"""
+    """服务端不做「自动补齐/事后接管」——文档不得再承诺它（历史的矛盾点）。"""
     # 只拦「承诺式」表述：修复记录/审计说明里讨论历史行为是允许的
     allowed_context = ("不", "没有", "已移除", "删除", "修复", "审计", "历史", "漂移", "回归")
     for name, text in _doc_texts().items():
@@ -147,7 +147,7 @@ def test_generated_documents_match_their_sources() -> None:
     mtime，按时间判断既会误报也会漏报。生成器在产出时把源文件 sha256 写进
     `<dir>/.generated.json`，这里只比哈希。
 
-    真实事故（2026-09-21）：`技术报告.md` 改完 10 小时，`.docx`/`.pdf` 还是旧的，
+    注意：`技术报告.md` 改完 10 小时，`.docx`/`.pdf` 还是旧的，
     按现状提交就会把内容陈旧的产物一起发出去 —— 而 PDF 是评审最先读的形态。
     """
     import sys as _sys

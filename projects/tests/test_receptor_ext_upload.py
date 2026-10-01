@@ -1,6 +1,6 @@
 """受体结构文件扩展名（.ent / .cif / 未知后缀）与「上传 → 对接」链路的回归测试。
 
-真实缺陷（2026-09-16 用户报告）：
+注意：
   对话模式上传 `pdb2gs3.ent`（GPX4，RCSB 的 .ent 坐标文件）后：
     1. 前端 advanced=false 时把 `receptor_file` 从请求体里丢掉（见 web/app.js 与
        scripts/ui_e2e.js 的附件用例）；
@@ -10,7 +10,7 @@
 本文件守住第 2 条，以及「上传端点与受体解析链共用同一份扩展名定义」。包含真实的
 meeko 现场准备与一次真实对接（1 个分子，exhaustiveness=1），耗时可控。
 
-**2026-09-22 行为变更（用户裁决）**：`.ent` 的支持早已补齐，但「准备失败 / 名字认不出就
+** 行为变更**：`.ent` 的支持早已补齐，但「准备失败 / 名字认不出就
 静默改用预置凝血酶继续跑」这条兜底被用户判为产品底线问题 —— 现在改为**硬错误**：
 `resolve_receptor_specs()` 抛 `ReceptorInputError`，工具层转成 `needs_user_input`
 （说清原因 + 给用户三选一），且**任何引擎都不会被启动**。本文件相应改为守住新行为。
@@ -132,7 +132,7 @@ def test_ligand_extensions_are_not_guessed_as_receptor(tmp_path) -> None:
 # --------------------------------------------------------------------------- #
 # ② 不存在的 / 不可用的结构文件 → **硬错误**（不再回退预置受体）
 #
-# 用户裁决（2026-09-22）：旧行为「回退 凝血酶(thrombin) 继续跑完并出报告」是产品底线问题 ——
+# 设计约束：旧行为「回退 凝血酶(thrombin) 继续跑完并出报告」是产品底线问题 ——
 # 用户会拿到一份以凝血酶为受体的答非所问报告。现在必须报错、说清原因、把选择权交回用户。
 # --------------------------------------------------------------------------- #
 def test_missing_structure_file_raises_with_reason(tmp_path) -> None:
@@ -208,7 +208,7 @@ def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path, monkeypatch)
         "ligands_text": "乙醇:CCO",
         "exhaustiveness": 1, "engine": "vina", "save_poses": False,
         # 该受体自带共晶配体：本用例只关心"用的是上传的受体"，按用户决定跳过对照
-        # （否则按 2026-09-23 的新语义会停下等点选，状态是 needs_user_input）
+        # （否则按新语义会停下等点选，状态是 needs_user_input）
         "positive_control_decision": "skip",
     }, monkeypatch)
     detail = client.get(f"/api/runs/{run_id}").json()

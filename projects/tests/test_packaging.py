@@ -1,6 +1,6 @@
 """打包与依赖一致性（P0 规范改造）。
 
-真实缺陷（本轮修复）：项目此前**没有安装进自己的 venv**（`find_spec('docking_agent')` 为 None），
+注意（修复）：项目此前**没有安装进自己的 venv**（`find_spec('docking_agent')` 为 None），
 `[project.scripts] docking-agent` 在开发环境完全不可用，所有入口都靠 `PYTHONPATH=src` 兜着；
 依赖还在 `pyproject.toml` 与 `requirements-local.txt` 两处各写一份、无人看守。
 

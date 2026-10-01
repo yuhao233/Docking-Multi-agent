@@ -2,7 +2,7 @@
 
 **背景**：此前子 Agent 的输出契约是「提示词要求模型只输出一个 JSON 对象 + 服务端用
 `parse_json_object` 校验必需键、失败重试一次」（`agents/dispatch._invoke_checked`）——
-模型偶尔不照做就会产生 `agent_output_invalid` 这类真实故障。
+模型偶尔不照做就会产生 `agent_output_invalid` 这类真实错误。
 
 现在改为 LangChain 1.x 的规范做法：给子 Agent 传
 `response_format=ToolStrategy(<Role>Report)`，由框架**强制模型调用结构化输出工具**，

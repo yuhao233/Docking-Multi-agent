@@ -66,7 +66,7 @@ RECEPTOR_PROVENANCE_KEYS = ("requested", "database", "structure_source", "access
 def note_receptor_provenance(run: Any, provenance: Any) -> None:
     """记下「本次受体是哪个结构、从哪来」（报告 §1.2 自己写明，不依赖 Agent 在结论里复述）。
 
-    审计发现：`fetch_protein_structure` 的 accession/物种/结构来源原先只出现在工具返回与
+    注意：`fetch_protein_structure` 的 accession/物种/结构来源原先只出现在工具返回与
     协调 Agent 的对话文本里 —— 一旦结论节按「只留结论/风险」精简，这份溯源就从报告里消失了。
     因此把它作为**运行事实**落盘，由报告直接渲染。
     """

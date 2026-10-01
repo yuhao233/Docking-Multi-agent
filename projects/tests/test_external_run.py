@@ -1,11 +1,11 @@
 """外部引擎的**执行适配**（`core/external_run.py`）：真实调用形状、输出解析、格点图。
 
 与 `tests/test_external_engine.py` 的分工：那边测"登记与探测"，这边测"真的跑起来之后"。
-外部二进制一律用临时目录里的假脚本替代 —— 断言的是我们下发的参数与解析结果，不是 GPU 本身；
+外部二进制一律用临时目录里的假脚本替代 —— 断言的是本实现下发的参数与解析结果，不是 GPU 本身；
 真正的 GPU 端到端由本文件末尾的 `test_real_autodock_gpu_end_to_end`（本机登记且就绪时才跑）
 与 `scripts/verify_docking.py` 覆盖。
 
-历史上的真实故障（都已固定成回归）：
+历史上的注意（都已固定成回归）：
 
 * `--devnum 0` 被 AutoDock-GPU 拒绝（它要求 1 基），登记了 GPU 却 0.15 s 失败、结果行报错；
 * 配体带极性氢（meeko 的 `HD` 类型）而格点图只有 A/C/N/NA/OA/S/SA → 引擎"任务未成功"；
@@ -376,7 +376,7 @@ def test_macrocycle_ligands_have_no_glue_pseudo_atoms(tmp_path: Path) -> None:
     """大环配体必须**不切环**：meeko 默认会插两个伪原子（元素 G，类型 CG0/G0），
     autogrid4 参数库没有这些类型（实测 unknown ligand atom type），AutoDock4/-GPU 必然失败。
 
-    真实故障（2026-09-23）：2961 条库里有 113 条栽在这里；改 `rigid_macrocycles=True` 后
+    注意：2961 条库里有 113 条栽在这里；改 `rigid_macrocycles=True` 后
     113/116 立即可用（其余 3 条是真化学限制：meeko 无法给 Se/Mn/Pt 类原子定类型、3D 构象生成失败）。
     """
     from docking_agent.core.docking import _pdbqt_atom_types
@@ -397,7 +397,7 @@ def test_macrocycle_ligands_have_no_glue_pseudo_atoms(tmp_path: Path) -> None:
 def test_extract_best_pose_pdbqt_from_real_dlg(tmp_path: Path) -> None:
     """真实 AutoDock-GPU DLG（thrombin × 苯甲脒，--nrun 3）→ PDBQT 位姿。
 
-    真实损失（2026-09-23，2961 条库）：外部引擎把位姿留成 `.dlg`，而位姿分析按 PDBQT 读，
+    损失（2961 条库）：外部引擎把位姿留成 `.dlg`，而位姿分析按 PDBQT 读，
     2845 个位姿全部读不出 → 报告写"未产生可读取的位姿文件"、结合模式分析整段缺失。
     """
     from docking_agent.core.interactions import read_pdbqt

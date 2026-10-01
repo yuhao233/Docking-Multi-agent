@@ -4,7 +4,7 @@
 
 - 类化：位点盒坐标（`site_center` / `site_size`）、引擎枚举（`engine` / `pocket_engine`）——
   这些是「两三个数」的结构化数据，用字符串传会让模型自己拼格式、也让校验失效
-  （真实事故：`molecular_property_assessment` 的 docstring 漂移出并不存在的 `protonation_ph`，
+  （注意：`molecular_property_assessment` 的 docstring 漂移出并不存在的 `protonation_ph`，
   就是因为没有 schema 兜底）。
 - **不**类化：`molecules_json` / `*_file` —— 它们承担的是「大库按文件交接」的既定契约
   （`runtime/tool_io.py`：1 万分子 ≈ 0.5 MB ≈ 13 万 tokens），强类型化会把明细塞回上下文。
@@ -15,7 +15,7 @@
 
 `CoordArray` 用 `BeforeValidator` 把**字符串形态在校验前**折成数组：字段描述里承诺了
 「也接受 "22,22,22"」，但 `List[float]` 会在进函数体前就拒掉字符串 —— 文档承诺与真实校验
-不一致（真实缺陷：仓库自带的 `scripts/verify_docking.py` 按文档传 `"31.5,13.74,24.36"`
+不一致（注意：仓库自带的 `scripts/verify_docking.py` 按文档传 `"31.5,13.74,24.36"`
 直接抛 ValidationError；模型按描述传字符串同样会被拒）。
 """
 from __future__ import annotations

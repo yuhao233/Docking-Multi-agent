@@ -375,7 +375,7 @@ RUNTIME_SPECS: Tuple[Spec, ...] = (
     Spec("runtime.sse_progress_ms", "进度心跳间隔（ms）", "runtime", "int",
          env="SSE_PROGRESS_MS", minimum=100, maximum=10000, default=1000),
     # 默认值必须与 runtime/streaming.py 的读取默认值一致（2000），否则「设置页显示的默认」
-    # 与「不设置时的实际行为」会不一致（审计发现的漂移点）
+    # 与「不设置时的实际行为」会不一致（漂移点）
     Spec("runtime.stream_tool_result_chars", "工具结果流式截断字符数", "runtime", "int",
          env="STREAM_TOOL_RESULT_CHARS", minimum=200, default=2000),
     Spec("runtime.run_timeout_seconds", "单次运行超时（秒）", "runtime", "int",
@@ -725,7 +725,7 @@ def apply_runtime_env() -> List[str]:
         value = get_dotted(data, spec.path)
         protect = spec.env_priority and os.getenv(name) not in (None, "")
         if value is None or protect:
-            # 不再由界面提供该值：若之前是我们注入的，恢复基线
+            # 不再由界面提供该值：若为此前注入的，恢复基线
             if name in _INJECTED:
                 baseline = _INJECTED.pop(name)
                 if baseline is None:

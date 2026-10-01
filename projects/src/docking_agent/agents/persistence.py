@@ -238,7 +238,7 @@ def _dedupe_molecules(molecules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 #: 模型可见消息日志的规模上限：条数与每条正文截断（只用于"气泡里到底说了什么"的可观测性，
-#: 不参与任何计算；真实困扰 2026-09-23：用户反馈"气泡把大量数据对话出去了"，但运行产物里
+#: 不参与任何计算；注意：对话气泡曾把大量数据一并展示出去，但运行产物里
 #: 只有最终结论文本，事后无法回看当时模型看到了/输出了什么）。
 MESSAGES_LOG_LIMIT = 200
 MESSAGES_LOG_HEAD = 400
@@ -445,7 +445,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
 
     molecules = _dedupe_molecules(molecules) or _dedupe_molecules(candidate_results)
 
-    # ---- 受体结构入包：整包下载必须能独立复现本次对接（用户实测提问） ----
+    # ---- 受体结构入包：整包下载必须能独立复现本次对接 ----
     # 只把绝对路径记在 docking.json 里是不够的：换台机器就取不到受体。
     # 复制「对接实际使用的 PDBQT + 准备后 PDB + 原始上传文件（有则带）」到 receptor/。
     _request = dict(run.data.get("request") or {})
@@ -506,13 +506,13 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     }
 
     # ---- 没有真实计算的运行**不产规范报告** ----
-    # 真实缺陷（用户实测）：只发一句「你好」，受理层 decision=reject、零工具调用，
+    # 注意：只发一句「你好」，受理层 decision=reject、零工具调用，
     # 却照样写 11 KB 全是空表格的报告 + 4 张空图 + 328 KB PDF，页面还把它当作
     # 「规范报告（report.md · 唯一权威版）」挂到对话气泡上 —— 用户看到的是纯噪声。
     narrative = (final_text or "").strip()
     # 阻断式问题（如共晶配体是否作阳性对照）还等着用户点选时，运行状态必须是
-    # `needs_user_input` —— 即使导入/性质等工具已经产出了结果。真实故障
-    # （2026-09-24，运行 20260924-011325-0913）：暂停的 run 被标成 ok，用户以为跑完了，
+    # `needs_user_input` —— 即使导入/性质等工具已经产出了结果。注意：
+    # 暂停的 run 被标成 ok，用户以为跑完了，
     # 而对接其实一次都没跑（工具按护栏拒绝开跑）。
     if run.data.get("choices_blocking") and run.data.get("choices"):
         kinds = "、".join(sorted({str(c.get("kind") or "") for c in run.data["choices"]}))
@@ -527,7 +527,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         decision = str((run.data.get("task_spec") or {}).get("decision") or "")
         # 「停下来等用户点选」不是 no_op：受体可能已经解析成功、工具也确实跑过，只是
         # 配体侧必须由用户确认。标成 no_op 会让历史列表显示 [ SKIP ]、日志说「未调用任何
-        # 工具」，与事实不符（真实反馈：界面把「等你选配体」说成「本次未执行计算」）。
+        # 工具」，与事实不符（注意：界面把「等你选配体」说成「未执行计算」）。
         pending_choices = list(run.data.get("choices") or [])
         if pending_choices:
             kinds = "、".join(sorted({str(c.get("kind") or "") for c in pending_choices}))

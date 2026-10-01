@@ -97,7 +97,7 @@ def _params_from_request(req: Any) -> Dict[str, Any]:
             "ligands_text": (req.ligands_text or "").strip(),
             "molecule_file": (req.molecule_file or "").strip(),
             # 表单里的「保存对接位姿 / 最大分子数」也要进规约：否则协调 Agent 根本不知道
-            # 用户改过它们，run_docking 也就不会收到（真实缺陷：Agent 模式下这两项被静默忽略）。
+            # 用户改过它们，run_docking 也就不会收到（注意：Agent 模式下这两项被静默忽略）。
             "save_poses": getattr(req, "save_poses", None),
             "max_ligands": getattr(req, "max_ligands", None),
             "skip_positive_control": bool(req.skip_positive_control)}
@@ -191,7 +191,7 @@ _RECEPTOR_GENERIC = {"受体", "蛋白", "蛋白质", "酶", "receptor", "kinase
 #: 基因符号式的受体名（ROS1 / EGFR / BRCA1 / TP53 …）：**没有「酶/蛋白/受体」后缀**，
 #: 上面那条 `_NAMED_RECEPTOR_RE` 抓不到，于是「把拟南芥ROS1和代森锰锌对接」这类指令
 #: 既不算「点名了受体」，也让多轮继承拿不到上一轮已解析的 accession —— 用户点选分子代表
-#: 结构后的追问就会丢掉受体、被判成 `ask`（真实反馈「我选择了，但没有正常工作」）。
+#: 结构后的追问就会丢掉受体、被判成 `ask`（现象：点选后未真正生效）。
 _GENE_SYMBOL_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z][A-Za-z0-9]{1,9})(?![A-Za-z0-9])")
 #: 常见非受体缩写：出现在指令里不代表用户点名了受体（避免把 ADMET/PDB 当成靶点去检索）
 _GENE_SYMBOL_STOP = {
@@ -444,7 +444,7 @@ def build_task_spec(req: Any, *, raw_request: str = "",
     # 助手/工具回复里补齐「已解析结果」（如上一轮已把 ROS1 查成 Q9SJQ6 / PDB 7YHP）。
     # 两道门都必须有：
     #   ① 只看 `user_only_text`（剥掉系统自己的「任务规约」块与「引用文件」清单）——
-    #      那些机器文本里的「先请用户指定受体」会被当成受体名（真实缺陷 2026-09-21）；
+    #      那些机器文本里的「先请用户指定受体」会被当成受体名（已知缺陷）；
     #   ② 用户没点名过受体时，完全不去扫助手/工具文本 —— 否则提问里的示例 PDB 编号
     #      （如 3ZBF）会被继承成用户指定的受体，用户什么都没说却拿别人的靶点开跑。
     prior_user_only = user_only_text(prior_user_text)
@@ -471,7 +471,7 @@ def build_task_spec(req: Any, *, raw_request: str = "",
     if not text and not mol_file:
         # 对话模式（未展开高级设置）用的是系统默认参数，params 里 molecule_file 恒为空。
         # 但**上传的分子库文件与 receptor_file 一样是明确的用户意图**，必须随指令下发，
-        # 否则「上传成功」在对话里就用不上。真实缺陷 20260917-112206-5017：
+        # 否则「上传成功」在对话里就用不上。注意：
         # PGR.sdf（149 个分子）上传成功，协调 Agent 却拿不到绝对路径，只能凭文件名猜
         # （PGR.sdf / assets/cache/PGR.sdf / assets/PGR.sdf…），最终退回示例分子库。
         # 注意：只接**上传附件**的 molecule_file；表单里的 ligands_text 仍按「对话不注入参数」
@@ -481,7 +481,7 @@ def build_task_spec(req: Any, *, raw_request: str = "",
     if choice_smiles:
         # 用户在界面点选了「代表结构怎么取」（多组分/配位聚合物的 4 个选项之一）：
         # 这是**明确的用户决定**，必须优先于指令文本解析，并原样记录以便报告追溯。
-        # 真实缺陷（用户反馈「我选择了，但没有正常工作」）：点选只把选项 prompt 当普通
+        # 注意：点选只把选项 prompt 当普通
         # 消息发回来，一旦该轮指令里没再出现 SMILES（或模型改写成别的措辞），
         # 配体侧就会退回「名称查询 → 又是多组分 → 再问一次」的死循环。
         choice_label = (getattr(req, "molecule_choice_label", "") or "").strip()
@@ -529,7 +529,7 @@ def build_task_spec(req: Any, *, raw_request: str = "",
     # 其次是 UniProt accession（点选候选后的追问会带上它，可直接解析）；
     # 最后才按「…酶/…蛋白/…受体/kinase/receptor」抽取候选名。
     # 只看**用户自己写的正文**：前端拼接的「引用文件」清单里是上传落盘名（时间戳-哈希-原名），
-    # 其哈希片段会被误当成受体名（真实缺陷 20260917-122453-0404）。
+    # 其哈希片段会被误当成受体名（已知缺陷）。
     instruction = user_instruction_text(message)
     explicit_now = _mentioned_receptor(instruction)
     accession_now = "" if explicit_now else _mentioned_accession(instruction)
@@ -819,7 +819,7 @@ def user_instruction_text(raw: str) -> str:
 #: 受理层渲染给编排层的机器块标题（`render_agent_message`）。整段都是**系统生成**的：
 #: 里面的措辞（「先请用户指定受体」「不要回退任何默认受体」…）会被受体名抽取
 #: (`_named_receptor_candidate`) 误当成「用户点名的受体」—— 进而让上一轮助手回复里的
-#: 示例 PDB 编号（如 3ZBF）被继承成用户指定的受体。真实缺陷 2026-09-21 实测复现。
+#: 示例 PDB 编号（如 3ZBF）被继承成用户指定的受体（已知缺陷）。
 _TASK_SPEC_BLOCK_RE = re.compile(r"\n*-{2,}\s*任务规约（受理层产出[\s\S]*$")
 
 
@@ -834,7 +834,7 @@ def user_only_text(raw: str) -> str:
 def _llm_instruction_view(raw: str) -> str:
     """给受理模型看的指令：附件清单只留文件名，绝对路径换成系统登记说明。
 
-    真实缺陷 20260917-122453-0404：上传库落盘名 `.../20260917-122453-c6b872-...-PGR_120.sdf`
+    注意：上传库落盘名 `.../20260917-122453-c6b872-...-PGR_120.sdf`
     里的哈希片段被受理模型当成了「用户点名的受体 C6B872」，随后在线解析失败 → 整个运行被
     阻断成「请选择受体」。路径本来就通过结构化字段（`ligands.file` / `receptor.file`）
     传给编排层，受理模型不需要看到它，因此这里直接不喂。
@@ -901,7 +901,7 @@ def merge_llm_understanding(spec: Dict[str, Any], payload: Dict[str, Any]) -> Di
 
     mentioned_receptor = str(payload.get("mentioned_receptor") or "").strip()
     # 受体名只认**用户自己写的**指令：附件清单里的路径/落盘名（时间戳-哈希-原名）
-    # 不是受体来源（真实缺陷 20260917-122453-0404：哈希片段 C6B872 被当成受体并阻断运行）。
+    # 不是受体来源（注意：哈希片段 C6B872 被当成受体并阻断运行）。
     user_text = user_instruction_text(raw)
     if mentioned_receptor and _verbatim_in(user_text, mentioned_receptor):
         receptor = dict(merged.get("receptor") or {})
@@ -1065,7 +1065,7 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
     exh = params.get("exhaustiveness")
     poses = params.get("n_poses")
     # 「系统默认」场景下搜索强度本来就是自动规划（下方会给建议值），不要渲染成一个"固定 16"，
-    # 否则用户会以为系统替他指定了强度（真实反馈：我没有指定高级参数，怎么传进来了）。
+    # 否则用户会以为系统替他指定了强度（现象：未指定高级参数却收到了规划值）。
     system_default = str(spec.get("params_note") or "").startswith("系统默认")
     lines.append(
         "对接参数：搜索强度 exhaustiveness="
@@ -1075,7 +1075,7 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
         + "，engine=" + ("auto" if system_default else str(params.get("engine") or "auto"))
         + f"，pocket_engine={(params.get('pocket_engine') or 'auto')}")
     # 表单里的「保存对接位姿 / 最大分子数」必须显式渲染给编排层 —— 否则协调 Agent 不知道
-    # 有这两项，用户的勾选/填写就被静默忽略（真实缺陷：Agent 模式下这两项曾经不生效）。
+    # 有这两项，用户的勾选/填写就被静默忽略（注意：Agent 模式下这两项曾经不生效）。
     form_params: List[str] = []
     if params.get("save_poses") is not None:
         form_params.append(f"save_poses={bool(params.get('save_poses'))}")
@@ -1084,7 +1084,7 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
     if form_params:
         lines.append("表单指定（请**原样**传给 run_docking，不得忽略）：" + "，".join(form_params))
     # 质子化态策略是**运行级口径**（配体与理化性质必须同一形式），必须显式告知编排层。
-    # 旧版 chat 指令里没有这一行 → 协调 Agent 会**臆测**策略：真实反馈里它写「当前策略为 keep」，
+    # 旧版 chat 指令里没有这一行 → 协调 Agent 会**臆测**策略：运行记录里它写「当前策略为 keep」，
     # 而实际默认是 ph 7.4（用户据此做的决定会被误导）。
     from docking_agent.core.protonation import (PROTONATION_POLICIES, protonation_ph,
                                                 protonation_policy)
@@ -1124,7 +1124,7 @@ def _render_params(params: Dict[str, Any], spec: Dict[str, Any], header: str,
             lines.append(_render_big_library(ligands["text"], count, run))
     elif ligands.get("source") == "file" and ligands.get("file"):
         # 绝对路径必须**原样**进入指令：协调 Agent 不得自行拼接或猜测路径
-        # （真实缺陷 20260917-112206-5017 就是猜了 4 个错误路径后放弃）。
+        # （注意：曾猜了 4 个错误路径后放弃）。
         lines.append(
             f"候选分子库来自文件（绝对路径，请**原样**传给 import_molecule_library 的 molecule_file，"
             f"不要自行拼接或猜测路径）：{ligands['file']}。"
@@ -1325,7 +1325,7 @@ def render_agent_message(spec: Dict[str, Any], run: Any = None) -> str:
     if spec.get("assumptions"):
         lines.append("假设：" + "；".join(str(a) for a in spec["assumptions"][:5]))
     # 「缺少 / 待向用户确认」只在 **decision=ask**（受理层确实要停下来问用户）时下发。
-    # 真实缺陷：受理模型会把「用户点名了分子但没给 SMILES」记进 missing 并附一条
+    # 注意：受理模型会把「用户点名了分子但没给 SMILES」记进 missing 并附一条
     # 「请提供候选分子库」的问题；规则层判定 decision=run（名称会先在线查询），
     # 但渲染层仍把这两行原样发给编排层 → 主管 Agent 当场转述成一次提问，
     # 用户于是被问了两遍（一次问分子库、一次选结构）。missing/questions 仍保留在

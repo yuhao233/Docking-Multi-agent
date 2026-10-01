@@ -30,7 +30,7 @@ DEFAULT_BOX_SIZE: List[float] = [22.0, 22.0, 22.0]
 # --------------------------------------------------------------------------- #
 # 需要现场准备为 PDBQT 的「结构文件」。`.ent` 是 PDB 的另一种常见后缀
 # （RCSB 下载的坐标文件就叫 *.ent）。历史上只有上传端点认它、解析链不认，
-# 于是 `.ent` 落到「未识别受体 → 回退默认 thrombin」（真实缺陷）。
+# 于是 `.ent` 落到「未识别受体 → 回退默认 thrombin」（已知缺陷）。
 RECEPTOR_STRUCTURE_EXTS = frozenset({".pdb", ".ent", ".pdb1", ".cif", ".mmcif"})
 # 已经是受体成品的扩展名：无需现场准备，直接包装为受体 spec
 RECEPTOR_PDBQT_EXTS = frozenset({".pdbqt"})
@@ -377,8 +377,8 @@ def prepare_user_receptor(source: str,
     # 准备产物一律**内容寻址**：文件名里带上「源文件内容 + keep 集」的哈希。
     # 为什么必须这样：缓存目录是全局共享的，而文件名只取源文件 basename ——
     # 两个并发的运行（或两个都叫 receptor.pdb 的上传）会写同一组
-    # `_prot.pdb` / `.pdbqt` / `.site.json`，彼此覆盖，结果里出现「我请求保留 ZN，
-    # 返回的却是别人的 HEM+ZN 结果」这种串数据（实测可复现，见
+    # `_prot.pdb` / `.pdbqt` / `.site.json`，彼此覆盖，结果里出现「请求保留 ZN，
+    # 拿回来的却是别人的 HEM+ZN 结果」这种串数据（实测可复现，见
     # tests/test_receptor_race.py）。加上内容哈希后，不同输入天然落到不同文件。
     try:
         src_hash = _hashlib.sha1(Path(raw).read_bytes()).hexdigest()[:10]
@@ -527,7 +527,7 @@ def prepare_user_receptor(source: str,
                        "unsupported_hetatm": sorted(set(unsupported) | set(unmatched)),
                        # 共晶配体存**完整**信息（resname + chain:resid:resname 的 key + 原子数）：
                        # 只存残基名时，下游拿 .pdbqt 就再也解不出 SMILES ——「是否把受体自带配体
-                       # 当阳性对照」的询问因此永远不会触发（真实缺陷，用户实测反馈）。
+                       # 当阳性对照」的询问因此永远不会触发（已知缺陷）。
                        "cocrystal_ligand": lig_info or {},
                        # 原始结构路径：.pdbqt 是**去配体**的，只有回到这里才能取回配体原子
                        "source_pdb": os.path.abspath(raw),
@@ -594,7 +594,7 @@ def resolve_receptor_specs(receptor_arg: Any = None,
     def _is_blank(v: Any) -> bool:
         """空值语义：None / 空串 / 纯空白 / 字面量 "default" 都表示「未指定受体」。
 
-        只保留 `None` 会踩坑：受理层「未指定受体」时会传空串，旧实现把 `""` 当成
+        只保留 `None` 会出错：受理层「未指定受体」时会传空串，旧实现把 `""` 当成
         「一个无法识别的受体名」，于是 specs 为空、既没有默认受体也没有提示，
         对接直接落空。这里统一按文档承诺的空值回退处理。
         """
@@ -607,7 +607,7 @@ def resolve_receptor_specs(receptor_arg: Any = None,
 
     items = [it for it in _norm(receptor_arg) if not _is_blank(it)]
     if not items:
-        # 用户要求：**彻底删除「未指定受体就回退默认受体」**。
+        # 设计约束：**彻底删除「未指定受体就回退默认受体」**。
         # 计算对象没给定时不能替用户挑一个靶点开跑（旧实现会静默用凝血酶），
         # 这里直接报错；上层（对接工具）会把它转成「请用户指定受体」的提问与可选项。
         raise ValueError(
@@ -685,7 +685,7 @@ def box_atom_stats(pdbqt_path: str, center: Sequence[float],
 
     **为什么必须有它**：Vina 在盒子内**没有任何受体原子**时不报错、不告警，而是返回
     **全 0 能量**（`affinity_kcal_mol = 0.0`）。0.0 不是分数，是「什么都没算」。
-    真实事故：受体被回退成凝血酶、盒子却来自另一个蛋白（盒中心距受体最近原子 75 Å），
+    注意：受体被回退成凝血酶、盒子却来自另一个蛋白（盒中心距受体最近原子 75 Å），
     147 个分子跑了 7.5 分钟得到一堆 0.0，还差点被当成结果写进报告。
     这里让调用方能在**调用引擎之前**识别出这种盒子。
 
@@ -930,7 +930,7 @@ def read_receptor_file(source: str, keep_hetatm: Sequence[str] = (),
     local = _fetch_file(source, "receptor")
     ext = receptor_ext(local)
     if ext in RECEPTOR_PDBQT_EXTS:
-        # 若这份 PDBQT 是我们自己按 pH 准备的，sidecar 里带着溯源 → 由 _pdbqt_spec 恢复；
+        # 若这份 PDBQT 是本流程按 pH 准备的，sidecar 里带着溯源 → 由 _pdbqt_spec 恢复；
         # 没带（外来文件）时 _pdbqt_spec 会如实标注「无法确认是否与目标 pH 一致」。
         return _pdbqt_spec(local, keep_hetatm=keep_hetatm, policy=prot_policy, ph_value=prot_ph)
     return prepare_user_receptor(local, keep_hetatm=keep_hetatm, source_ext=ext,

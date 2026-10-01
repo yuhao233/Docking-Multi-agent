@@ -7,7 +7,7 @@
 
     agents.workers → tools.{docking,properties,dispatch} → tools.molecule_paths
 
-真实缺陷背景（20260917-112206-5017）：上传端点的落盘名带时间戳前缀
+缺陷背景：上传端点的落盘名带时间戳前缀
 （`20260917-112109-3e5739-PGR.sdf`），而模型往往只拿到显示名 `PGR.sdf`，
 于是把裸文件名当路径传给工具，RDKit 报 `Bad input file PGR.sdf`，最终静默退回示例库。
 """
@@ -27,7 +27,7 @@ _MOLECULE_FILE_EXTS = (".sdf", ".sd", ".smi", ".smiles", ".csv", ".tsv", ".mol2"
 def looks_like_molecule_path(value: str) -> bool:
     """启发式判断某个参数值是不是「分子文件路径」而不是 SMILES/名称文本。
 
-    真实缺陷 20260917-112206-5017：模型把上传文件的显示名（`PGR.sdf`）塞进参数，
+    注意：模型把上传文件的显示名（`PGR.sdf`）塞进参数，
     工具却按纯文本解析，什么都没得到。规则（任一命中即算路径）：
       - http(s) URL；
       - 字符串本身是存在的本地文件；
@@ -69,7 +69,7 @@ def resolve_molecule_file(value: str) -> Tuple[str, List[str], List[str]]:
 
     为什么需要：上传端点的落盘名带时间戳前缀（`20260917-112109-3e5739-PGR.sdf`），
     而模型往往只拿到显示名 `PGR.sdf`，于是把裸文件名当路径传给工具，
-    RDKit 报 `Bad input file PGR.sdf`，最终静默退回示例库（真实缺陷 20260917-112206-5017）。
+    RDKit 报 `Bad input file PGR.sdf`，最终静默退回示例库（已知缺陷）。
     这里按「绝对/相对 → 各候选目录精确文件名 → `<前缀>-<原名>` 后缀匹配」逐级解析，
     并把每次尝试的候选与原因一并返回，便于如实上报而不是让模型瞎猜。
 

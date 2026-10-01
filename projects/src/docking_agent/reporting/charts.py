@@ -217,7 +217,7 @@ def property_scatter_chart(molecules: List[Dict[str, Any]], top_only: bool = Fal
 
     `top_only=True` 时只画**推荐排行前 N 个**分子（与第 3 节排序同一集合）：
     整库散点在大库（几百上千个）时点与标注互相覆盖，图上什么也读不出来 ——
-    真实反馈：「理化性质空间只展示 top 的分子，不然太乱了」。
+    设计取舍：理化性质空间只展示 top 的分子，否则图面过于杂乱。
     """
     pts = [m for m in molecules
            if isinstance(m.get("molecular_weight"), (int, float)) and isinstance(m.get("logP"), (int, float))]

@@ -1,6 +1,6 @@
 """跨轮次会话自愈回归：中断留下的悬空 tool_calls 必须补齐，否则下一轮被 OpenAI 400 拒绝。
 
-真实故障（用户报告）：
+注意：
 
     400 - An assistant message with 'tool_calls' must be followed by tool messages
           responding to each 'tool_call_id'. (insufficient tool messages …)

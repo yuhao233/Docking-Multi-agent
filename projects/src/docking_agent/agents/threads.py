@@ -1,6 +1,6 @@
 """对话线程（checkpointer state）自愈：把**非法的工具调用序列**修成模型端能接受的形态。
 
-## 真实故障（用户报的 400）
+## 注意：曾出现 HTTP 400
 
     400 - An assistant message with 'tool_calls' must be followed by tool messages
           responding to each 'tool_call_id'. (insufficient tool messages …)
@@ -22,7 +22,7 @@
 `tool_calls`，并在正文追加一句事实说明（「上一轮有工具调用被中断、没有结果，如仍需要请重新调用」）；
 孤儿回执直接 `RemoveMessage` 掉。
 
-为什么**不是**「在 AIMessage 正后方插入一条占位 ToolMessage」——第一版就是这么写的，结果踩坑：
+为什么**不是**「在 AIMessage 正后方插入一条占位 ToolMessage」——第一版就是这么写的，结果出错：
 `add_messages` 只把**新 id** 追加到列表**末尾**（同 id 才原地替换），所以占位回执落到了最新一条
 人类消息**之后**，序列依旧非法（实测模型调用拿到的顺序是
 `[Human, AI(tool_calls), Human, ToolMessage]`）。改写 AIMessage 是原地生效的，顺序天然合法。
@@ -167,7 +167,7 @@ def repaired_messages(messages: List[Any]) -> "tuple[List[Any], Dict[str, int]]"
 class ToolCallPairingMiddleware(AgentMiddleware):
     """模型调用前的最后一道保险：**任何**进入模型的 messages 都必须是合法的工具调用序列。
 
-    为什么光有 `repair_thread_state()` 不够（真实故障，用户报的 400）：
+    为什么光有 `repair_thread_state()` 不够（已知故障：曾出现 HTTP 400）：
     那只在**每轮开始前**修**协调 Agent** 的 thread；而 4 个子 Agent 用的是**固定角色线程**
     （`dispatch.py` 里 `thread_id="property"/"pocket"/"docking"/"binding"`）+ 各自的
     `InMemorySaver`。一次取消、一次限额或一次工具异常，都会把「AI(tool_calls) 而没有回执」
@@ -177,7 +177,7 @@ class ToolCallPairingMiddleware(AgentMiddleware):
     实现选 `wrap_model_call`（**包裹模型调用**）而不是 `before_model`（**图里的一个节点**）：
     后者会为每次模型调用多消耗一个 super-step —— 协调 Agent 的 `recursion_limit` 是 60，
     子 Agent 更是用默认值，多出来的步数会实打实地把长任务顶到
-    `GRAPH_RECURSION_LIMIT`（真实故障）。包裹式钩子不改变图结构，只改这一次请求的消息。
+    `GRAPH_RECURSION_LIMIT`（已知故障）。包裹式钩子不改变图结构，只改这一次请求的消息。
     """
 
     name = "ToolCallPairingMiddleware"

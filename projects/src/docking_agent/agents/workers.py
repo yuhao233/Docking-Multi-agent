@@ -91,7 +91,7 @@ def _make_agent(llm, sp, tools, mem, name: str = "worker", structured: bool = Tr
     from docking_agent.agents.capabilities import structured_output_decision  # noqa: PLC0415
 
     # 供应商能力记忆：已知该模型不支持强制 tool_choice 时**直接不挂** ToolStrategy，
-    # 不再每次运行先撞一次 400（真实问题：pocket/property/docking 每轮都刷降级日志）。
+    # 不再每次运行先撞一次 400（注意：pocket/property/docking 每轮都刷降级日志）。
     decision = structured_output_decision(name or "") if model_cls is not None else "text"
     if model_cls is not None and decision == "tool":
         from langchain.agents.structured_output import ToolStrategy  # 延迟导入，构建期开销小
@@ -255,7 +255,7 @@ def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
     call_thread = f"{thread_id}-{id(agent)}-{uuid.uuid4().hex[:8]}"
     payload = {"messages": [HumanMessage(content=content)]}
     # **必须显式给 recursion_limit**：不给就是 LangGraph 的默认值（25），子 Agent 多调几次工具
-    # 就会抛 `GRAPH_RECURSION_LIMIT`（真实故障）。与协调 Agent 用同一个环境变量，便于统一调。
+    # 就会抛 `GRAPH_RECURSION_LIMIT`（已知故障）。与协调 Agent 用同一个环境变量，便于统一调。
     config = {"configurable": {"thread_id": call_thread},
               "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT)}
     # 该角色的结构化输出此前已被供应商拒绝过 → 直接用文本契约图，不再重复付一次 400 的代价

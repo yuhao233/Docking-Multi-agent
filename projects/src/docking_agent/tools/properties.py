@@ -157,7 +157,7 @@ def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "
             src = m or {}
             name = str(src.get("id") or src.get("name") or "").strip()
             # 来源文件的附加信息（SDF 的 ID/CAS/自定义字段）必须原样带走：用户要"输出带上 ID 号"，
-            # 这些字段只存在于输入记录里，重建字典时丢掉就再也找不回来了（真实缺陷 2026-09-24）。
+            # 这些字段只存在于输入记录里，重建字典时丢掉就再也找不回来了（已知缺陷）。
             extra = {k: src[k] for k in ("id", "cas", "fields", "source_file", "source_index")
                      if src.get(k) not in (None, "", {})}
             molecules.append({**extra, "id": name or canonical,
@@ -191,7 +191,7 @@ def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "
 def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
     """把任意输入收敛为分子列表（JSON / 自由文本 / 文件路径 / 空 → 共享黑板）。
 
-    真实缺陷：属性评估子 Agent 曾把非 JSON 文本传给 `normalize_molecule_library`，
+    注意：属性评估子 Agent 曾把非 JSON 文本传给 `normalize_molecule_library`，
     触发 `json.decoder.JSONDecodeError` 并把「分子库规范化失败」写进日志。
     这里统一交给归一化层：能解析就解析，留空就用黑板，绝不因脏输入中断流程。
     """
@@ -234,7 +234,7 @@ def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
         return [{"name": (m or {}).get("name") or (m or {}).get("id") or "",
                  "smiles": (m or {}).get("smiles") or ""} for m in (parsed or [])]
     # 黑板为空时，退到**本次运行请求里带的分子库文件**（与 molecular_docking 同一兜底口径）：
-    # 真实缺陷：协调 Agent 可以直接把文件交给 run_docking 而跳过 import，此时黑板一直是空的，
+    # 注意：协调 Agent 可以直接把文件交给 run_docking 而跳过 import，此时黑板一直是空的，
     # 属性评估就会拿到 0 个分子并返回 status=ok（静默降级）。
     run = active_run(runtime)
     request_file = str(((getattr(run, "data", None) or {}).get("request") or {}).get("molecule_file") or "")

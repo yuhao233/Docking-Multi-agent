@@ -113,7 +113,7 @@ def test_mancozeb_choices_are_structured_and_parse_to_one_molecule(monkeypatch) 
 
 
 def test_mixture_tool_payload_hides_option_details_from_model(monkeypatch) -> None:
-    """真实反馈回归：同一批选项不能既进界面按钮、又被主管 Agent 抄成正文表格。
+    """反馈回归：同一批选项不能既进界面按钮、又被主管 Agent 抄成正文表格。
 
     工具的**模型侧**返回只给「数量 + 原因 + 不要复述」的指令；选项明细只走
     `run.data["choices"]` → SSE → 前端按钮。

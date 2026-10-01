@@ -1,4 +1,4 @@
-"""会话记忆与运行上下文的直接覆盖（审计指出这几处原先零直接测试）。
+"""会话记忆与运行上下文的直接覆盖（这几处原先零直接测试）。
 
 1. `coordinator._windowed_messages` / `MAX_MESSAGES`：滑动窗口行为与顺序；
 2. `runtime/context.py`：`new_context` / `request_context` 的 ContextVar 语义（含异常复位）；
@@ -37,7 +37,7 @@ def test_windowed_messages_appends_below_cap() -> None:
 
 
 def test_windowed_messages_never_splits_tool_call_pairs() -> None:
-    """回归（真实缺陷）：按条数硬切会把 AI(tool_calls)+ToolMessage 截断，留下悬空 ToolMessage，
+    """回归（已知缺陷）：按条数硬切会把 AI(tool_calls)+ToolMessage 截断，留下悬空 ToolMessage，
     OpenAI 兼容端点直接 400。裁剪必须从人类消息开始，配对完整。"""
     msgs: List[Any] = [HumanMessage(content="sys-like", id="h0")]
     for i in range(6):

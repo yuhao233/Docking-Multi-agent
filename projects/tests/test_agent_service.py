@@ -108,7 +108,7 @@ def test_map_legacy_event_covers_standard_frames() -> None:
 
 
 def test_wait_payload_never_clobbers_business_run_id() -> None:
-    """真实缺陷回归：`{"run_id": platform_id, **values}` 会把业务 run id 覆盖掉。"""
+    """缺陷回归：`{"run_id": platform_id, **values}` 会把业务 run id 覆盖掉。"""
     values = {"run_id": "20260918-120000-0001", "summary": {"status": "ok"}}
     out = AS._wait_payload(values, "run_abc", "tid-1", {"business_run_id": "20260918-120000-0001"})
     assert out["run_id"] == "20260918-120000-0001", "values 里的业务 run id 必须保留"

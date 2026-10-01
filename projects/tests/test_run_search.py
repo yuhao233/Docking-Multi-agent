@@ -134,7 +134,7 @@ def test_api_runs_search_and_backward_compat(populated: Path) -> None:
 def test_reconcile_marks_stale_running_runs_as_interrupted(populated: Path) -> None:
     """残留的 running 只能来自进程被杀/崩溃 —— 收尾为 interrupted 并留下说明。
 
-    真实缺陷：用户看到历史里某次运行一直「运行中」、`finished_at` 为空，实际早已中断。
+    注意：用户看到历史里某次运行一直「运行中」、`finished_at` 为空，实际早已中断。
     """
     from docking_agent.runs import get_run_store
 
@@ -274,7 +274,7 @@ def test_ligand_smiles_recovered_from_request_file(tmp_path: Path,
                                                    monkeypatch: pytest.MonkeyPatch) -> None:
     """对接用的是「已去配体」的准备结构时，要能从请求里的原始受体文件恢复配体 SMILES。
 
-    真实案例（run 20260921-191324-9245，7YHP 的共晶配体 5CM）：只读准备结构会解不出，
+    真实案例（7YHP 的共晶配体 5CM）：只读准备结构会解不出，
     于是系统放弃了询问；现在按「准备结构 → 请求原始文件 → 在线解析缓存」依次尝试。
     """
     from docking_agent.core.pockets import cocrystal_ligand
@@ -324,7 +324,7 @@ def test_missing_ligand_message_lists_tried_paths(tmp_path: Path,
 
 def test_cocrystal_offer_is_asked_at_most_once_per_run(tmp_path: Path,
                                                        monkeypatch: pytest.MonkeyPatch) -> None:
-    """一次运行内最多问一次（真实缺陷：run_docking 被重试时用户被重复打扰）。
+    """一次运行内最多问一次（注意：run_docking 被重试时用户被重复打扰）。
 
     现场：前两次调用时受体结构还没准备好 → 解不出 SMILES（日志写「因此未询问」），
     第三次却能解出并发布选项，用户先看到「不问」再被问一次。
@@ -360,7 +360,7 @@ def test_no_late_cocrystal_ask_once_docking_started(tmp_path: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     """对接前判定一次：第一次解不出就**不再**在后期突然发问。
 
-    真实现场（run 20260922-140903-6542）：前两次调用写「因此未询问」，第三次（对接已跑完、
+    真实现场：前两次调用写「因此未询问」，第三次（对接已跑完、
     报告将生成时）却发布选项，用户被迟到的提问打扰，且与前面的「不问」自相矛盾。
     """
     from docking_agent.tools import choices as CH

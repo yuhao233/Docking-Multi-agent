@@ -1,6 +1,6 @@
 """坐标字段的入参类型：数组为主，**文档承诺的字符串形态必须在进函数体前就被接受**。
 
-真实缺陷（2026-09-23）：`coord_description()` 与工具 docstring 都写着「也接受 "22,22,22"」，
+注意：`coord_description` 与工具 docstring 都写着「也接受 "22,22,22"」，
 但字段类型是 `List[float]` —— 字符串在 pydantic 校验阶段就被拒，函数体里的 `floats_to_text()`
 永远没机会处理。表现：仓库自带的 `scripts/verify_docking.py`（按文档传
 `site_center="31.5,13.74,24.36"`）直接抛 `ValidationError`；模型照描述传字符串同样会被拒。

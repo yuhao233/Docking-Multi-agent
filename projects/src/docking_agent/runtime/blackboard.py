@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 def canonical_key(smiles: str) -> str:
     """分子身份键：SMILES → 规范形式（**同一个物质的任何写法都必须落成同一个键**）。
 
-    真实缺陷（2026-09-22 用户实测）：一次运行只给了 1 个分子，却对接出 2 行 ——
+    注意：一次运行只给了 1 个分子，却对接出 2 行 ——
     `add_molecules` 用**规范** SMILES 做键，而 `set_properties` / `set_docking` / `set_binding`
     用**原始** SMILES 做键。同一物质（PubChem 原始写法 `S=C([S-])NCC…` 与用户点选的
     `C(CNC(=S)[S-])…`，canonical/InChIKey 完全相同）因此各占一个键，黑板里出现两个「分子」，

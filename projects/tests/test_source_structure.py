@@ -30,7 +30,7 @@ def _py_files() -> List[Path]:
 
 
 def test_no_duplicate_top_level_definitions() -> None:
-    """重复的顶层定义 = 后一份静默遮蔽前一份（真实缺陷：dock_library 出现两次）。"""
+    """重复的顶层定义 = 后一份静默遮蔽前一份（注意：dock_library 出现两次）。"""
     offenders: Dict[str, List[str]] = {}
     for path in _py_files():
         names = _top_level_names(path)

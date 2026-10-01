@@ -293,7 +293,7 @@ def test_chat_collapsed_uses_system_defaults(client):
 
 
 def test_chat_advanced_opens_but_untouched_sends_no_params() -> None:
-    """用户反馈：只是**打开过**「高级设置」再关掉，默认值却被当成参数下发。
+    """注意：只是**打开过**「高级设置」再关掉，默认值却被当成参数下发。
 
     语义（v0.26）：只下发**用户真正改动过**的字段；未改动 = 留空/自动 ——
     搜索强度自动规划、位点盒由口袋分析自动确定、受体由指令或系统默认决定、不做阳性对照。
@@ -322,7 +322,7 @@ def test_chat_advanced_opens_but_untouched_sends_no_params() -> None:
 def test_run_delete_endpoint_removes_the_record(client) -> None:
     """`DELETE /api/runs/{id}`：门禁脚本用它清理自己创建的运行记录。
 
-    真实困扰（2026-09-23）：ui_e2e / browser_check 每跑一次会真实创建十几条运行记录，
+    注意：ui_e2e / browser_check 每跑一次会真实创建十几条运行记录，
     长期把用户的历史列表挤满（当时 5534 条里绝大多数是夹具运行）。删除接口让门禁能自清理。
     """
     from docking_agent.runs import get_run_store
