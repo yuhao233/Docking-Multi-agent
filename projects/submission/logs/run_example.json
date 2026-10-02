@@ -1,7 +1,7 @@
 {
-  "started_at": "2026-10-01T21:18:31",
-  "receptor": "/home/biolab/Tools/docking-agent/projects/submission/data/example/receptor_demo.pdb",
-  "ligands": "/home/biolab/Tools/docking-agent/projects/submission/data/example/ligands_demo.smi",
+  "started_at": "2026-10-02T12:32:13",
+  "receptor": "data/example/receptor_demo.pdb",
+  "ligands": "data/example/ligands_demo.smi",
   "molecules_total": 6,
   "molecules_scored": 6,
   "molecules_failed": 0,
@@ -23,10 +23,10 @@
   "site_source": "命令行给出的坐标",
   "python": "3.12.3",
   "platform": "Linux-6.17.0-19-generic-x86_64-with-glibc2.39",
-  "elapsed_sec": 4.3,
+  "elapsed_sec": 2.8,
   "notes": [
     "用户上传受体(pdb)已现场准备：receptor_demo.pdb",
-    "受体 receptor_demo 质子化：受体按目标 pH 7.4 准备（pdb2pqr + PROPKA + meeko（propka3.0））；与配体同一 pH；HIS 状态 HID×3、HIE×2；氢处理：氢键网络优化；在 pH 7.4 下仍质子化的可滴定残基：CYS 8/8、LYS 22/22、TYR 12/12；剔除主链不全的残基 GLY246H、ASP1I、GLN11I",
+    "受体 receptor_demo 质子化：受体按目标 pH 7.4 准备（pdb2pqr + PROPKA + meeko（propka3.0））；与配体同一 pH；HIS 状态 HID×3、HIE×2；氢处理：氢键网络优化；在 pH 7.4 下仍质子化的可滴定残基：CYS 8/8、LYS 22/22、TYR 12/12；剔除主链不全的残基 GLY246H、ASP1I、GLN11I；（复用已准备的受体）",
     "质子化态策略=ph（目标 pH 7.4：先中和到中性形式，再按内置 pKa 规则表重新分配质子化态；逐分子记录命中规则与净电荷前/后。这是规则近似，不是 pKa 预测）",
     "受体 receptor_demo 丢弃了非水杂原子：MIT×35（水 50 个）；若这些金属/辅因子对结合重要，可用 keep_hetatm 指定残基名保留后重跑",
     "配体 MOL1：质子化态已按运行级策略调整：目标 pH 7.4：净电荷 +0 → +1；引擎 dimorphite-dl 2.0.2；对接用的是 NC(=[NH2+])c1ccccc1，原始输入 N=C(N)c1ccccc1 已记录。若目标 pH 下就是以这种形式存在，这就是期望结果；若要完全保持输入形式，请把「质子化态策略」改为 keep。",
@@ -37,5 +37,5 @@
     "……另有 2 条同类提示，详见各分子明细字段",
     "对接并发：4 进程 × 8 线程（6 个分子；大分子优先调度以减少拖尾）"
   ],
-  "output": "submission/results/results_example.csv"
+  "output": "results/results_example.csv"
 }

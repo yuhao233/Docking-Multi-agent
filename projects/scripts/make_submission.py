@@ -20,6 +20,7 @@ Notebook、结果与日志示例、网页端说明）+ 仓库源码 `src/docking
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import zipfile
@@ -48,8 +49,24 @@ def _copy_runtime_dir(src: Path, dst: Path) -> int:
         if path.is_file():
             if path.name == ".env" or path.suffix in (".pyc", ".pyo"):
                 continue
+            if path.name == "local_settings.json":
+                continue          # 本机设置含 API 密钥，只用下面的脱敏模板
             _copy_file(path, dst / rel)
             count += 1
+    if (src / "local_settings.json").is_file():
+        # 脱敏模板：保留非敏感默认值（如对接引擎偏好），**清空密钥**
+        try:
+            data = json.loads((src / "local_settings.json").read_text(encoding="utf-8"))
+            if isinstance(data.get("llm"), dict):
+                data["llm"].pop("api_key", None)
+            # 对接引擎回落为 auto（内置 Vina）：本机若登记过外部引擎，提交包在新环境会直接失败
+            if isinstance(data.get("docking"), dict):
+                data["docking"]["engine"] = "auto"
+            (dst / "local_settings.example.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            count += 1
+        except Exception:  # noqa: BLE001 - 模板生成失败不影响打包
+            pass
     return count
 
 
@@ -96,7 +113,8 @@ def build(target: Path, *, with_zip: bool = True) -> Path:
                      "data/example/ligands_demo.smi", "models/MODEL_CARD.md",
                      "notebooks/quickstart.ipynb", "results/results_example.csv",
                      "web/simple.html", "web/index.html", "web/app.js",
-                     "config/agent_llm_config.json", ".env.example",
+                     "config/agent_llm_config.json", "config/local_settings.example.json",
+                     ".env.example",
                      "run_web.sh", "WEB.md"):
         if not (target / required).is_file():
             raise SystemExit(f"提交包缺少必备文件：{required}")

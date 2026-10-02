@@ -191,8 +191,8 @@ def main(argv=None) -> int:
     elapsed = time.time() - started
     summary = {
         "started_at": datetime.now().isoformat(timespec="seconds"),
-        "receptor": os.path.abspath(args.receptor),
-        "ligands": os.path.abspath(args.ligands),
+        "receptor": str(args.receptor),      # 按调用时给出的路径记录（不写宿主机绝对路径）
+        "ligands": str(args.ligands),
         "molecules_total": len(molecules),
         "molecules_scored": sum(1 for r in rows if r.get("affinity_kcal_mol") is not None),
         "molecules_failed": sum(1 for r in rows if r.get("error")),
