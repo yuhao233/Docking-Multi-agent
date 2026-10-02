@@ -65,8 +65,8 @@ def _copy_runtime_dir(src: Path, dst: Path) -> int:
             (dst / "local_settings.example.json").write_text(
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             count += 1
-        except Exception:  # noqa: BLE001 - 模板生成失败不影响打包
-            pass
+        except Exception as exc:  # noqa: BLE001 - 模板生成失败不影响打包
+            print(f"提示：本机设置脱敏模板未生成（{exc}），提交包内不含该模板")
     return count
 
 
