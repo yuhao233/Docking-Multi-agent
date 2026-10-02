@@ -62,9 +62,12 @@ def _copy_runtime_dir(src: Path, dst: Path) -> int:
             # 对接引擎回落为 auto（内置 Vina）：本机若登记过外部引擎，提交包在新环境会直接失败
             if isinstance(data.get("docking"), dict):
                 data["docking"]["engine"] = "auto"
-            (dst / "local_settings.example.json").write_text(
-                json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            count += 1
+            text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+            # 两个文件：`local_settings.json` 会被启动时自动加载（开箱即用）；
+            # `.example` 供使用者对照字段含义后改成自己的配置。
+            (dst / "local_settings.json").write_text(text, encoding="utf-8")
+            (dst / "local_settings.example.json").write_text(text, encoding="utf-8")
+            count += 2
         except Exception as exc:  # noqa: BLE001 - 模板生成失败不影响打包
             print(f"提示：本机设置脱敏模板未生成（{exc}），提交包内不含该模板")
     return count
