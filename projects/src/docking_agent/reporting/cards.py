@@ -1,7 +1,7 @@
 """推荐分子的「结构 + 数据」卡片图（报告 3.1 节逐个分子用）。
 
-拆成独立模块的原因：报告图表模块已经接近 700 行的本地门禁上限，而卡片渲染
-（左 RDKit 2D 结构 + 右 matplotlib 指标表）与其它图表没有共享状态，独立更清晰。
+卡片渲染把 RDKit 2D 结构与 matplotlib 指标表拼成一张图，与其它图表没有共享状态；
+报告图表模块接近 700 行的本地门禁上限，因此该渲染独立成模块。
 """
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# 推荐分子「结构 + 数据」卡片：报告里让 2D 结构直接挨着它的指标表
+# 推荐分子「结构 + 数据」卡片：报告里 2D 结构与对应指标表左右并排
 # --------------------------------------------------------------------------- #
 def _card_metrics(row: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """卡片右侧的指标（中文标签, 值）——与第 3.1 节排行表同口径。"""
+    """卡片右侧的指标（中文标签, 值），与第 3.1 节排行表口径一致。"""
     def num(key: str, digits: int = 2) -> str:
         value = row.get(key)
         return f"{value:.{digits}f}" if isinstance(value, (int, float)) else "—"
@@ -46,11 +46,11 @@ def _card_metrics(row: Dict[str, Any]) -> List[Tuple[str, str]]:
 
 
 def recommendation_card(row: Dict[str, Any], index: int = 1) -> Optional[bytes]:
-    """单个推荐分子的卡片图：**左边 2D 结构、右边指标表**。
+    """单个推荐分子的卡片图：左侧 2D 结构，右侧指标表。
 
-    为什么做成一张图而不是「markdown 表格 + 图片」两段：markdown/PDF 都没有
-    「把图放进表格单元格」的可靠画法，一行一卡片的图片在网页、PDF 与离线包里
-    长得完全一样，而且用户要的正是「结构挨着数据」。
+    采用单张图的实现：markdown 与 PDF 缺少「把图放进表格单元格」的可靠画法，
+    一行一卡片的图片在网页、PDF 与离线包里显示一致，
+    结构紧邻数据的排布也符合调用方的阅读预期。
     """
     import io
 

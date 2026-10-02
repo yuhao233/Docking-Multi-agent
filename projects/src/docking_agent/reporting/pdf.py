@@ -1,18 +1,18 @@
 """PDF 版固定报告：把 `report.md` 的固定章节渲染成分页 PDF。
 
-为什么用 matplotlib 而不是新增 PDF 库：matplotlib 已在依赖里，
-`reporting/charts.py::_configure_fonts()` 已经挑选好系统 CJK 字体，
-`PdfPages` 又能把已有的图表 PNG 原样内嵌 —— 因此零新增运行时依赖。
+渲染选用 matplotlib 而不引入 PDF 库：matplotlib 已在依赖里，
+`reporting/charts.py::_configure_fonts()` 已完成系统 CJK 字体的挑选，
+`PdfPages` 又能把已有的图表 PNG 原样内嵌，因此运行时依赖没有增加。
 
 排版约定（与 Markdown 报告同一套骨架）：
 
 * A4 纵向、统一页边距；每页页脚为「run id · 页码 · 生成时间」；
-* 章节标题与其后首块内容保持同页（避免标题孤立在页底）；
-* 表格用等宽文本 + 显示宽度（CJK 记 2 列）对齐；列过多时自动改为**纵向记录**
+* 章节标题与其后首块内容保持同页，避免标题孤立在页底；
+* 表格用等宽文本与显示宽度（CJK 记 2 列）对齐；列过多时自动改为纵向记录
   （每行分子一段「字段: 取值」列表），避免把 11 列硬挤进 6.8 英寸；
 * 跨页表格自动重复表头；
 * Markdown 里的图片以相对路径内嵌，PNG 由 `chart_paths` 解析为本地文件后真正嵌入页面；
-* 图题/表题来自 Markdown 的编号题注（`**图 N …**` / `**表 N …**`），PDF 不再重复生成。
+* 图题与表题来自 Markdown 的编号题注（`图 N …` / `表 N …` 形式），PDF 不再重复生成。
 """
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 # 复用图表模块挑好的 CJK 字体（中文能否显示，取决于这里是否真正加载了中文字体）
 CJK_FONTS = _configure_fonts()
 
-# 表格必须等宽对齐，因此优先用「等宽 CJK」字体：拉丁字符 1 列、汉字 1 个 = 2 列，
-# 这样按显示宽度补空格就能可靠对齐；找不到时退回系统的等宽字体（中文仍走 CJK 回退）。
+# 表格需要等宽对齐，因此优先用「等宽 CJK」字体：拉丁字符 1 列、汉字 1 个 = 2 列，
+# 这样按显示宽度补空格即可对齐；找不到时退回系统的等宽字体（中文仍走 CJK 回退）。
 _MONO_PREFERRED = [
     "Noto Sans Mono CJK SC", "Noto Sans Mono CJK JP", "Noto Sans Mono CJK TC",
     "Noto Sans Mono CJK HK", "WenQuanYi Zen Hei Mono", "WenQuanYi Micro Hei Mono",
@@ -61,7 +61,7 @@ LINE_FACTOR = 1.55
 MONO_ADVANCE = 0.6  # 等宽字体 ASCII 字符宽度（em）
 TEXT_COLOR, MUTED_COLOR = "#1f2a37", "#6b7a8d"
 
-# 单个表格最多渲染的行数（不含表头）：PDF 供人阅读，完整数据仍以 CSV/JSON 产物为准
+# 单个表格最多渲染的行数（不含表头）：PDF 供人阅读，全量数据以 CSV/JSON 产物为准
 PDF_TABLE_MAX_ROWS = 24
 # 列数超过该值的表格改为纵向记录渲染（每行分子一段「字段: 取值」）
 PDF_WIDE_TABLE_COLS = 8
@@ -146,18 +146,18 @@ def _clean_inline(text: str) -> str:
     return text.replace("\u00a0", " ").strip()
 
 
-#: 列宽下限：低于这个宽度就不再压缩，改为**换行**显示（宁可表格变高，也不丢数据）
+#: 列宽下限：低于这个宽度就不再压缩，改为换行显示（宁可表格变高，也不丢数据）
 _TABLE_MIN_COL = 8
 
 
 def _format_table(rows: Sequence[Sequence[Any]], max_cols: int, *,
                   header: bool = True, min_col: int = _TABLE_MIN_COL) -> List[str]:
-    """把二维表格格式化成等宽文本行；列宽不足时**换行**而不是截断。
+    """把二维表格格式化成等宽文本行；列宽不足时换行而不是截断。
 
-    注意：表格过宽时旧实现把最宽的列一路压到 4 个字符再截断单元格，
-    于是用户通过 `customize_report(extra_columns=[...])` 要求追加的列（例如小分子 ID）
-    在 PDF 里只剩几个字符或被截掉 —— 报告看起来"没按用户要求调整"。
-    现在：列宽压缩到 `min_col` 为止，超出部分在单元格内**折行**，所有列与取值都保留。
+    表格过宽时，此前的实现把最宽的列一路压到 4 个字符再截断单元格，
+    调用方通过 `customize_report(extra_columns=[...])` 要求追加的列（例如小分子 ID）
+    在 PDF 里只剩几个字符或被截掉，报告看起来没有按调用方要求调整。
+    当前行为：列宽压缩到 `min_col` 为止，超出部分在单元格内折行，所有列与取值都保留。
 
     header=True 时首行后加一条分隔线（Markdown 表格的首行就是表头）；
     标题页的元信息表没有表头，用 header=False 避免出现悬空的分隔线。
@@ -189,7 +189,7 @@ def _format_table(rows: Sequence[Sequence[Any]], max_cols: int, *,
 # 分页写入器
 # --------------------------------------------------------------------------- #
 class _PageWriter:
-    """把「文本块 / 表格 / 图片」顺序写进 PdfPages，空间不足自动翻页并加页脚。"""
+    """把「文本块 / 表格 / 图片」顺序写进 PdfPages，空间不足时自动翻页并加页脚。"""
 
     def __init__(self, pdf: PdfPages, run_id: str, created_at: str = "") -> None:
         self._pdf = pdf
@@ -210,7 +210,7 @@ class _PageWriter:
                        family="monospace", va="bottom", ha="left")
 
     def _room(self, height: float) -> bool:
-        """确保当前页还能放下 height 英寸；放不下就翻页（返回是否翻过页）。"""
+        """确保当前页还能放下 height 英寸；放不下就翻页，返回是否翻过页。"""
         if self._y + height <= PAGE_H - MARGIN_BOTTOM:
             return False
         self._pdf.savefig(self._fig)
@@ -219,7 +219,7 @@ class _PageWriter:
         return True
 
     def reserve(self, height: float) -> None:
-        """为「标题 + 其后首块内容」预留空间，避免标题孤立在页底（章节不跨页断裂）。"""
+        """为「标题与其后首块内容」预留空间，避免标题孤立在页底（章节不跨页断裂）。"""
         self._room(height)
 
     def flush(self) -> None:
@@ -269,7 +269,7 @@ class _PageWriter:
             self._y += line_h
 
     def wide_table(self, rows: Sequence[Sequence[Any]], *, size: float = TABLE_SIZE) -> None:
-        """列过多时的纵向记录：每行分子一段「首字段 值 · 次字段 值」+ 其余字段逐行列出。"""
+        """列过多时的纵向记录：每行分子一段「首字段 值 · 次字段 值」，其余字段逐行列出。"""
         clean = [[_clean_inline(str(c if c is not None else "")) for c in row] for row in rows]
         if not clean:
             return
@@ -315,7 +315,7 @@ class _PageWriter:
 
 
 # --------------------------------------------------------------------------- #
-# Markdown → 内容块
+# Markdown 转内容块
 # --------------------------------------------------------------------------- #
 def _markdown_blocks(markdown: str) -> List[Tuple[str, Any]]:
     """把固定模板 Markdown 拆成可渲染的内容块（标题/题注/段落/表格/图片/空行）。"""
@@ -378,8 +378,8 @@ def _parse_table(lines: Sequence[str]) -> List[List[str]]:
 def _image_name(url: str) -> str:
     """把 Markdown 图片地址解析成图表产物名。
 
-    新格式是相对路径（`charts/docking_chart.png`）；同时兼容旧运行/旧模板里的
-    `/api/runs/<id>/artifacts/<name>?inline=1`，保证历史报告仍能内嵌图片。
+    新格式是相对路径（`charts/docking_chart.png`），同时兼容早期运行与模板里的
+    `/api/runs/<id>/artifacts/<name>?inline=1`，保证此前的报告仍能内嵌图片。
     """
     if "/artifacts/" in url:
         tail = url.split("/artifacts/", 1)[1]
@@ -389,9 +389,9 @@ def _image_name(url: str) -> str:
         if tail.endswith(rel) or Path(tail).name == Path(rel).name:
             return name
     # 动态生成的图（按名次命名，如 `charts/interaction_2d_01.png` / `charts/pose_3d_01.png`）
-    # 不在 CHART_FILES 里：产物名就是**去掉扩展名的文件名**，这里必须返回 stem。
-    # 早期返回 `Path(tail).name`（带 .png）→ 与产物名对不上 → PDF 里这些图被静默跳过
-    # （真实踩到：报告正文有图，PDF 只有 4 张基础图）。
+    # 不在 CHART_FILES 里：产物名就是去掉扩展名的文件名，这里返回 stem。
+    # 返回 `Path(tail).name`（带 .png）时与产物名对不上，PDF 里这些图被静默跳过
+    # （曾出现报告正文有图、PDF 只有 4 张基础图的情形）。
     return Path(tail).stem
 
 
@@ -407,7 +407,7 @@ def _subtitle(kind: str, receptor_label: str, molecule_count: int, run_id: str) 
 
 def _write_title_page(writer: _PageWriter, *, run_id: str, kind: str, receptor_label: str,
                       created_at: str, molecule_count: int) -> None:
-    """封面只放大标题/副标题/工具版本/生成时间；参数行留给正文的固定格式表。"""
+    """封面只放大标题、副标题、工具版本与生成时间，参数行留给正文的固定格式表。"""
     writer.blank(0.50)
     writer.text("分子对接筛选报告", size=TITLE_SIZE, weight="bold")
     writer.blank(0.10)
@@ -480,7 +480,7 @@ def build_report_pdf(result: Dict[str, Any], *, kind: str = "agent", run_id: str
     """把报告内容渲染成 PDF 字节。
 
     markdown 为空时按固定模板现生成，保证 PDF 与页面上的 Markdown 报告章节一致；
-    chart_paths 是「产物名 → 本地 PNG 路径」，只有真实存在的图才会被内嵌。
+    chart_paths 是「产物名对应本地 PNG 路径」的映射，只有真实存在的图才会被内嵌。
     """
     md = markdown or build_markdown_report(
         result, kind=kind, run_id=run_id, receptor_label=receptor_label,

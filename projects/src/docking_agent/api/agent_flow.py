@@ -1,7 +1,7 @@
 """Agent 编排的流式支撑：SSE 心跳、线程自愈、受理层需要的多轮上下文。
 
-这些都是「HTTP 层与 LangGraph 之间」的胶水，原先挤在 `api/app.py` 的 `create_app()` 闭包外层；
-拆到本模块后，`routers/agent.py` 与 `routers/legacy.py` 共用同一份实现。
+本模块承担 HTTP 层与 LangGraph 之间的胶水逻辑，
+`routers/agent.py` 与 `routers/legacy.py` 共用同一份实现。
 """
 from __future__ import annotations
 
@@ -103,24 +103,24 @@ async def _final_state(graph: Any, config: Dict[str, Any]) -> tuple[str, List[An
         return "", []
 
 
-# 单条消息类型 → 受理层用的角色（tool/system 不参与多轮上下文）
+# 单条消息类型到受理层角色的映射（tool/system 不参与多轮上下文）
 _MESSAGE_ROLES = {"HumanMessage": "user", "AIMessage": "assistant",
                   "AIMessageChunk": "assistant"}
 
 
 async def _heal_thread(graph: Any, config: Dict[str, Any], run: Any) -> int:
-    """续聊前自愈线程状态：补齐上一轮中断留下的未回填工具调用（返回补了几条）。
+    """续聊前自愈线程状态：补齐上一轮中断留下的未回填工具调用（返回补入条数）。
 
-    为什么必须做：模型已经发出 `tool_calls` 而工具被中止（用户取消/运行失败）时，
-    checkpointer 里会留下悬空调用；下一轮把这段历史发给 OpenAI 会直接 400
+    模型已发出 `tool_calls` 而工具被中止（调用方取消或运行失败）时，
+    checkpointer 里会留下悬空调用；下一轮把这段历史发给 OpenAI 会直接返回 400
     （`An assistant message with 'tool_calls' must be followed by tool messages…`），
-    整段对话无法继续。这里补的是**占位回执（事实说明：该调用被中断、没有结果）**，不是编造数据。
+    整段对话无法继续。此处补入的是占位回执（记录该调用被中断、没有结果），不编造工具返回数据。
     """
     from docking_agent.agents.threads import repair_thread_state
 
     try:
         healed = await repair_thread_state(graph, config)
-    except Exception as e:  # noqa: BLE001 - 自愈失败不该让运行起不来
+    except Exception as e:  # noqa: BLE001 - 自愈失败不影响运行启动
         logger.warning("线程状态自愈失败（继续运行）：%s", e)
         return 0
     if healed.get("repaired"):
@@ -133,8 +133,8 @@ async def _recent_prior_turns(graph: Any, config: Dict[str, Any],
                               limit: int = 8) -> List[Dict[str, str]]:
     """从 checkpointer 读取该 thread 的历史消息，取最近 limit 条 human/ai（忽略 tool/system）。
 
-    用途仅限「让受理层看见上一轮」：用户回答追问时继承上一轮的分子/受体，不再重复判 ask。
-    真正的上下文延续由 checkpointer + thread_id 完成，本函数**不修改**任何状态。
+    用途仅限供受理层查看上一轮：调用方回答追问时继承上一轮的分子与受体，不再重复判 ask。
+    上下文延续由 checkpointer 与 thread_id 完成，本函数不修改任何状态。
     """
     snapshot = await graph.aget_state(config)
     values = getattr(snapshot, "values", None) or {}

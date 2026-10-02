@@ -138,7 +138,7 @@ def test_agent_run_and_artifacts(client, monkeypatch) -> None:
     }
     run_id, text = _run_agent_stream(client, payload, monkeypatch)
     events = [e for e in _sse_events(text) if isinstance(e, dict)]
-    # 标准 Agent Protocol 帧：metadata（平台 run id）→ custom/updates/... → values → end
+    # 标准 Agent Protocol 帧的顺序：metadata（平台 run id）、custom/updates 等、values、end
     assert any(e.get("graph_id") == "coordinator" for e in events), "缺少 metadata 帧"
     custom = [e for e in events if e.get("type")]
     assert custom and custom[0].get("type") == "start"
@@ -186,7 +186,7 @@ def test_agent_run_and_artifacts(client, monkeypatch) -> None:
     p = client.get(f"/api/runs/{run_id}/poses.zip")
     assert p.status_code == 200 and p.content[:2] == b"PK"
 
-    # ---- 历史列表包含本次运行 ----
+    # ---- 运行列表包含本次运行 ----
     runs = client.get("/api/runs", params={"limit": 50}).json()["runs"]
     assert run_id in {x["run_id"] for x in runs}
 
@@ -207,7 +207,7 @@ def test_agent_message_modes_avoid_conflict():
     collapsed = compose_agent_message(AgentRequest(mode="chat", advanced=False, **base))
     assert collapsed.startswith(base["message"])
     assert "系统默认" in collapsed and "以指令为准" in collapsed
-    # v0.26：留空 = 自动 —— 折叠高级设置时搜索强度按库/盒自动规划，不渲染成"固定 16"
+    # v0.26：留空即自动；折叠高级设置时搜索强度按库与盒体积自动规划，不渲染成"固定 16"
     assert "自动（按库柔性/盒体积规划" in collapsed, collapsed[:400]
     assert "已知结合位点：**未指定坐标**" in collapsed, "位点盒留空 = 由口袋分析自动定盒"
     assert "A:CCO" not in collapsed, "折叠时不应使用高级设置里的分子库（那是系统默认场景）"
@@ -293,11 +293,11 @@ def test_chat_collapsed_uses_system_defaults(client):
 
 
 def test_chat_advanced_opens_but_untouched_sends_no_params() -> None:
-    """注意：只是**打开过**「高级设置」再关掉，默认值却被当成参数下发。
+    """回归：只打开过「高级设置」再关掉时，默认值不应被当成参数下发。
 
-    语义（v0.26）：只下发**用户真正改动过**的字段；未改动 = 留空/自动 ——
+    语义（v0.26）：只下发使用者真正改动过的字段；未改动即留空或自动，
     搜索强度自动规划、位点盒由口袋分析自动确定、受体由指令或系统默认决定、不做阳性对照。
-    因此 `advanced=True` + 空表单 必须与"纯对话"等价（除附件外不带任何参数）。
+    因此 `advanced=True` 加空表单与纯对话等价（除附件外不带任何参数）。
     """
     from docking_agent.api.schemas import AgentRequest
     from docking_agent.intake import build_task_spec, compose_agent_message
@@ -322,8 +322,8 @@ def test_chat_advanced_opens_but_untouched_sends_no_params() -> None:
 def test_run_delete_endpoint_removes_the_record(client) -> None:
     """`DELETE /api/runs/{id}`：门禁脚本用它清理自己创建的运行记录。
 
-    注意：ui_e2e / browser_check 每跑一次会真实创建十几条运行记录，
-    长期把用户的历史列表挤满（当时 5534 条里绝大多数是夹具运行）。删除接口让门禁能自清理。
+    ui_e2e / browser_check 每跑一次会创建十几条运行记录，
+    长期占据运行列表（5534 条运行记录中绝大多数为夹具运行）。删除接口供门禁自清理。
     """
     from docking_agent.runs import get_run_store
 

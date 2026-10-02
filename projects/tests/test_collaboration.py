@@ -36,7 +36,7 @@ def test_blackboard_is_thread_safe_and_dedupes():
 
 
 def test_blackboard_enables_lateral_collaboration():
-    """属性 Agent 写入 → 对接 Agent 读取 → 结合模式 Agent 交叉核验（横向协作链路）。"""
+    """属性 Agent 写入，对接 Agent 读取，结合模式 Agent 交叉核验（横向协作链路）。"""
     from docking_agent.runtime.blackboard import Blackboard, board_molecules_json, current_blackboard
 
     board = Blackboard("R2")
@@ -64,7 +64,7 @@ def test_blackboard_enables_lateral_collaboration():
 
 
 def test_cross_check_flags_inconsistencies():
-    """check_binding_consistency 必须识别「强对接但骨架不像」「骨架像但对接弱」。"""
+    """check_binding_consistency 识别「强对接但骨架不像」与「骨架像但对接弱」两种形态。"""
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.tools.binding import check_binding_consistency
 
@@ -112,7 +112,7 @@ def test_cross_check_without_blackboard_reports_clearly():
 
 
 # --------------------------------------------------------------------------- #
-# 分发边界校验 + 重试（P0.2）
+# 分发边界校验与重试（P0.2）
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("raw,ok", [
     ('{"status":"ok","assessment":[]}', True),
@@ -128,7 +128,7 @@ def test_json_extraction(raw, ok):
 
 
 def test_dispatch_retries_once_then_succeeds(monkeypatch):
-    """首次返回垃圾 → 自动带纠正提示重试一次 → 拿到合法 JSON。"""
+    """首次返回不合规内容时带纠正提示自动重试一次，第二次取到合法 JSON。"""
     import docking_agent.agents.dispatch as dispatch
 
     replies = iter(["我不是 JSON", '{"status":"ok","assessment":[{"smiles":"CCO"}]}'])
@@ -145,7 +145,7 @@ def test_dispatch_retries_once_then_succeeds(monkeypatch):
 
 
 def test_dispatch_reports_invalid_output_after_retry(monkeypatch):
-    """两次都失败 → 返回显式的 agent_output_invalid（而不是把垃圾丢给协调 Agent）。"""
+    """两次都失败时返回显式的 agent_output_invalid，不把非法内容交给协调 Agent。"""
     import docking_agent.agents.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "invoke_worker", lambda *a, **k: "依然不是 JSON")
@@ -155,7 +155,7 @@ def test_dispatch_reports_invalid_output_after_retry(monkeypatch):
 
 
 def test_sub_agents_build_independent_llm_instances(monkeypatch):
-    """3 个子 Agent 必须分别构建自己的 LLM 实例，并使用各自的 checkpointer。"""
+    """3 个子 Agent 分别构建自己的 LLM 实例，并使用各自的 checkpointer。"""
     from docking_agent.agents import workers as w
 
     built = []
@@ -171,8 +171,8 @@ def test_sub_agents_build_independent_llm_instances(monkeypatch):
         return llm
 
     monkeypatch.setattr(w, "build_chat_llm", _fake_build)
-    # `_make_agent` 现在带 name= （子图命名规范，P0）：假实现必须接受同名参数
-    # `_make_agent` 现在带 name= （子图命名）与 structured=（结构化输出开关）
+    # 桩实现需接受 `_make_agent` 的 name=（子图命名，P0）与 structured= （结构化输出开关）
+    # 这两个入参：`_make_agent` 通过关键字传入二者，桩实现不能省略。
     monkeypatch.setattr(w, "_make_agent",
                         lambda llm, sp, tools, mem, name="", structured=True: {"llm": llm, "mem": mem})
     w.reset_workers()
@@ -200,7 +200,7 @@ def test_sub_agents_build_independent_llm_instances(monkeypatch):
 
 
 def test_sub_agents_use_role_specific_models(monkeypatch):
-    """按角色配置不同模型时，各子 Agent 真的拿到各自的模型。"""
+    """按角色配置不同模型时，各子 Agent 拿到各自的模型。"""
     from docking_agent.agents import workers as w
 
     monkeypatch.setenv("LLM_API_KEY", "test-key")
@@ -224,7 +224,7 @@ def test_sub_agents_use_role_specific_models(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# store 黑板视图的缓存生命周期（审计 §2.1：`_store_boards` 是真实的进程内泄漏）
+# store 黑板视图的缓存生命周期（`_store_boards` 为进程内缓存，会持续占用内存）
 # --------------------------------------------------------------------------- #
 def test_store_blackboard_view_is_reused_and_forgettable() -> None:
     """同一 (store, run) 复用同一个视图；运行结束可显式丢弃且幂等。"""

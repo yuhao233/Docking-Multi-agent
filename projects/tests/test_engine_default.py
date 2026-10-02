@@ -1,9 +1,9 @@
-"""默认对接引擎：设置页的选择必须真的生效，且「未指定」与「显式 auto」不能混为一谈。
+"""默认对接引擎：设置页的选择应当生效，且「未指定」与「显式 auto」不能混为一谈。
 
-背景（已知缺口）： 加入 GPU 外部引擎后，设置页新增「对接引擎（默认）」。
-如果工具参数继续用 `"auto"` 当默认值，用户把默认改成 `external`（或 `autodock`）也不会生效 ——
-模型不传这个参数时永远是 `auto`。这与 `exhaustiveness` 曾经踩过的坑同型：
-**工具层硬编码默认值会静默盖掉用户在设置页做的选择**。
+背景（已知缺口）：加入 GPU 外部引擎后，设置页新增「对接引擎（默认）」。
+工具参数若继续用 `"auto"` 当默认值，调用方把默认改成 `external`（或 `autodock`）不会生效，
+模型不传该参数时始终得到 `auto`。`exhaustiveness` 参数存在同类问题：
+工具层硬编码默认值会静默覆盖调用方在设置页做的选择。
 
 优先级固定为：工具参数 > 运行请求（表单/高级设置）> 设置页默认 > `auto`。
 """
@@ -44,7 +44,7 @@ def test_blank_engine_follows_settings_default(monkeypatch: pytest.MonkeyPatch) 
 
 def test_system_default_engine_reads_settings(monkeypatch: pytest.MonkeyPatch,
                                               tmp_path) -> None:
-    """`system_default_engine()` 读的是设置页当前生效值（非法值回退 auto）。"""
+    """`system_default_engine()` 读取设置页当前生效值，非法值回退 `auto`。"""
     from docking_agent import settings as S
 
     spec = S.SPEC_BY_PATH["docking.engine"]
@@ -56,7 +56,7 @@ def test_system_default_engine_reads_settings(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_run_docking_forwards_settings_default_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """协调层不传 engine 时，下发给对接子 Agent 的必须是设置页默认值（而不是硬编码 auto）。"""
+    """协调层不传 engine 时，下发给对接子 Agent 的必须是设置页默认值，而不是硬编码的 auto。"""
     from typing import Any, List
 
     from docking_agent.agents import dispatch
@@ -82,7 +82,7 @@ def test_run_docking_forwards_settings_default_engine(monkeypatch: pytest.Monkey
 
 
 def test_param_plan_reports_the_engine_actually_requested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """报告 1.5 节的「引擎」必须是本次要用的引擎：用户/设置页选了 external 就不能仍写 vina。"""
+    """报告 1.5 节的「引擎」必须是本次实际使用的引擎：设置页选了 `external` 就不能仍写 `vina`。"""
     monkeypatch.setattr(P, "system_default_engine", lambda: "external")
     default_plan = P.plan_docking_params(task_type="screening",
                                          molecules=[{"smiles": "CCO"}])

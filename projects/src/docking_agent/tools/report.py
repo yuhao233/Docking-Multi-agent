@@ -1,6 +1,6 @@
 """整体协调 Agent 的报告工具。
 
-图表与排序文件均由**真实计算结果**生成，落地为本地产物并提供下载 URL。
+图表与排序文件均由计算结果生成，落地为本地产物并提供下载 URL。
 绘图/CSV 逻辑在 `docking_agent.reporting`，本模块只做 @tool 适配。
 """
 from __future__ import annotations
@@ -50,11 +50,11 @@ def _from_blackboard(pos_control: Dict[str, Any],
 
 @tool
 def generate_screening_report(aggregated_json: str = "", runtime: ToolRuntime[AgentContext] = None) -> str:
-    """基于汇总结果生成真实可视化与排序产物（本地文件 + 下载 URL）。
+    """基于汇总结果生成可视化图表与排序产物（本地文件 + 下载 URL）。
 
     aggregated_json 形如：
     {
-      "molecules": [分子（含属性、亲和力、引擎、相似度）],   # 无需预先排序，工具会按亲和力升序整理
+      "molecules": [分子（含属性、亲和力、引擎、相似度）],   # 无需预先排序，工具按亲和力升序整理
       "positive_control": {"name":..., "smiles":..., "affinity_kcal_mol":...}
     }
 
@@ -71,8 +71,8 @@ def generate_screening_report(aggregated_json: str = "", runtime: ToolRuntime[Ag
         molecules = rank_molecules(list(data.get("molecules") or []))
         pos_control: Dict[str, Any] = data.get("positive_control", {}) or {}
         if not molecules:
-            # 横向协作：参数留空（或只给了阳性对照）时，直接从共享黑板取完整数据。
-            # 这样协调 Agent 不必把上万条明细塞进工具参数/上下文。
+            # 横向协作：参数留空（或只给阳性对照）时，从共享黑板取数据。
+            # 协调 Agent 因此不必把上万条明细放进工具参数与上下文。
             molecules, pos_control = _from_blackboard(pos_control, runtime)
         if not molecules:
             return json.dumps(
@@ -84,7 +84,7 @@ def generate_screening_report(aggregated_json: str = "", runtime: ToolRuntime[Ag
                              "screening_docking_affinity.png", "image/png")
         sim = save_artifact(similarity_chart(molecules), "screening_similarity.png", "image/png")
         prop = save_artifact(property_scatter_chart(molecules), "screening_property_space.png", "image/png")
-        # CSV 必须以 UTF-8 原始字节写出（历史上误用 json 编码，会产出无法解析的伪 CSV）
+        # CSV 以 UTF-8 原始字节写出（改用 json 编码会产出无法解析的伪 CSV）
         csv_bytes = build_ranking_csv(molecules, pos_control).encode("utf-8")
         csv = save_artifact(csv_bytes, "screening_ranking.csv", "text/csv; charset=utf-8")
 

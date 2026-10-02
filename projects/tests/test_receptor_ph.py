@@ -1,15 +1,15 @@
-"""受体质子化必须与配体**同一目标 pH**（v0.22）。
+"""受体质子化与配体使用同一目标 pH（v0.22）。
 
-注意：配体按目标 pH 分配了质子化态，受体却停在 meeko 残基模板的默认态（≈pH 7 固定），
-两侧不是同一套化学条件 —— 而 HIS 互变异构、ASP/GLU 质子化直接决定氢键/静电互补
-（凝血酶 S1 的 ASP189，PROPKA pKa ≈ 6.6，就是典型例子）。
+配体按目标 pH 分配质子化态，受体若停在 meeko 残基模板的默认态（≈pH 7 固定），
+两侧就不是同一套化学条件；HIS 互变异构与 ASP/GLU 质子化直接决定氢键与静电互补，
+凝血酶 S1 的 ASP189（PROPKA pKa ≈ 6.6）是其中一个例子。
 
-本文件看护：
-  1. pH 规则解析（PROPKA 摘要 → 各残基质子化判定 / HIS 状态从 PQR 读出）；
+覆盖范围：
+  1. pH 规则解析（PROPKA 摘要转各残基质子化判定；HIS 状态从 PQR 读出）；
   2. 主链不全残基的剔除（pdb2pqr 会因此整条失败）；
-  3. PQR 归一化（插入码必须拆成独立字段，删掉会造成残基键冲突）；
-  4. 端到端：真实受体按 pH 准备出 PDBQT，且不同 pH 给出不同状态；
-  5. 工具缺失/失败时必须**回退并如实记录**，绝不假装做过。
+  3. PQR 归一化（插入码拆成独立字段，删除会造成残基键冲突）；
+  4. 端到端：受体按 pH 准备出 PDBQT，且不同 pH 给出不同状态；
+  5. 工具缺失或失败时回退到标准流程并如实记录，不标记为已按 pH 准备。
 """
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def test_incomplete_residues_are_dropped_with_record() -> None:
 
 
 def test_pqr_insertion_codes_split_into_own_field() -> None:
-    """插入码必须拆成独立字段：删掉会让 36 与 36A 撞成同一残基键（meeko 报「一个键两个残基名」）。"""
+    """插入码需要拆成独立字段：删除后 36 与 36A 会撞成同一残基键（meeko 报「一个键两个残基名」）。"""
     from docking_agent.core.receptor_ph import normalize_pqr_for_meeko
 
     text = "ATOM 1 N ILE H 36A 31.4 25.9 19.2 0.03 1.82\n"
@@ -107,7 +107,7 @@ def test_simple_ion_check() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 2. 端到端（需要 pdb2pqr；缺失时跳过而不是假装通过）
+# 2. 端到端（需要 pdb2pqr；缺失时跳过，不标记为通过）
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(not THROMBIN.is_file(), reason="缺少测试用受体结构")
 def test_receptor_prepared_at_target_ph_and_states_change(tmp_path: Path) -> None:
@@ -136,7 +136,7 @@ def test_receptor_prepared_at_target_ph_and_states_change(tmp_path: Path) -> Non
     out40 = receptor_ph.prepare_pdbqt_at_ph(str(prot), str(tmp_path / "rec"), 4.0)
     assert out40["ok"], out40.get("error")
     his40 = (out40["info"].get("his_states") or {})
-    # pH 4 时所有 HIS 双质子化（HIP）；pH 7.4 时是 HID/HIE —— 受体确实随 pH 变了
+    # pH 4 时所有 HIS 双质子化（HIP），pH 7.4 时是 HID/HIE，受体状态随 pH 变化
     assert his40.get("HIP", 0) == 5 and his74.get("HIP", 0) == 0, (his40, his74)
     glu40 = (out40["info"].get("titratable") or {}).get("by_residue", {}).get("GLU", {})
     glu74 = (info74.get("titratable") or {}).get("by_residue", {}).get("GLU", {})
@@ -145,7 +145,7 @@ def test_receptor_prepared_at_target_ph_and_states_change(tmp_path: Path) -> Non
 
 
 def test_missing_tool_falls_back_and_records_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    """工具不可用时必须回退标准流程，并把「未按 pH 准备」写进溯源（绝不假装做过）。"""
+    """工具不可用时回退标准流程，并把「未按 pH 准备」写进溯源，不标记为已按 pH 准备。"""
     from docking_agent.core import receptor_ph
     from docking_agent.core.receptors import resolve_receptor_specs
 
@@ -157,13 +157,13 @@ def test_missing_tool_falls_back_and_records_reason(monkeypatch: pytest.MonkeyPa
     specs, notes = resolve_receptor_specs(str(THROMBIN), protonation="ph", ph=7.4)
     info = specs[0].get("receptor_protonation") or {}
     assert info.get("applied") is False and "pdb2pqr" in str(info.get("reason"))
-    # 报告/笔记必须**如实写出两侧口径不一致**（旧实现写「未…对齐」；措辞可改，事实不能丢）
+    # 报告与笔记需要写出两侧口径不一致（「未…对齐」这类措辞可改，事实不能丢）
     assert any("口径不一致" in n for n in notes), notes
     assert Path(specs[0]["pdbqt"]).is_file(), "回退后仍必须给出可用受体"
 
 
 def test_registry_pdbqt_is_marked_as_not_ph_matched() -> None:
-    """注册表预置 PDBQT 的质子化态由文件本身决定 → 必须如实标注，而不是默认"已对齐"。"""
+    """注册表预置 PDBQT 的质子化态由文件本身决定，需要如实标注，而不是默认"已对齐"。"""
     from docking_agent.core.receptors import resolve_receptor_specs
 
     specs, notes = resolve_receptor_specs("thrombin", protonation="ph", ph=7.4)
@@ -196,11 +196,11 @@ def test_report_mentions_receptor_protonation_and_mismatch() -> None:
 
 
 def test_ph_pdbqt_provenance_travels_with_the_file(tmp_path: Path) -> None:
-    """只把 pH 产物（.pdbqt）交给下游时，也必须能读出「确实按 pH 准备过」。
+    """只把 pH 产物（.pdbqt）交给下游时，也要能读出「已按 pH 准备」。
 
-    真实场景（Agent 模式）：口袋分析先把受体准备成 PDBQT，对接阶段只拿到这个 PDBQT 路径，
-    于是溯源丢失、报告把**做过** pH 处理的受体误报成「未按 pH 准备」。
-    修法：pH 产物带同名溯源侧车，`_pdbqt_spec` 读它（位点侧车仍挂在基础名上，两份都读）。
+    使用场景（Agent 模式）：口袋分析先把受体准备成 PDBQT，对接阶段只拿到这个 PDBQT 路径，
+    溯源会丢失，报告会把已做过 pH 处理的受体误报成「未按 pH 准备」。
+    做法：pH 产物带同名溯源侧车，`_pdbqt_spec` 读它（位点侧车仍挂在基础名上，两份都读）。
     """
     from docking_agent.core import receptor_ph
     from docking_agent.core.receptors import resolve_receptor_specs
@@ -220,7 +220,7 @@ def test_ph_pdbqt_provenance_travels_with_the_file(tmp_path: Path) -> None:
     assert info.get("applied") is True and info.get("ph") == 7.4, info
     assert info.get("his_states"), info
 
-    # 外来 PDBQT（没有侧车）时必须如实说「无法确认」，不得谎称已对齐
+    # 外来 PDBQT（没有侧车）时如实返回「无法确认」，不标记为已对齐
     alien = tmp_path / "alien.pdbqt"
     alien.write_text(Path(out["pdbqt"]).read_text(encoding="utf-8"), encoding="utf-8")
     specs2, _ = resolve_receptor_specs(str(alien), protonation="ph", ph=7.4)
@@ -229,7 +229,7 @@ def test_ph_pdbqt_provenance_travels_with_the_file(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. 准备阶梯（8ZE2 类"几何异常 → meeko 误判残基间共价键"必须能自愈）
+# 3. 准备阶梯（8ZE2 类"几何异常导致 meeko 误判残基间共价键"的情形需要能自愈）
 # --------------------------------------------------------------------------- #
 def test_parse_unmatched_residues_from_meeko_output() -> None:
     from docking_agent.core.receptor_ph import parse_unmatched_residues
@@ -243,10 +243,10 @@ def test_parse_unmatched_residues_from_meeko_output() -> None:
 
 def test_prep_ladder_prefers_noopt_over_deleting_residues(monkeypatch: pytest.MonkeyPatch,
                                                           tmp_path: Path) -> None:
-    """第一档（氢键优化）失败时，应退到**几何摆氢**保住全部残基，而不是直接删残基。
+    """第一档（氢键优化）失败时退到几何摆氢以保住全部残基，而不是直接删残基。
 
-    真实案例（8ZE2）：pdb2pqr 的氢键优化把 THR406 的羟基氢摆到 ILE402 羰基氧 1.15 Å 处，
-    meeko 的距离法键感知判成残基间共价键 → 整条 PQR 被拒；`--noopt` 后全部残基保留。
+    实例（8ZE2）：pdb2pqr 的氢键优化把 THR406 的羟基氢摆到 ILE402 羰基氧 1.15 Å 处，
+    meeko 的距离法键感知判成残基间共价键，整条 PQR 被拒；加 `--noopt` 后全部残基保留。
     """
     from docking_agent.core import receptor_ph
 
@@ -294,7 +294,7 @@ def test_prep_ladder_prefers_noopt_over_deleting_residues(monkeypatch: pytest.Mo
 
 def test_prep_ladder_reports_residues_when_it_must_delete(monkeypatch: pytest.MonkeyPatch,
                                                           tmp_path: Path) -> None:
-    """连几何摆氢也失败时才删残基，并且**逐个上报**（绝不静默少一段受体）。"""
+    """几何摆氢也失败时才删残基，并逐个上报（不静默少一段受体）。"""
     from docking_agent.core import receptor_ph
 
     prot = tmp_path / "prot.pdb"
@@ -309,7 +309,7 @@ def test_prep_ladder_reports_residues_when_it_must_delete(monkeypatch: pytest.Mo
         return True, ""
 
     def fake_meeko(meeko_pqr, out_base_ph, extra) -> tuple:
-        # 前两档（严格模板匹配）都失败，只有 -x（丢弃不匹配残基）这一档能过
+        # 前两档（要求模板匹配）都失败，只有 -x（丢弃不匹配残基）这一档能过
         if "-x" not in extra:
             return False, "- Template matching failed for: ['C:402', 'C:406']", "meeko 失败"
         Path(out_base_ph + "_tmp.pdbqt").write_text("ATOM\n", encoding="utf-8")
@@ -327,9 +327,9 @@ def test_prep_ladder_reports_residues_when_it_must_delete(monkeypatch: pytest.Mo
 
 @pytest.mark.skipif(not (PROJECT_ROOT / "assets" / "uploads").is_dir(), reason="缺少上传目录")
 def test_real_8ze2_geometrically_odd_region_is_handled(tmp_path: Path) -> None:
-    """真实结构回归：8ZE2 的 ILE402···THR406（晶体 O···O 仅 2.15 Å）曾让 pH 准备整条失败。
+    """结构回归：8ZE2 的 ILE402···THR406（晶体 O···O 仅 2.15 Å）会导致 pH 准备整条失败。
 
-    期望：阶梯自动退到几何摆氢，**不丢任何残基**，且 HIS/可滴定残基溯源齐全。
+    期望：阶梯自动退到几何摆氢，不丢任何残基，且 HIS 与可滴定残基溯源齐全。
     """
     from docking_agent.core import receptor_ph
 
@@ -351,10 +351,10 @@ def test_real_8ze2_geometrically_odd_region_is_handled(tmp_path: Path) -> None:
 
 def test_uploaded_receptor_wins_over_registry_name_in_dispatch(monkeypatch: pytest.MonkeyPatch,
                                                               tmp_path: Path) -> None:
-    """有上传受体时，子 Agent 传来的注册表受体名必须被忽略（receptor_file 优先）。
+    """有上传受体时，子 Agent 传来的注册表受体名被忽略（receptor_file 优先）。
 
-    注意：用户上传 8ZE2，协调流程又对默认 thrombin 跑了一遍 ——
-    白跑 6 个分子，报告里多出一个受体块，用户会以为跑了两个靶点。
+    若使用者上传 8ZE2 而协调流程又对默认 thrombin 跑一遍，会多算 6 个分子，
+    报告里多出一个受体块，使用者会以为跑了两个靶点。
     """
     from docking_agent.runs import current_run
     from docking_agent.agents import dispatch

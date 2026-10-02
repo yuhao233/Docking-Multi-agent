@@ -1,14 +1,14 @@
-"""报告 Markdown 的 **golden 快照**回归（离线，不需要引擎）。
+"""报告 Markdown 的 golden 快照回归（离线，不需要引擎）。
 
-**为什么需要它**：原先没有任何测试断言报告的**内容** ——
-`tests/test_report_pdf.py` 只验 PDF 魔数/体积/页数（空白天也全绿），
-Markdown 侧只被零散地断言过几个关键词。于是「报告少了一节」「表头换了」「数字被吞掉」
-这类回归只能靠人眼发现。
+覆盖范围：`tests/test_report_pdf.py` 只校验 PDF 魔数、体积与页数，
+Markdown 侧此前只被零散断言过几个关键词，报告缺节、表头变化、
+数值丢失一类回归缺少断言覆盖。
 
-这里用一份**完全合成**的 result 渲染报告并与提交的快照逐字节比对；
-数据固定、时间固定、不联网、不调 LLM，因此可在 CI 的离线组里跑。
+本用例用一份合成 result 渲染报告，并与提交的快照逐字节比对；
+数据固定、时间固定、不联网、不调用 LLM，可在 CI 的离线组里运行。
 
-快照过期时（改了报告版式/章节）用下面命令重出并**人工 review diff**：
+快照过期时（报告版式或章节变更）用下面命令重出并比对 diff；
+重出后按 git diff 确认改动范围。
 
 ```bash
 cd projects && REGEN_REPORT_GOLDEN=1 .venv/bin/python -m pytest -q tests/test_report_golden.py
@@ -32,7 +32,7 @@ ensure_runtime_env()
 
 GOLDEN = Path(__file__).resolve().parent / "golden" / "report_min.md"
 
-#: 固定输入：两次运行必须得到完全相同的报告（时间、run_id、受体标签都写死）
+#: 固定输入：两次运行得到的报告逐字节一致（时间、run_id、受体标签均写死）
 GOLDEN_RESULT: Dict[str, Any] = {
     "ranking": [
         {"name": "华法林", "smiles": "CC(=O)CC(c1ccccc1)c1c(O)c2ccccc2oc1=O",
@@ -81,7 +81,7 @@ GOLDEN_ARTIFACTS: List[Dict[str, Any]] = [
 
 
 def build_golden_markdown() -> str:
-    """用固定输入渲染报告（时间/run_id/标签全部写死，保证逐字节可复现）。"""
+    """用固定输入渲染报告（时间、run_id、标签均写死，逐字节可复现）。"""
     from docking_agent.reporting import build_markdown_report
 
     return build_markdown_report(
@@ -91,7 +91,7 @@ def build_golden_markdown() -> str:
 
 
 def test_report_markdown_matches_golden_snapshot() -> None:
-    """报告 Markdown 必须与提交的快照一致（章节、表头、数字都在快照里）。"""
+    """报告 Markdown 与提交的快照一致（章节、表头、数字都在快照里）。"""
     rendered = build_golden_markdown()
     if os.environ.get("REGEN_REPORT_GOLDEN") in ("1", "true", "yes"):
         GOLDEN.parent.mkdir(parents=True, exist_ok=True)
@@ -114,16 +114,16 @@ def test_report_markdown_matches_golden_snapshot() -> None:
 
 
 def test_report_golden_covers_every_section() -> None:
-    """快照本身必须覆盖报告骨架的关键小节（防止快照退化成"只剩标题"）。"""
+    """快照本身覆盖报告骨架的关键小节（防止快照退化成"只剩标题"）。"""
     text = GOLDEN.read_text(encoding="utf-8") if GOLDEN.is_file() else build_golden_markdown()
     for section in ("任务来源与受理", "受体、位点与对接盒", "对接参数", "工具与版本",
                     "推荐化合物排行", "结合口袋分析", "失败与跳过", "数据与产物"):
         assert section in text, f"报告缺少关键小节：{section}"
-    # 关键数字必须真实来自输入（而不是占位/被吞掉）
+    # 关键数字来自输入，不是占位值或被丢弃的值
     assert "-8.4" in text and "-2.1" in text, "报告未包含真实亲和力数值"
     assert "华法林" in text and "乙醇" in text
 
 
 def test_report_golden_is_deterministic() -> None:
-    """同一输入渲染两次必须逐字节一致（否则快照无意义）。"""
+    """同一输入渲染两次逐字节一致（否则快照无意义）。"""
     assert build_golden_markdown() == build_golden_markdown()

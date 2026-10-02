@@ -1,5 +1,5 @@
 """路由：Coze 时代遗留的兼容接口（/health、/run、/stream_run、/files、/graph_parameter、
-/v1/chat/completions）。新客户端请走标准 Agent Protocol。"""
+/v1/chat/completions）。新客户端使用标准 Agent Protocol。"""
 from __future__ import annotations
 
 import asyncio
@@ -29,9 +29,9 @@ from docking_agent.api.schemas import AgentRequest
 
 async def _invoke_with_budget(graph: Any, agent_input: Any, config: Dict[str, Any], run: Any,
                               *, context: Any = None, timeout: Optional[float] = None) -> Any:
-    """调用（非流式）图；**跑满步数自动放宽上限并继续**，到顶返回 None。
+    """调用（非流式）图；跑满步数时自动放宽上限并继续，到顶返回 None。
 
-    与流式路径同一套预算策略（`runtime/limits.py`）：步数是执行细节，不该变成用户可见的报错。
+    与流式路径使用同一套预算策略（`runtime/limits.py`）：步数属于执行细节，不转成调用方可见的报错。
     """
     limit = int(config.get("recursion_limit") or base_limit())
     payload: Any = agent_input
@@ -68,8 +68,8 @@ async def legacy_health() -> Dict[str, Any]:
              summary="[已废弃] Coze 遗留执行入口（请改用 /threads/{tid}/runs/wait）")
 async def legacy_run(request: Request) -> Dict[str, Any]:
     ctx = new_context(method="run", headers=request.headers)
-    # 请求头里的 run id 会被当成**目录名**（`runs/<id>/`），必须先校验：
-    # 未校验时 `x-run-id: ../x` 能逃出运行目录并写入攻击者可控内容（真实漏洞）。
+    # 请求头里的 run id 会作为目录名使用（`runs/<id>/`），需要先校验：
+    # 未校验时 `x-run-id: ../x` 可逃出运行目录并写入攻击者可控内容（路径穿越）。
     upstream = (request.headers.get("x-run-id") or "").strip()
     if upstream:
         try:
@@ -175,8 +175,8 @@ async def openai_chat(request: Request) -> Any:
                   "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT)}
     await _heal_thread(graph, config, run)
     try:
-        # 这个兼容端点没有设置 ContextVar：显式把 run 作为 context 传下去
-        # （否则工具层的 active_run() 拿不到运行目录，产物登记会缺失）
+        # 该兼容端点未设置 ContextVar：显式把 run 作为 context 传入
+        # （否则工具层的 active_run() 取不到运行目录，产物登记会缺失）
         result = await _invoke_with_budget(graph, agent_input, config, run,
                                           context=AgentContext(run=run))
         if result is None:                     # 到步数上限：用已有结果收尾，不报错

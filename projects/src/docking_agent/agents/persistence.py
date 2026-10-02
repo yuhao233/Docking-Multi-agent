@@ -1,11 +1,10 @@
 """多 Agent 运行的结果落盘。
 
-多 Agent 模式下没有「一次调用返回全部结果」的入口，因此运行结束后
-从**消息历史中的工具真实返回**（ToolMessage）提取数据并落盘，
-既保证中间数据完整，也保证落盘内容全部来自工具而非模型叙述。
+多 Agent 模式下没有「一次调用返回全部结果」的入口，因此运行结束后从消息历史中
+工具的真实返回（ToolMessage）提取数据并落盘，落盘内容全部来自工具而非模型叙述。
 
-注意：协调 Agent 可能把同一类任务拆成多次工具调用（例如先对接候选分子、再单独对接阳性对照），
-因此这里对**同名工具的多次返回做合并**，而不是只取最后一次。
+协调 Agent 可能把同一类任务拆成多次工具调用（例如先对接候选分子、再单独对接阳性对照），
+因此本模块对同名工具的多次返回做合并，而不是只取最后一次。
 """
 from __future__ import annotations
 
@@ -31,13 +30,13 @@ from docking_agent.runs import Run
 logger = logging.getLogger(__name__)
 
 
-# 子 Agent 工具 → 分发工具（同一件事的两级命名，合并时都要看）
+# 子 Agent 工具与分发工具（同一件事的两级命名，合并时两级都要查）
 DOCKING_TOOLS = ("run_docking", "molecular_docking")
-# 口袋分析工具（分发工具 + 子 Agent 内部工具）
+# 口袋分析工具（分发工具与子 Agent 内部工具）
 POCKET_TOOLS = ("run_pocket_analysis", "predict_binding_pockets",
                 "compare_pocket_with_experiment", "set_docking_site")
-# 对接结果里必须**以工具原始输出为准**的溯源字段：子 Agent 转述时可能删减，
-# 因此合并时只要有哪个 payload 带了就补上（否则报告/界面会丢失盒子来源）
+# 对接结果里以工具原始输出为准的溯源字段：子 Agent 转述时可能删减，
+# 因此合并时只要有哪个 payload 带了就补上（否则报告与界面会丢失盒子来源）
 _PROVENANCE_KEYS = ("box_source", "box_chosen_by", "box_validation", "pockets",
                     "box_warnings", "site", "pdbqt", "protein",
                     # C 方案：库级下限/分组信息必须由工具原始输出补回（报告「对接盒」行要用）
@@ -52,8 +51,8 @@ BINDING_TOOLS = ("run_binding_mode_analysis", "binding_mode_analysis", "positive
 def _agent_models(run: Run) -> Dict[str, Any]:
     """各 Agent 角色实际使用的模型（每个角色一个独立 LLM 实例）。
 
-    以 API 在运行开始时记录的快照为底，再合并**当前**实例登记表：
-    这样报告与运行记录里各角色的模型与调用次数与真实调用一致。
+    以 API 在运行开始时记录的快照为底，再合并当前实例登记表，
+    报告与运行记录里各角色的模型与调用次数因此与真实调用一致。
     """
     merged: Dict[str, Any] = {}
     recorded = run.data.get("agent_models")
@@ -72,7 +71,7 @@ def _agent_models(run: Run) -> Dict[str, Any]:
 
 
 def extract_tool_data(messages: List[Any]) -> tuple[Dict[str, List[Any]], Dict[str, Any]]:
-    """从消息历史提取 (工具返回列表, 工具调用参数)，同名工具保留**全部**返回。"""
+    """从消息历史提取 (工具返回列表, 工具调用参数)，同名工具的全部返回都保留。"""
     outputs: Dict[str, List[Any]] = {}
     args: Dict[str, Any] = {}
     for m in messages or []:
@@ -118,16 +117,16 @@ def _dock_precision(row: Dict[str, Any]) -> tuple:
 
 
 def _merge_docking(outputs: Dict[str, List[Any]]) -> Dict[str, Any]:
-    """合并多次对接调用（按工具名）→ 见 `_merge_docking_payloads`。"""
+    """合并多次对接调用（按工具名），细节见 `_merge_docking_payloads`。"""
     return _merge_docking_payloads(_dicts(outputs, DOCKING_TOOLS))
 
 
 def _merge_docking_payloads(payloads: List[Any]) -> Dict[str, Any]:
-    """合并多次对接调用的**返回体**：按受体归并结果，并按 (name, smiles) 去重。
+    """合并多次对接调用的返回体：按受体归并结果，并按 (name, smiles) 去重。
 
-    漏斗场景下同一分子会出现两次（粗筛 + 精算）：**必须保留精度更高的那条**，
+    漏斗场景下同一分子会出现两次（粗筛与精算）：保留精度更高的那条，
     否则排序里会混入低精度分数；粗筛分值保留在 `affinity_coarse` 里便于对比。
-    也用于「工具产物（只有最近一次调用）＋ 消息历史（全部调用）」的合并 —— 否则
+    也用于「工具产物（只有最近一次调用）与消息历史（全部调用）」的合并，否则
     分批对接 / 蛋白质库场景里，早先那次调用的受体块会被静默丢掉。
     """
     blocks: Dict[str, Dict[str, Any]] = {}
@@ -137,7 +136,7 @@ def _merge_docking_payloads(payloads: List[Any]) -> Dict[str, Any]:
         for blk in (out.get("receptors") or []):
             key = blk.get("receptor_key") or blk.get("receptor") or "receptor"
             tgt = blocks.setdefault(key, {**blk, "results": []})
-            for field in _PROVENANCE_KEYS:      # 工具原始输出优先，补全模型转述时删掉的字段
+            for field in _PROVENANCE_KEYS:      # 工具原始输出优先，补回模型转述时删掉的字段
                 value = blk.get(field)
                 if value not in (None, "", [], {}) and tgt.get(field) in (None, "", [], {}):
                     tgt[field] = value
@@ -160,7 +159,7 @@ def _merge_docking_payloads(payloads: List[Any]) -> Dict[str, Any]:
 
 
 def _merge_pockets(outputs: Dict[str, List[Any]]) -> Dict[str, Any]:
-    """合并口袋分析结果（预测 + 与实验位点比对 + Agent 提交的位点）。"""
+    """合并口袋分析结果（预测、与实验位点比对、Agent 提交的位点）。"""
     pockets: List[Dict[str, Any]] = []
     engine = ""
     selected: Dict[str, Any] = {}
@@ -237,18 +236,18 @@ def _dedupe_molecules(molecules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-#: 模型可见消息日志的规模上限：条数与每条正文截断（只用于"气泡里到底说了什么"的可观测性，
-#: 不参与任何计算；注意：对话气泡曾把大量数据一并展示出去，但运行产物里
-#: 只有最终结论文本，事后无法回看当时模型看到了/输出了什么）。
+#: 模型可见消息日志的规模上限：条数与每条正文截断。该日志只用于查看对话气泡里的
+#: 消息内容，不参与任何计算；运行产物里原先只有最终结论文本，事后无法回看模型当时
+#: 看到与输出了什么。
 MESSAGES_LOG_LIMIT = 200
 MESSAGES_LOG_HEAD = 400
 
 
 def build_messages_log(messages: List[Any], final_text: str = "") -> List[Dict[str, Any]]:
-    """把模型可见消息压成**可审计的摘要日志**（角色/工具名/长度/前 N 字符）。
+    """把模型可见消息压成可审计的摘要日志（角色/工具名/长度/前 N 字符）。
 
     只记录形状与开头，不落全量正文：既能回答"这一轮模型看到了多大的载荷、输出了什么"，
-    又不会把 8 MB 的工具 JSON 再存一份。条数取最后 `MESSAGES_LOG_LIMIT` 条（长任务里早期
+    又不会把 8 MB 的工具 JSON 再存一份。条数取最后 `MESSAGES_LOG_LIMIT` 条（长任务里前期
     步骤的价值低于最近几步）。
     """
     out: List[Dict[str, Any]] = []
@@ -277,16 +276,16 @@ def build_messages_log(messages: List[Any], final_text: str = "") -> List[Dict[s
 def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[str, Any]:
     """把多 Agent 运行的真实工具输出写入运行目录，返回 result 字典。"""
     outputs, args = extract_tool_data(messages)
-    # 模型可见消息的形状日志：气泡/载荷争议事后可查（不存全量正文，见 build_messages_log）
+    # 模型可见消息的形状日志：气泡与载荷争议事后可查（不存全量正文，见 build_messages_log）
     try:
         run.write_json("messages_log", build_messages_log(messages, final_text),
                        label="模型可见消息日志（角色/工具/长度/开头）")
     except Exception:  # noqa: BLE001 - 日志落盘失败不能影响运行收尾
         logger.debug("消息日志落盘失败", exc_info=True)
 
-    # ---- 数据来源：**工具产物优先**，模型回显的工具消息仅作兜底 ----
+    # ---- 数据来源：工具产物优先，模型回显的工具消息仅作兜底 ----
     # 大库时工具只把「摘要」回传给模型，明细写在这些产物文件里（见 runtime/tool_io.py），
-    # 因此落盘/报告不再依赖模型把上万条结果搬运回上下文（那在物理上也不可能）。
+    # 因此落盘与报告不再依赖模型把上万条结果搬运回上下文。
     sources: Dict[str, str] = {}
 
     molecules: List[Dict[str, Any]] = []
@@ -300,7 +299,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
                 if isinstance(m, dict) and str(m.get("smiles") or "") not in seen_smiles:
                     seen_smiles.add(str(m.get("smiles") or ""))
                     extra.append(m)
-        if extra:                                   # 多次导入（例如分两批给分子）→ 取并集
+        if extra:                                   # 多次导入（例如分两批给分子）时取并集
             molecules = molecules + extra
             sources["molecules"] = "tool_file+tool_message"
         else:
@@ -331,9 +330,9 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     from_file = tool_io.load("docking", run=run)
     from_msgs = _merge_docking(outputs)
     if isinstance(from_file, dict) and from_file.get("receptors"):
-        # 产物文件只保存**最近一次**调用（tool_io.write_json 覆盖写），历史调用只在消息历史里 →
-        # 两者必须合并，否则分批对接 / 蛋白质库的早先受体块会被静默丢掉。
-        # 顺序 = 时间顺序：消息历史（全部调用，按发生先后）在前，产物文件（= 最后一次）在后；
+        # 产物文件只保存最近一次调用（tool_io.write_json 覆盖写），此前的调用只存在于
+        # 消息历史中，两者合并后分批对接 / 蛋白质库的早先受体块才不会被静默丢掉。
+        # 顺序 = 时间顺序：消息历史（全部调用，按发生先后）在前，产物文件（即最后一次）在后；
         # 同一分子的同精度结果以先到者为准（内容一致），精度更高者覆盖。
         combined = _merge_docking_payloads([from_msgs, from_file])
         if (len(combined.get("receptors") or []) > len(from_file.get("receptors") or [])
@@ -428,7 +427,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         if pc_row and not positive_control:
             positive_control = pc_row
 
-    # 用口袋分析的溯源补全受体块（**必须在写 docking.json 之前**，否则落盘会丢字段）
+    # 用口袋分析的溯源补全受体块，这一步要在写 docking.json 之前完成，否则落盘会丢字段
     if pocket_analysis:
         for block in receptors_block:
             if pocket_analysis.get("pockets") and not block.get("pockets"):
@@ -445,8 +444,8 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
 
     molecules = _dedupe_molecules(molecules) or _dedupe_molecules(candidate_results)
 
-    # ---- 受体结构入包：整包下载必须能独立复现本次对接 ----
-    # 只把绝对路径记在 docking.json 里是不够的：换台机器就取不到受体。
+    # ---- 受体结构入包：整包下载要能独立复现本次对接 ----
+    # 只把绝对路径记在 docking.json 里是不够的，换台机器就取不到受体。
     # 复制「对接实际使用的 PDBQT + 准备后 PDB + 原始上传文件（有则带）」到 receptor/。
     _request = dict(run.data.get("request") or {})
     _task = dict(run.data.get("task_spec") or {})
@@ -493,27 +492,26 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         "pockets": pocket_analysis.get("pockets") or [],
         "pocket_analysis": pocket_analysis,
         "notes": docking.get("notes") or [],
-        # 协调 Agent 通过 customize_report 记录的「按用户要求定制」（标题/附加列/要点/要求与响应）
+        # 协调 Agent 通过 customize_report 记录的「按调用方要求定制」（标题/附加列/要点/要求与响应）
         "report_customization": dict(run.data.get("report_customization") or {}),
-        # 共晶配体是否用作阳性对照：检测到的配体 + 用户决定（报告正文单列一行，便于单独追溯）
+        # 共晶配体是否用作阳性对照：检测到的配体与调用方决定（报告正文单列一行，便于单独追溯）
         "cocrystal_control_offer": dict(run.data.get("cocrystal_control_offer") or {}),
         "positive_control_decision": str(
             (run.data.get("request") or {}).get("positive_control_decision") or ""),
-        # 条件纪律段注入了哪些（审计：提示词不再是常量，必须能复盘「这次给了模型哪些纪律」）
+        # 条件纪律段注入了哪些（提示词不再是常量，运行记录要能回答「这次给了模型哪些纪律」）
         "prompt_blocks": dict(run.data.get("prompt_blocks") or {}),
         # 受体溯源（哪个结构/哪来的）：由 `fetch_protein_structure` 记账，报告 §1.2 直接渲染
         "receptor_provenance": dict(run.data.get("receptor_provenance") or {}),
     }
 
-    # ---- 没有真实计算的运行**不产规范报告** ----
-    # 注意：只发一句「你好」，受理层 decision=reject、零工具调用，
-    # 却照样写 11 KB 全是空表格的报告 + 4 张空图 + 328 KB PDF，页面还把它当作
-    # 「规范报告（report.md · 唯一权威版）」挂到对话气泡上 —— 用户看到的是纯噪声。
+    # ---- 没有真实计算的运行不产规范报告 ----
+    # 只发一句「你好」时，受理层 decision=reject、零工具调用，落盘却会写出全是空表格的
+    # 11 KB 报告、4 张空图与 328 KB PDF，页面还把它当作「规范报告（report.md · 唯一权威版）」
+    # 挂到对话气泡上，调用方看到的是纯噪声。
     narrative = (final_text or "").strip()
-    # 阻断式问题（如共晶配体是否作阳性对照）还等着用户点选时，运行状态必须是
-    # `needs_user_input` —— 即使导入/性质等工具已经产出了结果。注意：
-    # 暂停的 run 被标成 ok，用户以为跑完了，
-    # 而对接其实一次都没跑（工具按护栏拒绝开跑）。
+    # 阻断式问题（如共晶配体是否作阳性对照）还等着选择时，运行状态记成
+    # `needs_user_input`，即使导入/性质等工具已经产出了结果。暂停的 run 若被标成 ok，
+    # 调用方会以为跑完了，而对接一次都没有执行（工具按护栏拒绝开跑）。
     if run.data.get("choices_blocking") and run.data.get("choices"):
         kinds = "、".join(sorted({str(c.get("kind") or "") for c in run.data["choices"]}))
         result["status"] = "needs_user_input"
@@ -525,9 +523,9 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     executed = bool(molecules or properties or candidate_results or pocket_analysis or ranking)
     if not executed:
         decision = str((run.data.get("task_spec") or {}).get("decision") or "")
-        # 「停下来等用户点选」不是 no_op：受体可能已经解析成功、工具也确实跑过，只是
-        # 配体侧必须由用户确认。标成 no_op 会让历史列表显示 [ SKIP ]、日志说「未调用任何
-        # 工具」，与事实不符（注意：界面把「等你选配体」说成「未执行计算」）。
+        # 「停下来等调用方选择」不属于 no_op：受体可能已经解析成功、工具也确实跑过，只是
+        # 配体侧需要调用方确认。标成 no_op 时历史列表显示 [ SKIP ]、日志说「未调用任何
+        # 工具」，与事实不符；该情形下界面需要区分「等待选择配体」与「未执行计算」。
         pending_choices = list(run.data.get("choices") or [])
         if pending_choices:
             kinds = "、".join(sorted({str(c.get("kind") or "") for c in pending_choices}))
@@ -543,7 +541,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
             reason = "未执行任何计算"
         run.set(no_report_reason=reason)
         if not pending_choices:
-            # 运行状态如实标成 no_op：历史列表里显示 [ SKIP ]，而不是一个「成功但什么都没有」的 [ OK ]
+            # 运行状态标成 no_op：历史列表显示 [ SKIP ]，而不是「成功但无产物」的 [ OK ]
             result["status"] = "no_op"
             result["no_op"] = True
         logger.info("run %s: 未执行任何计算（decision=%s, pending_choices=%d），跳过排序 CSV / 图表 / 规范报告",
@@ -574,7 +572,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
     except Exception as e:  # noqa: BLE001
         logger.warning("生成报告图表失败：%s", e)
 
-    # 固定格式报告：与流水线模式共用同一模板，协调 Agent 的文字放入固定的「结论与建议」一节
+    # 固定格式报告：与流水线模式共用同一模板，协调 Agent 的文字进入「结论与建议」一节
     if narrative:
         run.write_text("agent_report.md", narrative, name="agent_report_md",
                        label="协调 Agent 原始输出（Markdown）",
@@ -590,7 +588,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
         created_at=str(run.data.get("created_at") or ""))
     run.write_text("report.md", report_md, name="report_md", label="分析报告（Markdown，固定格式）",
                    content_type="text/markdown; charset=utf-8")
-    # PDF 版报告：与 Markdown 同一内容，失败只记 warning，不影响多 Agent 运行结果
+    # PDF 版报告：与 Markdown 内容一致，写入失败只记 warning，不影响多 Agent 运行结果
     write_report_pdf(run, result)
     run.write_json("result", {k: result.get(k) for k in
                               ("status", "ranking", "positive_control", "receptors", "notes",
@@ -607,7 +605,7 @@ def persist_agent_run(run: Run, messages: List[Any], final_text: str) -> Dict[st
 def _finish_run_meta(run: Run, result: Dict[str, Any], molecules: List[Dict[str, Any]],
                      receptors_block: List[Dict[str, Any]], ranking: List[Dict[str, Any]],
                      args: Dict[str, Any]) -> None:
-    """把「这次实际算了什么」写进运行记录（**报告有无不改变这一步**）。"""
+    """把「这次实际算了什么」写进运行记录，报告的有无不改变这一步。"""
     docking_args = args.get("run_docking") or {}
     run.set(
         molecules=molecules,

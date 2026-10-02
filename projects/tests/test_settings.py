@@ -1,6 +1,6 @@
-"""设置页面后端（config/local_settings.json + /api/settings）回归测试。
+"""设置页后端（`config/local_settings.json` 与 `/api/settings`）的回归测试。
 
-全部离线可跑：不调用真实模型；模型列表接口用桩替换。
+全部用例离线可跑：不调用真实模型，模型列表接口以桩替换。
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def settings_file(tmp_path, monkeypatch):
     from docking_agent import settings as S
 
     yield path
-    # 清理可能被写入的环境变量，避免跨用例串扰
+    # 清理可能写入的环境变量，避免跨用例串扰
     for spec in S.ENV_SPECS:
         if spec.env and spec.env not in S.DEPLOY_PROTECTED:
             monkeypatch.delenv(spec.env, raising=False)
@@ -65,7 +65,7 @@ def test_settings_snapshot_shape(client, settings_file):
         "llm", "models", "roles", "docking", "external", "runtime", "deploy"]
     for key in ("values", "effective", "sources", "secret", "meta", "roles", "agent_models"):
         assert key in data
-    # 每个 spec 都要有当前值/生效值/来源三个视图
+    # 每个 spec 都需要当前值、生效值与来源三个视图
     for spec in data["specs"]:
         assert spec["path"] in data["values"]
         assert spec["path"] in data["sources"]
@@ -104,7 +104,7 @@ def test_settings_save_roundtrip(client, settings_file):
 
 def test_settings_clear_value_returns_to_inherit(client, settings_file):
     client.put("/api/settings", json={"settings": {"roles": {"docking": {"model": "docking-model"}}}})
-    # 传空字符串 = 清除该项（回到继承）
+    # 传空字符串表示清除该项，回到继承
     r = client.put("/api/settings", json={"settings": {"roles": {"docking": {"model": ""}}}})
     assert r.status_code == 200
     data = r.json()["settings"]
@@ -235,7 +235,7 @@ def test_docking_defaults_exposed_for_form_prefill(client, settings_file):
 
 
 # --------------------------------------------------------------------------- #
-# 模型列表 / 连通性测试（全部用桩，不联网）
+# 模型列表与连通性测试（全部使用桩，不联网）
 # --------------------------------------------------------------------------- #
 def test_models_endpoint_without_credentials(monkeypatch, settings_file):
     monkeypatch.setenv("LLM_API_KEY", "")
@@ -305,11 +305,11 @@ def test_settings_removes_file_when_everything_cleared(client, settings_file):
 
 
 # --------------------------------------------------------------------------- #
-# 加固项（对抗性复核发现的问题，逐条留下回归用例）
+# 加固用例（对抗性复核提出的问题，逐条保留回归）
 # --------------------------------------------------------------------------- #
 @pytest.fixture()
 def clean_injected(settings_file):
-    """清空「界面注入环境变量」的基线记录，避免用例间串扰。"""
+    """清空「界面注入环境变量」的基线记录，避免跨用例串扰。"""
     from docking_agent import settings as S
 
     S._INJECTED.clear()
@@ -318,16 +318,16 @@ def clean_injected(settings_file):
 
 
 def test_broken_settings_file_does_not_break_startup(settings_file, monkeypatch):
-    """手改坏的设置文件（结构错误）不得让服务起不来。"""
+    """手改坏的设置文件（结构错误）不会导致服务无法启动。"""
     monkeypatch.setenv("LLM_API_KEY", "k")
     settings_file.write_text('{"llm": 123, "roles": ["x"], "runtime": "nope"}', encoding="utf-8")
     from docking_agent import settings as S
     from docking_agent.runtime.llm import resolve_role_config
 
     data = S.load_local_settings()
-    # 非法段落必须被丢弃（`llm: 123` / `roles: ["x"]` / `runtime: "nope"` 都不能活下来）；
-    # 原来的 `data == {} or all(...)` 里的 `data == {}` 是多余的（空 dict 也满足 all()），
-    # 且掩盖了真实意图：**只有 dict 段落允许保留**。
+    # 非法段落会被丢弃（`llm: 123`、`roles: ["x"]`、`runtime: "nope"` 都不能保留）；
+    # 原先的 `data == {} or all(...)` 里 `data == {}` 是多余的（空 dict 也满足 `all()`），
+    # 且掩盖了真实意图：只有 dict 段落允许保留。
     assert isinstance(data, dict)
     assert all(isinstance(v, dict) for v in data.values()), data
     assert isinstance(data.get("llm", {}), dict) and isinstance(data.get("roles", {}), dict)
@@ -339,7 +339,7 @@ def test_broken_settings_file_does_not_break_startup(settings_file, monkeypatch)
 
 
 def test_clearing_setting_restores_env_baseline(settings_file, monkeypatch, clean_injected):
-    """清空某项后必须撤销注入（不能残留上一轮的值），且重复调用幂等。"""
+    """清空某项后撤销注入（不残留上一轮的值），重复调用幂等。"""
     import os
 
     from docking_agent import settings as S
@@ -363,7 +363,7 @@ def test_clearing_setting_restores_original_env_value(settings_file, monkeypatch
 
     from docking_agent import settings as S
 
-    monkeypatch.setenv("REPORT_TOP_N", "33")     # 外部（.env/shell）注入
+    monkeypatch.setenv("REPORT_TOP_N", "33")     # 由外部（`.env` 或 shell）注入
     settings_file.write_text('{"runtime": {"report_top_n": 7}}', encoding="utf-8")
     S.apply_runtime_env()
     assert os.environ["REPORT_TOP_N"] == "7"
@@ -373,7 +373,7 @@ def test_clearing_setting_restores_original_env_value(settings_file, monkeypatch
 
 
 def test_reset_keeps_external_env(client, settings_file, monkeypatch, clean_injected):
-    """reset 只能回滚「界面注入」的键，不能误删 shell / CI 注入的键。"""
+    """`reset` 只回滚界面注入的键，shell 与 CI 注入的键不受影响。"""
     import os
 
     monkeypatch.setenv("DOCKING_WORKERS", "32")   # 外部注入，不由界面写入
@@ -387,7 +387,7 @@ def test_reset_keeps_external_env(client, settings_file, monkeypatch, clean_inje
 
 def test_deploy_protected_upload_cap_is_env_first(client, settings_file, monkeypatch,
                                                   clean_injected):
-    """.env 显式设置了上限时，界面设置不得放宽它（保护机器）。"""
+    """.env 显式设置了上限时，界面设置不放宽该上限（保护机器）。"""
     import os
 
     monkeypatch.setenv("UPLOAD_MAX_MB", "50")
@@ -409,13 +409,13 @@ def test_readonly_port_is_rejected(client, settings_file):
 
 def test_connectivity_test_does_not_wipe_agent_models(client, settings_file, monkeypatch,
                                                       clean_injected):
-    """「测试连通性」不能破坏已有角色的模型溯源信息。"""
+    """「测试连通性」不破坏已有角色的模型溯源信息。"""
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     from docking_agent.api import app as app_mod
     from docking_agent.runtime import llm as llm_mod
 
     llm_mod.reset_llm_registry()
-    llm_mod.build_chat_llm(None, role="property")     # 先有一个「已构建」的角色
+    llm_mod.build_chat_llm(None, role="property")     # 先构建一个角色实例
     before = llm_mod.registry_entry("property")
     assert before and before.get("instance_id")
 
@@ -457,7 +457,7 @@ def test_upstream_error_text_is_redacted(monkeypatch, settings_file):
 
 
 def test_extra_headers_secrets_are_masked_but_preserved(client, settings_file):
-    """额外请求头里的密钥只回显 ***，回传 *** 时保持原值。"""
+    """额外请求头里的密钥以三个星号的掩码回显，回传该掩码时保持原值。"""
     r = client.put("/api/settings", json={"settings": {"llm": {"extra_headers": {
         "X-Api-Key": "sk-header-secret-9876", "X-Org": "lab"}}}})
     assert r.status_code == 200
@@ -467,14 +467,14 @@ def test_extra_headers_secrets_are_masked_but_preserved(client, settings_file):
     assert headers["X-Org"] == "lab"
     assert "sk-header-secret-9876" not in json.dumps(data, ensure_ascii=False)
 
-    # 用户在界面上没改这一项，原样回传 *** → 后端保留真实值
+    # 界面上未改动该项，原样回传掩码，后端保留实际值
     client.put("/api/settings", json={"settings": {"llm": {"extra_headers": headers}}})
     on_disk = json.loads(settings_file.read_text(encoding="utf-8"))
     assert on_disk["llm"]["extra_headers"]["X-Api-Key"] == "sk-header-secret-9876"
 
 
 def test_zero_and_false_are_not_treated_as_unset(client, settings_file):
-    """0 / false 是有效值，不能被当成「未设置」丢掉。"""
+    """0 与 false 是有效值，不按「未设置」丢弃。"""
     r = client.put("/api/settings", json={"settings": {
         "docking": {"max_ligands": 0, "save_poses": False},
         "llm": {"temperature": 0}}})
@@ -488,7 +488,7 @@ def test_zero_and_false_are_not_treated_as_unset(client, settings_file):
 
 
 def test_registry_counters_reset_per_run(monkeypatch, settings_file):
-    """运行记录里的 calls 必须是「本次运行」的，不能随进程累计。"""
+    """运行记录里的 `calls` 只统计本次运行，不随进程累计。"""
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     from docking_agent.runtime import llm as llm_mod
 

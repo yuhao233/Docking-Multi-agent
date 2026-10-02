@@ -1,16 +1,16 @@
-"""协调 Agent 的「按用户要求定制报告」与「ID 全链路可追溯」回归。
+"""协调 Agent 的按需定制报告与 ID 全链路可追溯回归。
 
 两点：
-  1. 「报告是按格式的，但也不能死板 —— 用户要求带上小分子 ID 或其它信息时，
-     要能正确从文件里取到，并按用户要求输出；主管 Agent 到底在干什么，似乎什么都没干」；
-  2. 事实是：ID 只在 `molecules.json` 里活过一次，**对接/性质/排序/报告/CSV 全丢了**。
+  1. 报告有固定格式，同时支持附加小分子 ID 等定制信息，
+     这些信息需从文件里正确取到并按定制说明输出；
+  2. ID 只在 `molecules.json` 里出现过一次，对接、性质、排序、报告与 CSV 各环节原先都丢失该字段。
 
 约定：
   - `core.docking.carry_identity()` 把输入分子的 `id/source_file/source_index` 带进结果行，
     对接、性质评估、排序、CSV 每一环都保留；
-  - 协调 Agent 用 `customize_report` 声明「这次报告要什么」（标题/附加列/要点/要求与响应），
-    白名单 + 覆盖率校验（取不到就如实回绝，不许编造）；
-  - 报告固定骨架不变，但标题、3.1 排行表附加列、第 0 节「本次要求与响应」按定制输出。
+  - 协调 Agent 用 `customize_report` 声明本次报告要什么（标题、附加列、要点、要求与响应），
+    经白名单与覆盖率校验，取不到时如实回绝；
+  - 报告固定骨架不变，标题、3.1 排行表附加列、第 0 节「本次要求与响应」按定制输出。
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _ranking(n: int = 3, *, with_id: bool = True) -> List[Dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
-# 1) ID 全链路：输入 → 对接结果行 → CSV
+# 1) ID 全链路：输入、对接结果行与 CSV
 # --------------------------------------------------------------------------- #
 def test_carry_identity_keeps_id_on_result_rows() -> None:
     from docking_agent.core.docking import carry_identity
@@ -59,10 +59,10 @@ def test_carry_identity_keeps_id_on_result_rows() -> None:
 
 
 def test_dock_batch_attaches_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """真实走一遍 dock_batch（worker 打桩）：结果行必须带上输入分子的 ID/序号/来源。"""
+    """实跑一次 `dock_batch`（worker 打桩）：结果行带输入分子的 ID、序号与来源。"""
     from docking_agent.core import docking as D
 
-    def fake_worker(item: Any) -> Dict[str, Any]:  # 打桩 worker，避免真跑 Vina
+    def fake_worker(item: Any) -> Dict[str, Any]:  # 打桩 worker，避免实际执行 Vina
         name, smiles = item
         return {"name": name, "smiles": smiles, "affinity_kcal_mol": -2.5, "engine": "vina"}
 
@@ -81,7 +81,7 @@ def test_ranking_csv_has_id_columns() -> None:
     assert "id" in CSV_FIELDS and "source_index" in CSV_FIELDS and "source_file" in CSV_FIELDS
     csv_text = build_ranking_csv(_ranking(2), {})
     header = csv_text.splitlines()[0].split(",")
-    # 表头固定以 rank/id 开头，id 之后是 cas/name/remark（用户要"输出带上 ID/CAS/备注"）
+    # 表头固定以 rank/id 开头，id 之后是 cas/name/remark（对应调用方提出的输出 ID、CAS 与备注）
     assert header[:5] == ["rank", "id", "cas", "name", "remark"], header[:5]
     assert "PGR001" in csv_text
 
@@ -128,7 +128,7 @@ def test_customize_report_accepts_whitelist_and_reports_coverage(tmp_path: Path)
 
 
 def test_customize_report_rejects_unknown_and_empty_fields(tmp_path: Path) -> None:
-    """不在白名单、或本次数据里没有值的字段必须被拒（并给出原因），不许假装生效。"""
+    """不在白名单、或本次数据里没有值的字段应被拒并给出原因，不得标记为生效。"""
     rows = _ranking(2, with_id=False)
     run = _run_with_ranking(tmp_path, rows)
     out = _call_tool(run, {"extra_columns": ["id", "别乱写", "formula"]})
@@ -151,7 +151,7 @@ def test_customize_report_clamps_long_text(tmp_path: Path) -> None:
 
 
 def test_report_section0_shows_requirements_and_dispatch(tmp_path: Path) -> None:
-    """第 0 节要把「用户要求 → 实际处理」和协调 Agent 的调度记录摆出来（它到底干了什么）。"""
+    """第 0 节列出「定制说明与实际处理」的对应关系，并展示协调 Agent 的调度记录。"""
     result = {
         "ranking": _ranking(2), "receptors": [], "positive_control": {}, "notes": [],
         "task_spec": {},
@@ -205,7 +205,7 @@ def test_tabular_id_column_becomes_molecule_id() -> None:
 
 
 def test_report_adds_id_column_only_when_id_is_informative() -> None:
-    """ID 与名称不同（文件里真有编号）→ 报告自动带 ID 列；相同则不重复占列。"""
+    """ID 与名称不同（文件中确有编号）时报告自动带 ID 列；两者相同则不重复占列。"""
     informative = {"ranking": _ranking(2), "receptors": [], "positive_control": {},
                    "notes": [], "task_spec": {}}
     md = build_markdown_report(informative, kind="agent", run_id="T", artifacts=[])
@@ -221,11 +221,11 @@ def test_report_adds_id_column_only_when_id_is_informative() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# PDF 表格：用户追加的列（例如小分子 ID）必须完整保留
+# PDF 表格：调用方追加的列（例如小分子 ID）需要保留
 # --------------------------------------------------------------------------- #
 def test_pdf_table_keeps_user_requested_columns() -> None:
-    """表格过宽时**换行**而不是截断 —— 旧实现把列宽压到 4 字符再截断，
-    用户通过 customize_report 追加的 id 列在 PDF 里就没了（真实报障）。"""
+    """表格过宽时按单元格折行而不截断。此前的实现会先把列宽压到 4 字符再截断，
+    经 `customize_report` 追加的 `id` 列因此在 PDF 中丢失。"""
     from docking_agent.reporting.pdf import _format_table
 
     rows = [["rank", "id", "name", "smiles", "affinity", "LE", "grade"],
@@ -236,12 +236,12 @@ def test_pdf_table_keeps_user_requested_columns() -> None:
     assert "PGR137" in text and "PGR042" in text, text
     # 长 SMILES 允许折行，但不得丢字符
     assert text.replace("\n", "").count("CC(=O)Oc1ccccc1C(=O)O") >= 1
-    # 折行会把同一单元格的两半放在两行（中间隔着其它列），因此按"两半都在"判断完整性
+    # 折行会把同一单元格的两半放在两行（中间隔着其它列），因此按两半都在判断是否保留
     assert "CC(C)Cc1ccc(cc1)C(C)C(=O" in text and ")O" in text, text
 
 
 def test_pdf_table_still_compresses_reasonably() -> None:
-    """换行不等于放任：窄表不该被无谓折行，列宽仍按内容自适应。"""
+    """折行不等于放弃压缩：窄表不产生多余折行，列宽按内容自适应。"""
     from docking_agent.reporting.pdf import _format_table
 
     rows = [["rank", "name", "affinity"], ["1", "阿司匹林", "-5.73"]]
@@ -262,7 +262,7 @@ def test_pdf_table_still_compresses_reasonably() -> None:
 ])
 def test_report_states_cocrystal_control_decision(offer: dict, decision: str,
                                                   expected: str) -> None:
-    """报告 §1 的「受体共晶配体」一行必须写清：检测到什么、是否询问、用户怎么选。"""
+    """报告 §1 的「受体共晶配体」一行写明检测结果、是否询问与调用方选择。"""
     from docking_agent.reporting import build_markdown_report
 
     md = build_markdown_report(

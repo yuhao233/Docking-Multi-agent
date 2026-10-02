@@ -1,11 +1,11 @@
-"""Agent 中间件（P1 规范改造）回归测试。
+"""Agent 中间件回归测试。
 
 覆盖：
 1. `build_agent_middleware` 的四件套与默认阈值；
 2. 环境变量可覆盖 / 可关闭（限额 0 = 不限制，摘要 off = 不加中间件）；
 3. 触发阈值 ≤ 保留条数时自动纠正（否则会"每轮都摘要"）；
-4. 协调 Agent 与子 Agent 的 `create_agent` 真的带上了这套中间件；
-5. 摘要中间件在**短对话**下不触发（不对正常筛选引入额外模型调用/历史改写）。
+4. 协调 Agent 与子 Agent 的 `create_agent` 带上这套中间件；
+5. 摘要中间件在短对话下不触发（不对正常筛选引入额外模型调用或对话改写）。
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def test_middleware_thresholds_are_env_configurable(monkeypatch: pytest.MonkeyPa
 
 
 def test_middleware_can_be_fully_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """四件套都能关掉；**工具调用配对自愈关不掉** —— 它防的是模型端 400（正确性，不是预算）。"""
+    """四件套均可关闭；工具调用配对自愈不可关闭，它防的是模型端 400（正确性，不是预算）。"""
     monkeypatch.setenv("AGENT_RETRY_MAX", "0")
     monkeypatch.setenv("AGENT_MODEL_CALL_LIMIT", "0")
     monkeypatch.setenv("AGENT_TOOL_CALL_LIMIT", "0")
@@ -112,8 +112,8 @@ def test_coordinator_passes_middleware_to_create_agent(monkeypatch: pytest.Monke
     coordinator.build_agent(None)
 
     names = [type(m).__name__ for m in seen["middleware"]]
-    # 协调 Agent 比子 Agent 多一个**条件系统提示词**中间件（按运行事实抽掉用不到的纪律段；
-    # 见 `agents/prompt_blocks.py`）——它排在最后（最内层，改的是最终下发的系统消息）。
+    # 协调 Agent 比子 Agent 多一个条件系统提示词中间件（按运行事实去掉用不到的纪律段；
+    # 见 `agents/prompt_blocks.py`），它排在最后（最内层，改写最终下发的系统消息）。
     assert names == ["ToolCallPairingMiddleware", "ModelRetryMiddleware", "ModelCallLimitMiddleware",
                      "ToolCallLimitMiddleware", "SummarizationMiddleware",
                      "conditional_discipline"], names
@@ -145,7 +145,7 @@ def test_worker_agents_pass_middleware_to_create_agent(monkeypatch: pytest.Monke
 
 
 def test_summarization_is_inert_on_short_conversations() -> None:
-    """摘要中间件挂在图上，但短对话（< 触发条数）不得改写历史、不得额外调用模型。"""
+    """摘要中间件挂在图上，但短对话（< 触发条数）不得改写消息、不得额外调用模型。"""
     from langchain.agents import create_agent
 
     calls = {"n": 0}
@@ -170,11 +170,11 @@ def test_summarization_is_inert_on_short_conversations() -> None:
 
 
 def test_tiny_graph_sanity_for_summary_threshold() -> None:
-    """自证：把触发阈值调到 2 时同一条路径**确实**会摘要（证明上面的"不触发"不是空转）。"""
+    """反向验证：触发阈值调到 2 时同一条路径会发生摘要，用于确认上面的"不触发"断言有效。"""
     from langchain.agents import create_agent
     from langchain.agents.middleware import SummarizationMiddleware
 
-    # 摘要本身也要调一次模型 → 假模型必须备足响应，否则迭代器耗尽会抛 StopIteration
+    # 摘要本身也要调一次模型，假模型需备足响应，否则迭代器耗尽会抛 StopIteration
     llm = _Fake(messages=iter(["摘要占位"] * 10))
     summary = SummarizationMiddleware(model=llm, trigger=("messages", 2), keep=("messages", 1))
     graph = create_agent(model=llm, tools=[], name="probe", middleware=[summary],
@@ -184,6 +184,6 @@ def test_tiny_graph_sanity_for_summary_threshold() -> None:
     joined = " ".join(str(getattr(m, "content", "")) for m in out["messages"])
     # 官方实现把摘要包成 "Here is a summary of the conversation to date: ..." 的 HumanMessage
     assert "summary of the conversation" in joined.lower(), joined
-    # 原文被摘要**替换**（不再是逐条历史）
+    # 原文被摘要替换（不再是逐条消息）
     contents = [str(getattr(m, "content", "")) for m in out["messages"]]
     assert not any(c == "一" for c in contents), contents

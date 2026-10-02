@@ -1,19 +1,17 @@
-"""运行步数预算：递归上限的**自动放宽 → 优雅收尾**策略（尽量不打扰用户）。
+"""运行步数预算：递归上限的自动放宽与收尾策略。
 
-## 产品准则
+判定准则：不影响对接本身的问题由系统自动处理，需要调用方决定的只有受体不可用或歧义、
+多组分分子的代表结构、共晶配体是否作对照等事项。
 
-> 系统尽可能自动处理；**只有影响对接本身的问题**才需要用户决定
-> （受体不可用/歧义、多组分分子的代表结构、共晶配体是否作对照…）。
+「跑满步数」属于执行细节，命中 `GRAPH_RECURSION_LIMIT` 时按以下步骤处理：
 
-「跑满步数」不属于这类问题 —— 它是**执行细节**。所以命中 `GRAPH_RECURSION_LIMIT` 时：
+1. 自动放宽：120、240、480（默认天花板为基准的 4 倍，`RECURSION_LIMIT_MAX` 可覆盖），
+   从 checkpoint 继续执行，调用方无需操作；
+2. 主管 Agent 收尾：放宽到天花板时向图注入一条 SystemMessage，要求它用已有结果给出结论
+   （不再发起长流程工具调用），未完成的部分如实说明；
+3. 到顶不报错：用现有结果落盘（报告与排行照常产出），运行状态如实标注。
 
-1. **自动放宽**：120 → 240 → 480（默认天花板 = 基准的 4 倍，`RECURSION_LIMIT_MAX` 可覆盖），
-   从 checkpoint 继续跑，用户什么都不用做；
-2. **让主管 Agent 收尾**：放宽到天花板时给图注入一条 SystemMessage，要求它用**已有结果**给结论
-   （不要再起长流程工具），未完成的部分如实说明；
-3. **到顶也不再报错**：用现有结果落盘（报告/排行照常产出），运行状态如实标注。
-
-绝不把 `GraphRecursionError` 抛给用户 —— 那既不影响对接结论，也不是用户能处理的信息。
+`GraphRecursionError` 不抛给调用方，它既不影响对接结论，也不属于调用方可处理的信息。
 """
 from __future__ import annotations
 
@@ -24,7 +22,7 @@ from docking_agent.config import DEFAULT_RECURSION_LIMIT, env_int
 
 logger = logging.getLogger(__name__)
 
-#: 给模型看的收尾指令（SystemMessage，不进用户可见的对话正文）
+#: 交给模型的收尾指令（SystemMessage，不进入对话正文）
 WRAP_UP_NOTE = (
     "【系统提示】本次运行已到步数上限（系统已自动放宽多次）。请**立即用现有结果收尾**："
     "不要再发起新的长流程工具调用；把已经拿到的结果整理成最终答复 —— 完成了什么、"
@@ -42,7 +40,7 @@ def limit_ceiling() -> int:
 
 
 def escalate(current: int) -> Optional[int]:
-    """下一步的递归上限；已到天花板返回 `None`（此时应让主管 Agent 收尾）。"""
+    """下一步的递归上限；已到天花板返回 `None`，此时由主管 Agent 收尾。"""
     ceiling = limit_ceiling()
     if current >= ceiling:
         return None
@@ -62,7 +60,7 @@ def is_recursion_error(exc: BaseException) -> bool:
 
 
 def limit_event(limit: int, *, escalated: Optional[int]) -> dict:
-    """统一的步数事件（前端显示为进度文案，同时写进运行日志，便于事后复盘）。"""
+    """统一的步数事件（前端显示为进度文案，同时写进运行日志，供事后查阅）。"""
     if escalated is None:
         message = f"已达步数上限（{limit} 步）：用现有结果收尾，未完成部分如实说明"
     else:

@@ -1,16 +1,16 @@
-"""供应商能力记忆：不再每次运行都先撞一次 400 再降级。
+"""供应商能力记忆：避免每次运行都先触发一次 400 再降级。
 
-注意（运行日志）：
+运行日志片段：
 
     [15:25:17] pocket 子 Agent：供应商拒绝结构化输出（thinking 模式不支持强制 tool_choice），
                已降级为文本 JSON 契约（结果仍经必需字段校验）
 
-实测根因：该端点/模型在 thinking 语义下**只拒绝"强制" tool_choice**（`ToolStrategy` 正是靠它工作），
-而自动 tool_choice 与 **JSON 模式都正常**。因此修法是"预判 + 更好的降级"，而不是每轮重试：
+技术原因：该端点与模型在 thinking 语义下只拒绝「强制」tool_choice（`ToolStrategy` 依赖该项），
+而自动 tool_choice 与 JSON 模式均正常。因此对策是「预先判定 + 降级」，而不是每轮重试：
 
-* 第一次被拒 → 写入 `var/state/llm_capabilities.json`（按 base_url+model+thinking 区分）；
-* 之后构建子 Agent 直接不挂 ToolStrategy，也不再刷降级日志；
-* 降级优先用 JSON 模式（供应商保证返回合法 JSON），失败才退回纯文本契约。
+* 首次被拒后写入 `var/state/llm_capabilities.json`，按 base_url+model+thinking 区分；
+* 之后构建子 Agent 不再挂载 ToolStrategy，也不再输出降级日志；
+* 降级优先使用 JSON 模式（供应商保证返回合法 JSON），失败时才退回纯文本契约。
 """
 from __future__ import annotations
 
@@ -32,13 +32,13 @@ def isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.delenv("AGENT_STRUCTURED_OUTPUT", raising=False)
     monkeypatch.setattr(CAP, "role_setting", lambda role, field: "")
     monkeypatch.setattr(CAP, "capability_key", lambda role: "https://api.example|test-model|disabled")
-    # conftest 会统一把状态文件指到会话临时目录；这里给本用例一个独立文件，便于断言落盘内容
+    # conftest 已把状态文件统一指到会话临时目录；这里为本用例再给一个独立文件，便于断言落盘内容
     monkeypatch.setattr(CAP, "_state_file", lambda: tmp_path / CAP.STATE_FILE_NAME)
     return tmp_path
 
 
 # --------------------------------------------------------------------------- #
-# 1) 未知能力 → 先试；被记下之后 → 不再试
+# 1) 能力未知时先探测；记入记忆后不再探测
 # --------------------------------------------------------------------------- #
 def test_unknown_capability_is_tried_first(isolated: Path) -> None:
     assert CAP.forced_tool_choice_supported("pocket") is True
@@ -49,7 +49,7 @@ def test_rejection_is_remembered_and_switches_to_json_mode(isolated: Path) -> No
     CAP.mark_forced_tool_choice_unsupported("pocket", "Thinking mode does not support this tool_choice")
     assert CAP.forced_tool_choice_supported("pocket") is False
     assert CAP.structured_output_decision("pocket") == "json_mode"
-    # 记忆落盘：下一个进程不用再撞一次 400
+    # 记忆落盘：后续进程不会再次触发同一个 400
     state_file = isolated / CAP.STATE_FILE_NAME
     assert state_file.is_file()
     saved = json.loads(state_file.read_text(encoding="utf-8"))
@@ -58,7 +58,7 @@ def test_rejection_is_remembered_and_switches_to_json_mode(isolated: Path) -> No
 
 
 def test_memory_expires_so_capability_is_re_probed(isolated: Path) -> None:
-    """供应商随时可能升级：记忆过期后要重新试一次，而不是永久禁用。"""
+    """供应商可能升级：记忆过期后重新探测一次，不永久禁用该能力。"""
     CAP.mark_forced_tool_choice_unsupported("pocket", "x")
     state_file = isolated / CAP.STATE_FILE_NAME
     saved = json.loads(state_file.read_text(encoding="utf-8"))
@@ -91,13 +91,13 @@ def test_setting_field_is_exposed_per_role() -> None:
 
     spec = SPEC_BY_PATH["roles.pocket.structured_output"]
     assert spec.kind == "enum" and set(spec.choices) == {"", "auto", "on", "off"}
-    # 四个子 Agent 与协调 Agent 都有该字段
+    # 四个子 Agent 与协调 Agent 都带该字段
     for role in ("coordinator", "pocket", "property", "docking", "binding"):
         assert f"roles.{role}.structured_output" in SPEC_BY_PATH
 
 
 # --------------------------------------------------------------------------- #
-# 3) 构建期真的不再挂 ToolStrategy（这条是用户可见问题的核心）
+# 3) 构建期不再挂载 ToolStrategy（这条对应使用者可见的问题）
 # --------------------------------------------------------------------------- #
 def test_worker_build_skips_forced_tool_choice_after_rejection(
         isolated: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,7 +145,7 @@ def test_worker_build_uses_tool_strategy_when_supported(isolated: Path,
 
 
 class _FakeLLM:
-    """最小可绑定对象：`create_agent` 与中间件都被打桩，只需要支持绑定类方法。"""
+    """最小可绑定对象：`create_agent` 与中间件都被打桩，只需支持绑定类方法。"""
 
     def bind(self, **_kwargs: Any) -> "_FakeLLM":
         return self

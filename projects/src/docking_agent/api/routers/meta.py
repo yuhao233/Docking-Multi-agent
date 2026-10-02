@@ -30,24 +30,24 @@ async def api_health() -> Dict[str, Any]:
         "model": cfg.get("model"),
         "base_url": cfg.get("base_url"),
         "engine_available": _engine_available(),
-        # 本机自动识别的算力与据此得出的对接并发（容器配额/亲和性都算在内），
-        # 便于部署后一眼确认「这台机器会用几个进程 × 几个线程」
+        # 本机自动识别的算力与据此得出的对接并发（容器配额与 CPU 亲和性都算在内），
+        # 便于部署后直接确认「这台机器会用几个进程 × 几个线程」
         "machine": machine_profile(),
         "docking_plan": {"large_library": {"workers": big["workers"],
                                            "threads": big["threads"]},
                          "single_molecule": {k: v for k, v in
                                              plan_concurrency(1).items()
                                              if k in ("workers", "threads")}},
-        # 每个 Agent 角色最终生效的模型配置（可不同模型/端点）
+        # 每个 Agent 角色最终生效的模型配置（可为不同模型或端点）
         "roles": describe_roles(),
     }
 
 
 @router.get("/api/receptors")
 async def api_receptors() -> Dict[str, Any]:
-    """**内部/诊断端点**：列出注册表里的预置受体（仅内部测试夹具，不面向用户）。
+    """内部诊断端点：列出注册表里的预置受体，仅供内部测试夹具使用。
 
-    用户界面**不再**调用它，也不再把它当作可选受体来源；用户只能通过
+    界面不再调用该端点，也不把它当作可选受体来源；调用方只能通过
     PDB 编号 / UniProt accession / 基因或蛋白名称 / 上传结构文件指定受体。
     """
     return {

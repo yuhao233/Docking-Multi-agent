@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field
 class AgentRequest(BaseModel):
     """多 Agent 请求。
 
-    mode 决定「自然语言指令」与「表单参数」谁是权威，避免二者冲突：
-      - manual（默认）：表单参数权威，message 仅作为目标描述/额外要求；
-      - chat + advanced=False：纯对话，完全按指令执行，不注入任何参数；
+    mode 决定「自然语言指令」与「表单参数」的优先级，避免二者冲突：
+      - manual（默认）：表单参数优先，message 仅作为目标描述与额外要求；
+      - chat + advanced=False：纯对话，按指令执行，不注入任何参数；
       - chat + advanced=True：对话为主，参数作为「仅当指令未指定时生效」的默认值。
     """
 

@@ -1,12 +1,12 @@
 """实时逐分子结果（`molecules` 事件）的服务端回归测试。
 
-注意：多 Agent（对话）模式下 `run_docking` 只把 `live_progress` 计数写进运行记录，
-API 心跳也只会转成 `progress` 事件，于是前端「实时逐分子结果」表在整段运行里一直是空的
-（历史上只有已移除的确定性流水线会发 `molecules`）。修复后工具逐条上报
-`live_molecules`，心跳把它们转成与旧流水线同构的 `molecules` 事件。
+多 Agent（对话）模式下 `run_docking` 只把 `live_progress` 计数写进运行记录，
+API 心跳也只会转成 `progress` 事件，前端「实时逐分子结果」表在整段运行里保持为空，
+已移除的确定性流水线是唯一发出 `molecules` 事件的路径。工具逐条上报
+`live_molecules` 后，心跳把它们转成与旧流水线同构的 `molecules` 事件。
 
-这里用一个假协调图替代真实 LLM：图里直接调用工具侧的行构造器并写运行缓冲，
-其余（心跳、SSE 编码、运行记录）全走真实代码路径。
+测试用一个假协调图替代真实 LLM：图里直接调用工具侧的行构造器并写运行缓冲，
+心跳、SSE 编码与运行记录仍走真实代码路径。
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class _FakeState:
 
 
 class _LiveMoleculeGraph:
-    """假协调图：模拟「子 Agent 正在逐个上报对接结果」，每个结果之间跨一个心跳窗口。"""
+    """假协调图：模拟子 Agent 逐条上报对接结果，每条结果之间跨一个心跳窗口。"""
 
     async def astream(self, payload: Any, config: Any = None,
                       stream_mode: Any = None, context: Any = None) -> AsyncIterator[Any]:
@@ -62,7 +62,7 @@ class _LiveMoleculeGraph:
         ]
         for i, row in enumerate(rows):
             run.data.setdefault("live_molecules", []).append(_live_molecule_row(row, i, len(rows)))
-            await asyncio.sleep(1.15)      # 跨过 _interleave 的 1s 心跳 → 触发 _tick 排空
+            await asyncio.sleep(1.15)      # 跨过 _interleave 的 1s 心跳窗口，触发 _tick 排空
         yield ("updates", {"docking": {}})
 
     async def aget_state(self, config: Any = None) -> Any:
@@ -84,7 +84,7 @@ def test_agent_stream_emits_molecules_events_during_run(client: Any, monkeypatch
 
     fake = _LiveMoleculeGraph()
     monkeypatch.setattr(app_mod.state, "graph", fake)
-    # 假图没有真实工具消息，产物持久化不是本测试的对象 → 用空结果替代
+    # 假图没有真实工具消息，产物持久化不是本测试的关注点，用空结果替代
     monkeypatch.setattr(persistence_mod, "persist_agent_run",
                         lambda run, messages, final_text: {"ranking": [], "molecules": []})
 

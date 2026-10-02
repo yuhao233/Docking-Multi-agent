@@ -1,14 +1,14 @@
-"""打包与依赖一致性（P0 规范改造）。
+"""打包与依赖一致性回归（P0 规范改造）。
 
-注意（修复）：项目此前**没有安装进自己的 venv**（`find_spec('docking_agent')` 为 None），
-`[project.scripts] docking-agent` 在开发环境完全不可用，所有入口都靠 `PYTHONPATH=src` 兜着；
-依赖还在 `pyproject.toml` 与 `requirements-local.txt` 两处各写一份、无人看守。
+依赖清单以 `pyproject.toml` 为单一来源，`requirements-local.txt` 与之镜像；
+项目按 editable 方式安装进自身 venv，`[project.scripts] docking-agent` 因此可用，
+`PYTHONPATH=src` 只作为兜底手段。
 
-这里把三件事固定成回归：
-1. 两份依赖清单必须集合一致（改一处忘另一处会立刻红）；
-2. 本包可导入、版本与 pyproject 一致、`paths.project_root()` 指向仓库内的 `projects/`
+三项内容固定为回归：
+1. 两份依赖清单的集合必须一致（改一处忘另一处会立刻失败）；
+2. 本包可导入、版本与 `pyproject.toml` 一致、`paths.project_root()` 指向仓库内的 `projects/`
    （部署层依赖这条：运行产物与 assets 都按它定位）；
-3. `[project.scripts]` 声明的入口真实存在且可调用。
+3. `[project.scripts]` 声明的入口存在且可调用。
 """
 from __future__ import annotations
 
@@ -61,10 +61,10 @@ def test_console_script_entrypoint_is_importable() -> None:
 
 def test_runtime_layout_guard_fails_loudly_on_wheel_install(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """wheel 安装（缺 `config/` / `web/` / `assets/`）必须**当场失败或响亮告警**。
+    """wheel 安装缺少 `config/` / `web/` / `assets/` 时，自检当场失败或发出告警。
 
-    本系统按**源码检出**运行：前端、受体注册表、示例资源都在仓库里，不在 wheel 内。
-    没有这道自检时，用户会看到「前端 404 / 找不到受体注册表」这类晦涩症状。
+    本系统按源码检出运行：前端、受体注册表、示例资源都在仓库里，不在 wheel 内。
+    缺少这道自检时，前端会返回 404 或读不到受体注册表，问题要到运行期才暴露。
     """
     from docking_agent import paths
 
@@ -72,7 +72,7 @@ def test_runtime_layout_guard_fails_loudly_on_wheel_install(
     assert sorted(paths.missing_layout_dirs()) == ["assets", "config", "web"]
     with pytest.raises(RuntimeError, match="布局不完整"):
         paths.assert_runtime_layout(strict=True)
-    paths.assert_runtime_layout(strict=False)          # 非严格：只告警，不打断
+    paths.assert_runtime_layout(strict=False)          # strict=False：只告警，不中断
     for name in paths.LAYOUT_DIRS:
         (tmp_path / name).mkdir()
     assert paths.missing_layout_dirs() == []
@@ -80,13 +80,13 @@ def test_runtime_layout_guard_fails_loudly_on_wheel_install(
 
 
 def test_runtime_layout_is_intentionally_outside_the_wheel() -> None:
-    """打包口径**明确为源码检出 / editable 安装**（审计 3.8 的方案 B）。
+    """打包口径确认为源码检出 / editable 安装。
 
     理由：`assets/cache`、`assets/uploads`、`config/local_settings.json`、`var/` 都是
-    **运行期写入**的目录，塞进 site-packages 属于错误设计；因此**不提供 force-include**，
-    而是在真正的服务入口（`cli -m http`）用 `strict=True` 当场失败，而不是等前端 404。
-    这条用例把「声明」和「执行」绑在一起：谁只加一半（例如加了 force-include 却仍按
-    文件系统路径读资源）都会在这里变红。
+    运行期写入的目录，放进 site-packages 属于错误设计；因此不提供 force-include，
+    而在真正的服务入口（`cli -m http`）用 `strict=True` 当场失败，避免前端 404。
+    这条用例把「声明」与「执行」绑在一起：只做一半的改动（例如加了 force-include 却
+    仍按文件系统路径读资源）会在这里失败。
     """
     wheel = _pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]
     assert "force-include" not in wheel, (

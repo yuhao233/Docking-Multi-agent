@@ -1,7 +1,7 @@
 """报告骨架的前半部分：抬头（表 1）、第 0 节「本次要求与响应」、第 1 节「任务与参数」、第 2 节「结果排序」。
 
-每个 `section_*` 函数都是「上下文 → 行列表」，由 `report.py:build_markdown_report()`
-**按固定顺序**调用；图/表编号计数器挂在上下文上，因此跨章节仍连续。
+每个 `section_*` 函数把上下文转成行列表，由 `report.py:build_markdown_report()`
+按固定顺序调用；图/表编号计数器挂在上下文上，因此跨章节仍连续。
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def section_header(ctx: ReportContext) -> List[str]:
     if ctx.custom.get("title"):
         L.append("")
     center_txt, size_txt = ctx.center_txt, ctx.size_txt
-    # 抬头表只放摘要：盒子来源与库级下限的完整说明在第 1.2 节，避免 2 列表格被压到截断
+    # 抬头表只放摘要：盒子来源与库级下限的说明在第 1.2 节，避免 2 列表格被压到截断
     box_cell = f"中心 {center_txt} Å；尺寸 {size_txt}"
     if ctx.spec:
         meta_spec_cell = (f"`{ctx.spec.get('task_type')}` · 权威={ctx.spec.get('authority')} · "
@@ -69,7 +69,7 @@ def section_header(ctx: ReportContext) -> List[str]:
 
 
 def section_0_requirements(ctx: ReportContext) -> List[str]:
-    """第 0 节：协调 Agent 按本次要求组织的部分（骨架不变，内容按用户要求变化）。"""
+    """第 0 节：协调 Agent 按本次要求组织的部分（表头与骨架固定，内容随要求变化）。"""
     L: List[str] = []
     custom = ctx.custom
     requirements = [r for r in (custom.get("requirements") or []) if isinstance(r, dict)]
@@ -169,8 +169,8 @@ def _section_1_1_task_source(ctx: ReportContext) -> List[str]:
                  "受体、位点、配体与参数均以表单/请求为准。")
         L.append("")
     if ctx.notes:
-        # 报告只给一句话、最多 6 条：完整原文在 run.json / 结果 JSON 里。
-        # 同一次运行往往有多个受体准备（重跑/多种子），同一件事会逐条重复 → 这里按签名去重。
+        # 报告只给一句话、最多 6 条：原文在 run.json / 结果 JSON 里。
+        # 同一次运行往往有多个受体准备（重跑/多种子），同一件事会逐条重复，这里按签名去重。
         L.append("**运行笔记**（最多 6 条；完整记录见 `run.json` 的 `notes`）：")
         L.append("")
         for n in _dedupe_notes(ctx.notes)[:6]:
@@ -239,7 +239,7 @@ def _section_1_3_params(ctx: ReportContext) -> List[str]:
                 for a in prot["applied"][:5] if isinstance(a.get("before"), (int, float)))
             if examples:
                 detail += f"；例如 {examples}"
-        # 质子化引擎溯源：优先专业 pKa 引擎（Dimorphite-DL）；回退内置规则表时如实说明
+        # 质子化引擎溯源：优先 pKa 引擎（Dimorphite-DL）；回退内置规则表时如实说明
         engines = prot.get("engine_counts") or {}
         engine_txt = ""
         if engines:
@@ -324,8 +324,8 @@ def section_2_ranking(ctx: ReportContext) -> List[str]:
 
     L.append("### 2.1 主组排序")
     L.append("")
-    # 输入文件里的附加信息（ID / CAS / 自定义字段）：只有**真的存在**才加列，
-    # 避免给没有这些信息的库排出空列（用户要求"输出带上 ID/CAS"，没有就如实留空）。
+    # 输入文件里的附加信息（ID / CAS / 自定义字段）：确实存在时才加列，
+    # 避免给没有这些信息的库排出空列（请求输出带 ID/CAS 时，没有就如实留空）。
     def _remark(m: Dict[str, Any]) -> str:
         fields = m.get("fields") or {}
         return "; ".join(f"{k}={v}" for k, v in fields.items()
@@ -388,7 +388,7 @@ def section_2_ranking(ctx: ReportContext) -> List[str]:
     return L
 
 
-#: 第 2 波结构拆分后仍需从本模块可见的公开符号（供静态检查与文档核对）
+#: 结构拆分后仍需从本模块可见的公开符号（供静态检查与文档核对）
 SECTIONS: Dict[str, Any] = {
     "header": section_header,
     "requirements": section_0_requirements,

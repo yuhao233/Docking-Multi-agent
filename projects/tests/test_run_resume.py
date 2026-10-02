@@ -1,13 +1,13 @@
-"""点选候选 = **续跑同一个运行**（设计约束），不再另起一个运行记录。
+"""点选候选即续跑同一个运行（设计约束），不另起运行记录。
 
-注意：用户回答共晶配体阳性对照那一问后，界面又生成了一个**新运行**，
-用户的原话是「明明是为一个运行准备参数条件」——答案属于那次运行，不该另起一条记录。
+共晶配体阳性对照的问题被回答后，该答案属于发起提问的那次运行，
+界面因此不生成新的运行记录。
 
-实现要点（本文件看护）：
-* 请求带 `resume_run_id` 时**复用**该运行（不新建目录、不重新受理），
+实现要点：
+* 请求带 `resume_run_id` 时复用该运行，不新建目录、不重新受理，
   `task_spec` / `param_plan` 沿用第一次受理的结果；
-* 答案作为一条 `HumanMessage` 注入线程，并以 `None` 入参从 checkpoint 继续（不是从头再来）；
-* 被回答的候选（`positive_control` 等）连同阻断标记一起清掉，否则工具护栏会继续拒绝开跑。
+* 答案作为一条 `HumanMessage` 注入线程，并以 `None` 入参从 checkpoint 继续；
+* 被回答的候选（`positive_control` 等）连同阻断标记一起清掉，否则工具护栏继续拒绝开跑。
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def _paused_run(store: Any, *, conversation_id: str) -> Any:
-    """造一个"停在候选问题上"的运行（与真实阻断暂停后的状态一致）。"""
+    """造一个停在候选问题上的运行，字段与阻断暂停后的状态一致。"""
     run = store.new("agent", {"message": "使用上传的文件完成对接", "mode": "chat"})
     run.set(status="needs_user_input", conversation_id=conversation_id, thread_id=conversation_id,
             task_spec={"task_type": "screening"}, param_plan={"exhaustiveness": 32})
@@ -97,8 +97,8 @@ def test_choice_answer_resumes_the_same_run(client: TestClient,
         after = {p.name for p in store.root.iterdir() if p.is_dir()}
         assert after - before == set(), f"续跑不该新建运行目录：{sorted(after - before)}"
 
-        # 续跑必须**真的把图跑起来**（注意：暂停后图的 next 已空，
-        # 用 astream(None) 不会触发任何节点，运行 1 秒就"完成"）
+        # 续跑需要真正把图跑起来：暂停后图的 next 已空，
+        # 传 astream(None) 不触发任何节点，运行会在 1 秒内标记完成
         assert stub.payloads, "续跑没有把图跑起来"
         payload = stub.payloads[0]
         text = json.dumps(payload, ensure_ascii=False, default=str) if payload else ""
@@ -124,7 +124,7 @@ def test_choice_answer_resumes_the_same_run(client: TestClient,
 
 def test_resume_without_pending_choices_falls_back_to_a_new_run(
         client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """没有待回答候选的 run_id（伪造/过期）不能劫持：必须当作新运行处理。"""
+    """没有待回答候选的 run_id（伪造或过期）按新运行处理，不劫持既有记录。"""
     from docking_agent.api import support
     from docking_agent.runs import get_run_store
 
@@ -152,11 +152,11 @@ def test_resume_without_pending_choices_falls_back_to_a_new_run(
 
 def test_resume_keeps_user_parameters_and_applies_the_answer(
         client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """续跑不得把用户第一次设置的参数冲掉（只覆盖这次真正给了值的字段）。
+    """续跑不覆盖调用方第一次设置的参数，只覆盖本次真正给出值的字段。
 
-    真实场景：用户第一次在表单里设了 exhaustiveness/盒子/引擎，点选候选时前端**不会**把这些
-    字段再发一遍（对话模式只发附件与选择字段）——如果续跑用 `{**旧, **新}` 合并，那些字段会被
-    默认值 None/"" 覆盖，用户设置就丢了。
+    第一次在表单里设置的 exhaustiveness、盒子与引擎，在点选候选时前端不再重发
+    （对话模式只发附件与选择字段）；若续跑把旧请求字典与新字段做浅合并，
+    新值为 None 或空串的字段会覆盖原设置，原设置丢失。
     """
     from docking_agent.api import support
     from docking_agent.runs import get_run_store
@@ -177,7 +177,7 @@ def test_resume_keeps_user_parameters_and_applies_the_answer(
     run.save()
     try:
         resp = client.post("/api/agent/stream", json={
-            "mode": "chat", "conversation_id": conversation,     # 注意：不带任何表单参数
+            "mode": "chat", "conversation_id": conversation,     # 本次请求不带任何表单参数
             "message": "把 Z9N 作为阳性对照继续",
             "positive_control": "OC[C@H]1O[C@@](O)(CO)[C@@H](O)[C@@H]1O",
             "positive_control_decision": "use",
@@ -202,7 +202,7 @@ def test_resume_keeps_user_parameters_and_applies_the_answer(
 
 
 # --------------------------------------------------------------------------- #
-# 暂停必须"让当前步自然结束"，不能中途掐断流
+# 暂停需要等当前步自然结束，不在中途掐断流
 # --------------------------------------------------------------------------- #
 class _BlockingStubGraph(_StubGraph):
     """第一步就下发阻断式候选（模拟 `molecular_docking` 在并行工具步里发问）。"""
@@ -225,12 +225,12 @@ class _BlockingStubGraph(_StubGraph):
 
 def test_blocking_choice_does_not_cut_the_stream(client: TestClient,
                                                 monkeypatch: pytest.MonkeyPatch) -> None:
-    """阻断式候选下发后**不得中断流**（否则同一步里在飞的工具结果会丢）。
+    """阻断式候选下发后不中断流，否则同一步里仍在执行的工具结果会丢。
 
-    注意：`run_property_assessment` 与 `run_docking` 并行进行时
-    候选中途下发，旧实现立即 `return` 掐断 SSE —— 性质评估虽然跑完了，但它的 ToolMessage
-    没进 checkpoint；用户点选后只能补"该调用被中断、没有结果"的占位回执，模型据此直接收尾，
-    对接一次都没跑（`ranking.json` 是空数组）。
+    `run_property_assessment` 与 `run_docking` 并行进行、候选中途下发时，
+    此前的实现会在此处以 `return` 掐断 SSE，性质评估已经跑完但其 ToolMessage
+    未进 checkpoint；点选后只能补「该调用被中断、没有结果」的占位回执，
+    模型据此直接收尾，对接未执行（`ranking.json` 是空数组）。
     """
     from docking_agent.api import support
     from docking_agent.runs import get_run_store
@@ -244,7 +244,7 @@ def test_blocking_choice_does_not_cut_the_stream(client: TestClient,
             "mode": "chat", "message": "上传文件做筛选", "conversation_id": "conv-blocking"})
         assert resp.status_code == 200, resp.text
         assert stub.payloads, "请求没有走到图执行"
-        # 三段都在流里 = 没有中途掐断（旧实现只能看到第一段之前的部分）
+        # 三段都在流里，可见没有中途掐断（此前的实现只输出到第一段之前）
         for marker in ("第一段", "第二段", "第三段"):
             assert marker in resp.text, f"流被提前掐断，缺少：{marker}"
     finally:
@@ -256,9 +256,9 @@ def test_blocking_choice_does_not_cut_the_stream(client: TestClient,
 
 
 def test_pending_blocking_choice_marks_the_run_needs_user_input(tmp_path: Any) -> None:
-    """有待回答的阻断式问题时，即使别的工具已经出结果，运行也必须是 needs_user_input。
+    """存在待回答的阻断式问题时，即使别的工具已经出结果，运行状态也标为 needs_user_input。
 
-    否则历史里显示 ok、用户以为跑完了，而对接其实一次都没跑（工具按护栏拒绝开跑）。
+    否则运行列表显示 ok，被误判为已完成，而对接未执行（工具按护栏拒绝开跑）。
     """
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run

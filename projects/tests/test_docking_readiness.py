@@ -1,4 +1,4 @@
-"""对接的前置条件由**工具**守：信息没确认就不计算（不靠提示词求模型自觉）。"""
+"""对接前置条件由工具侧校验：信息未确认时不执行计算，不依赖提示词约束模型。"""
 from __future__ import annotations
 
 import json
@@ -21,7 +21,7 @@ def test_missing_receptor_blocks_docking() -> None:
 
 
 def test_site_and_library_are_not_hard_preconditions() -> None:
-    """位点由对接路径现场确定；配体可能来自 ligands_text/黑板 → 两者都不该拦住开跑。"""
+    """位点由对接路径确定；配体可来自 `ligands_text` 或黑板，两者都不作为拦截条件。"""
     run = _Run(request={"receptor_file": "/tmp/r.pdb", "ligands_text": "乙醇:CCO"})
     assert docking_readiness(run) == []
 

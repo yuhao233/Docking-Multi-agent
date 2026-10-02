@@ -1,9 +1,9 @@
-"""结合口袋预测与「工具定盒」的回归测试。
+"""结合口袋预测与工具定盒的回归测试。
 
-关键质量门：内置几何法在凝血酶（1DWC）上必须把**共晶配体所在的位点**排进 top-3。
-本文件用 **1.5 Å 粗网格**（快，≈0.3 s）跑质量门：实测 top-1 距共晶配体 MIT 中心
-31.5/13.74/24.36 为 **3.60 Å**（默认 1.0 Å 网格为 2.6 Å，见 `core/pockets.py` 的实测表）——
-精度与网格间距相关，引用数字要带 spacing。这是「盒子不是猜的」的客观证据。
+质量门：内置几何法在凝血酶（1DWC）上把共晶配体所在的位点排进 top-3。
+该文件用 1.5 Å 粗网格（耗时 ≈0.3 s）跑质量门：top-1 距共晶配体 MIT 中心
+31.5/13.74/24.36 为 3.60 Å（默认 1.0 Å 网格为 2.6 Å，见 `core/pockets.py` 的精度表）。
+精度与网格间距相关，引用数字须同时给出 spacing，作为盒子来源可核验的依据。
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def test_geometric_detector_finds_cocrystal_site():
     from docking_agent.core import pockets as P
 
     atoms = P.read_receptor_atoms(THROMBIN_PDBQT)
-    out = P.detect_geometric(atoms, top_n=5, spacing=1.5)   # 测试用粗网格，快
+    out = P.detect_geometric(atoms, top_n=5, spacing=1.5)   # 测试用粗网格，耗时低
     assert out["status"] == "ok" and out["pockets"]
     ligand = P.cocrystal_ligand(THROMBIN_PDB)
     assert ligand and ligand["resname"] == "MIT"
@@ -73,7 +73,7 @@ def test_cocrystal_ligand_skips_ions_and_additives():
 
 
 # --------------------------------------------------------------------------- #
-# 口袋 → 盒子
+# 口袋转盒子
 # --------------------------------------------------------------------------- #
 def test_pocket_to_box_padding_and_clamping():
     from docking_agent.core import pockets as P
@@ -180,7 +180,7 @@ def test_p2rank_home_env_override(monkeypatch, tmp_path):
 
 
 def test_p2rank_unavailable_is_reported_honestly(monkeypatch):
-    """没有 P2Rank 时必须如实报告 unavailable，并让 auto 回退几何法。"""
+    """缺少 P2Rank 时报告 unavailable，auto 引擎回退内置几何法。"""
     from docking_agent.core import pockets as P
 
     monkeypatch.setattr(P, "p2rank_home", lambda: None)
@@ -262,7 +262,7 @@ def board_ctx():
 
 
 def test_pocket_tools_predict_compare_commit(thrombin_spec, board_ctx, monkeypatch):
-    """三个工具串起来：预测 → 与实验位点比对 → 提交盒子（真实计算）。"""
+    """三个工具串联使用：先预测口袋，再与实验位点比对，最后提交盒子（真实计算）。"""
     from docking_agent.tools.pockets import (
         compare_pocket_with_experiment,
         list_pocket_engines,
@@ -282,7 +282,7 @@ def test_pocket_tools_predict_compare_commit(thrombin_spec, board_ctx, monkeypat
     cmp_result = json.loads(compare_pocket_with_experiment.invoke(
         {"pocket_rank": 1, "receptor_file": THROMBIN_PDBQT}))
     assert cmp_result["status"] == "ok"
-    # verdict 必须是 validation 结论的**直接映射**（原先只断言"属于某个枚举"，恒真）
+    # verdict 须由 validation 结论直接映射（只断言属于某个枚举的写法恒真）
     validation = cmp_result["validation"]
     assert validation["status"] in ("consistent", "inconsistent", "no_reference"), validation
     assert cmp_result["verdict"] == validation["status"], (cmp_result["verdict"], validation)
@@ -319,7 +319,7 @@ def test_set_docking_site_rejects_unknown_rank(board_ctx):
 
 
 def test_predict_requires_receptor(board_ctx, monkeypatch):
-    """未指定受体 → 直接拦下提问，**不执行任何口袋分析**（预置受体仅内部测试用）。"""
+    """未指定受体时直接提问，不执行任何口袋分析（预置受体仅内部测试用）。"""
     from docking_agent.tools import pockets as T
 
     monkeypatch.setattr(T, "_resolve_specs",
@@ -331,7 +331,7 @@ def test_predict_requires_receptor(board_ctx, monkeypatch):
 
 
 def test_predict_reports_no_receptor_when_specs_come_back_empty(board_ctx, monkeypatch) -> None:
-    """对照：受体**已指定**但解析不出任何 spec 时，仍如实报 no_receptor（不是提问）。"""
+    """对照用例：受体已指定但解析不出任何 spec 时，如实报 no_receptor（不是提问）。"""
     from docking_agent.tools import pockets as T
 
     monkeypatch.setattr(T, "_resolve_specs", lambda *a, **k: [])
@@ -340,8 +340,8 @@ def test_predict_reports_no_receptor_when_specs_come_back_empty(board_ctx, monke
 
 
 def test_predict_never_falls_back_to_default_receptor(board_ctx, monkeypatch) -> None:
-    """旧行为（未指定受体 → 按系统默认受体处理）已被用户明确删除：
-    现在只提问、零工具调用，绝不替用户挑靶点。"""
+    """未指定受体时不回退系统默认受体：只提问、零工具调用，不代为挑选靶点。
+    判定条件是该路径不产生任何受体 spec，也不下发预置受体选项。"""
     from docking_agent.tools import pockets as T
 
     monkeypatch.setenv("POCKET_ENGINE", "geometric")
@@ -431,7 +431,7 @@ def test_persist_recovers_box_provenance_from_raw_tool_output(tmp_path):
 
 
 def test_persist_recovers_pockets_from_docking_block(tmp_path):
-    """子 Agent 嵌套调用不进父图历史时，口袋信息仍要从对接块里恢复出来。"""
+    """子 Agent 嵌套调用不写入父图时，口袋信息仍要从对接块里恢复出来。"""
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
 
@@ -457,7 +457,7 @@ def test_persist_recovers_pockets_from_docking_block(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# P2Rank（成熟工具）：装了就要跑通；没装则跳过（CI 可无 P2Rank）
+# P2Rank：已部署时跑真实预测，未部署则跳过（CI 可不装 P2Rank）
 # --------------------------------------------------------------------------- #
 P2RANK_READY = __import__("docking_agent.core.pockets", fromlist=["x"]).available_engines()["p2rank"]
 
@@ -481,7 +481,7 @@ def test_p2rank_predicts_the_cocrystal_site():
 
 @pytest.mark.skipif(not P2RANK_READY, reason="本机未部署 P2Rank")
 def test_auto_engine_prefers_p2rank(thrombin_spec):
-    """engine=auto 时应优先使用 P2Rank（成熟工具），而不是内置几何法。"""
+    """`engine=auto` 时优先使用 P2Rank，而不是内置几何法。"""
     from docking_agent.core import pockets as P
 
     out = P.detect_pockets(THROMBIN_PDBQT, engine="auto", top_n=5, pdb_hint=THROMBIN_PDB,
@@ -496,7 +496,7 @@ def test_auto_engine_prefers_p2rank(thrombin_spec):
 
 
 def test_site_trust_classification():
-    """盒子来源的可信度判定：兜底来源优先、未识别一律保守（防「蛋白质心当实验位点」）。"""
+    """盒子来源的可信度判定：兜底来源优先，未识别来源按兜底处理，避免把蛋白质质心当成实验位点。"""
     from docking_agent.core import pockets as P
 
     def trust(source):
@@ -505,7 +505,7 @@ def test_site_trust_classification():
 
     assert trust("") == "fallback"
     assert trust("蛋白质质心") == "fallback"
-    # 注意：这句话里同时含「共晶」与「蛋白质质心」，必须按兜底来源判定
+    # 该来源串同时含「共晶」与「蛋白质质心」，按兜底来源判定
     assert trust("蛋白质质心（未找到共晶配体，建议由口袋预测工具确定位点）") == "fallback"
     assert trust("受体原子质心（未找到位点信息，建议显式指定位点）") == "fallback"
     assert trust("某个没见过的来源") == "fallback"
@@ -515,10 +515,10 @@ def test_site_trust_classification():
 
 
 def test_apo_receptor_site_is_low_trust_and_tool_takes_over(tmp_path):
-    """无共晶配体的受体：位点来源必须标成低可信，并由工具预测接管盒子。"""
+    """无共晶配体的受体：位点来源标为低可信，盒子由工具预测接管。"""
     from docking_agent.core import prepare_user_receptor, pockets as P
 
-    # 造一个「删掉若干残基」的 apo 受体：内容与注册受体不同 → 没有已知位点
+    # 构造一个删掉若干残基的 apo 受体：内容与注册受体不同，因此没有已知位点
     source = PROJECT_ROOT / "assets/receptors/structures/thrombin.pdb"
     apo = tmp_path / "apo_thrombin.pdb"
     with source.open() as src, apo.open("w") as dst:
@@ -540,7 +540,7 @@ def test_apo_receptor_site_is_low_trust_and_tool_takes_over(tmp_path):
 
 
 def test_persist_recovers_pockets_from_blackboard(tmp_path):
-    """子 Agent 嵌套调用不进父图历史时，口袋结果必须能从共享黑板恢复。"""
+    """子 Agent 嵌套调用不写入父图时，口袋结果须能从共享黑板恢复。"""
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run

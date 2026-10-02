@@ -1,8 +1,8 @@
 """检查点存储（checkpointer）。
 
-本地化改造：原实现优先连接 Coze 平台的 Postgres（AsyncPostgresSaver），失败再退化内存。
-本地部署默认使用进程内 InMemorySaver（旧名 MemorySaver 是同一对象的别名）；如需跨进程持久化，可设置
-`CHECKPOINT_BACKEND=sqlite`（需额外安装 langgraph-checkpoint-sqlite）。
+本地部署默认使用进程内 InMemorySaver，旧名 MemorySaver 指向同一对象；原实现优先连接
+Coze 平台的 Postgres（AsyncPostgresSaver），连接失败后回退内存。需要跨进程持久化时，
+可设置 `CHECKPOINT_BACKEND=sqlite`，该后端需要额外安装 `langgraph-checkpoint-sqlite`。
 """
 from __future__ import annotations
 

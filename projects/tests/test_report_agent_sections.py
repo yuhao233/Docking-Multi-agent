@@ -1,4 +1,4 @@
-"""报告：结构固定、内容由 Agent 写（自定义小节 + ID/CAS/备注 列）。"""
+"""报告：结构固定，文字内容由 Agent 生成（自定义小节与 ID/CAS/备注 列）。"""
 from __future__ import annotations
 
 
@@ -25,7 +25,7 @@ def test_no_sections_means_no_extra_chapter() -> None:
 
 
 def test_binding_section_lists_recommended_molecules() -> None:
-    """报告里"展示哪些分子"以**推荐排行**为准（用户要求），不再另按亲和力截取一批。"""
+    """报告中展示的分子取自推荐排行，不按亲和力另行截取一批。"""
     from docking_agent.reporting.report_context import ReportContext
     from docking_agent.reporting.report_sections_results import section_5_binding
 
@@ -44,13 +44,13 @@ def test_binding_section_lists_recommended_molecules() -> None:
     text = "\n".join(section_5_binding(ctx))
     assert "推荐分子" in text
     assert "M3" in text and "M5" in text
-    # 未被推荐的 M1（CCO，亲和力最高）不应出现在这张表里
+    # 未被推荐的 M1（CCO，亲和力最高）不列入该表
     table = text.split("结合模式与阳性对照比较")[-1]
     assert "M1" not in table, table[:400]
 
 
 def test_agent_text_is_polished_without_rewriting_facts() -> None:
-    """报告文字只做"减法"：去过渡词/过程句/重复句，事实与数字一个不动。"""
+    """报告文字只做删减：去掉过渡词、过程句与重复句，事实与数字保持不变。"""
     from docking_agent.reporting.content import extract_agent_conclusions, polish_agent_text
 
     raw = """## 结论

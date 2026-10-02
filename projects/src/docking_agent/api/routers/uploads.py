@@ -1,4 +1,4 @@
-"""路由：文件上传（只落盘）与「校验文件」（用户主动触发，才做解析/受体准备）。"""
+"""路由：文件上传（只落盘）与「校验文件」（由调用方主动触发，才做解析 / 受体准备）。"""
 from __future__ import annotations
 
 import asyncio
@@ -23,10 +23,10 @@ router = APIRouter()
 
 @router.post("/api/uploads")
 async def api_upload(file: UploadFile = File(...), kind: str = Form(default="auto")) -> Dict[str, Any]:
-    """**只保存文件，不解析、不做任何准备**（设计约束：开始运行时才处理）。
+    """只保存文件，不解析、不做准备（设计约束：开始运行时才处理）。
 
-    返回 `path` 可直接作为 `molecule_file` / `receptor_file` 传给运行接口；
-    想在上传后先看一眼解析结果/位点盒，调用 `POST /api/uploads/inspect`（用户主动触发）。
+    返回的 `path` 可直接作为 `molecule_file` / `receptor_file` 传给运行接口；
+    若需在上传后查看解析结果与位点盒，调用 `POST /api/uploads/inspect`（由调用方触发）。
     """
     from docking_agent.core.normalize import RECEPTOR_EXTS, sniff_format
     from docking_agent.paths import project_root, uploads_dir
@@ -55,7 +55,7 @@ async def api_upload(file: UploadFile = File(...), kind: str = Form(default="aut
     elif ext in RECEPTOR_EXTS:
         is_ligand, is_receptor = False, True
     else:
-        # 扩展名不认识时**按内容嗅探**（只读文件头，代价极小）：`.dat` 里装着 PDB 也算受体
+        # 扩展名无法识别时按内容嗅探（只读文件头，开销小）：`.dat` 内的 PDB 也判为受体
         sniffed = sniff_format(str(dest), data)
         is_ligand, is_receptor = (False, True) if sniffed in ("pdb", "cif", "pdbqt") else (True, False)
 
@@ -74,11 +74,11 @@ async def api_upload(file: UploadFile = File(...), kind: str = Form(default="aut
 
 @router.post("/api/uploads/inspect")
 async def api_upload_inspect(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """**用户主动**校验已上传文件：解析分子数 / 现场准备受体并给出位点盒与化学溯源。
+    """由调用方主动校验已上传文件：解析分子数，现场准备受体并给出位点盒与化学溯源。
 
     与运行阶段共用同一套解析与准备实现（`_receptor_upload_payload` /
-    `_ligand_upload_payload`），因此预览结果与真正运行时一致，不会出现「预览说 30 个、
-    实际跑了 29 个」这种偏差。
+    `_ligand_upload_payload`），预览结果与运行时结果一致，不会出现「预览 30 个、
+    实际跑 29 个」这类偏差。
     """
     from docking_agent.paths import uploads_dir
 
@@ -89,9 +89,9 @@ async def api_upload_inspect(payload: Dict[str, Any]) -> Dict[str, Any]:
     dest = Path(raw_path)
     if not dest.is_file():
         raise HTTPException(status_code=404, detail=f"文件不存在或不可读：{raw_path}")
-    # **只允许工作区内的上传文件**：本端点的语义是「校验**已上传**的文件」，
-    # 而 `path` 来自请求体。不设限时它是一个**任意文件读取**原语：解析器会把内容
-    # 读进内存，解析失败的信息还会经错误体回显（真实漏洞：.env 会被逐行读出）。
+    # 只允许工作区内的上传文件：本端点的语义是「校验已上传的文件」，
+    # 而 `path` 来自请求体。不设限时该端点会成为任意文件读取原语：解析器把内容
+    # 读进内存，解析失败的信息还会经错误体回显（`.env` 可被逐行读出）。
     try:
         dest = ensure_inside(uploads_dir(), dest, field="path")
     except ValueError as e:
@@ -121,6 +121,6 @@ async def api_upload_inspect(payload: Dict[str, Any]) -> Dict[str, Any]:
         label = "受体文件准备失败" if kind == "receptor" else "小分子文件解析失败"
         supported = "/".join(sorted(RECEPTOR_EXTS)) if kind == "receptor" else \
             "SDF/SMI/SMILES/CSV/TSV/MOL2/MOL（可 gzip/zip 压缩）"
-        # 解析器的异常里可能带文件片段（例如「第 3 行 …」）→ 对外必须脱敏
+        # 解析器的异常里可能带文件片段（例如「第 3 行 …」），对外响应需脱敏
         raise HTTPException(status_code=400,
                             detail=f"{label}：{_redact(str(e))}（支持 {supported}）")

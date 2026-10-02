@@ -1,10 +1,10 @@
-"""历史运行检索：关掉页面后仍能找回之前的运行结果。
+"""运行记录检索：页面关闭后仍能找回先前的运行结果。
 
-用户需求原话：「增加一下历史任务查询机制，让用户在关闭页面后也可以再查询之前的运行结果」。
-运行记录本来就持久化在 `var/runs/<run_id>/`，这里补的是**检索能力**：关键词（run_id / 受体 /
-任务描述 / 排序表里的分子名与 ID）、状态、类型、受体、时间范围、分页。
+运行记录持久化在 `var/runs/<run_id>/`，本模块提供检索能力：关键词（run_id /
+受体 / 任务描述 / 排序表里的分子名与 ID）、状态、类型、受体、时间范围、分页。
 
-真实数据上实测（本机 3.4k 条运行）：首次建索引约 0.4 s，之后走进程内缓存（毫秒级）。
+在 3.4k 条运行的数据集上，首次建索引约 0.4 s，
+之后走进程内缓存（毫秒级）。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import pytest
 from docking_agent.runs import get_run_store
 
 # --------------------------------------------------------------------------- #
-# 脚手架：在临时工作区里造 4 条真实结构的运行目录
+# 脚手架：在临时工作区里构造 4 条运行目录
 # --------------------------------------------------------------------------- #
 def _write_run(root: Path, run_id: str, *, status: str, receptor: str, created: str,
                molecules: str = "", goal: str = "") -> None:
@@ -41,7 +41,7 @@ def populated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("DOCKING_WORKSPACE", str(tmp_path))
     import docking_agent.runs as R
 
-    R._store = None                       # 每个用例独立工作区：清掉 store 单例
+    R._store = None                       # 每个用例使用独立工作区：清掉 store 单例
     root = tmp_path
     _write_run(root, "20260921-100000-aaaa", status="ok", receptor="thrombin(1DWC)",
                created="2026-09-21T10:00:00", molecules="阿司匹林,布洛芬", goal="对接受体 thrombin")
@@ -60,7 +60,7 @@ def populated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 @pytest.mark.parametrize("query,expected", [
     ("20260921-100000-aaaa", ["20260921-100000-aaaa"]),
     ("阿司匹林", ["20260921-100000-aaaa"]),
-    # 排序表里的分子 ID 也参与匹配（索引只读排序表前若干行，故各运行的首行 ID 都会命中）
+    # 排序表里的分子 ID 也参与匹配；索引只读取排序表前若干行，故各运行的首行 ID 都会命中
     ("PGR001", ["20260921-100000-aaaa", "20260920-090000-bbbb"]),
     ("trypsin", ["20260920-090000-bbbb"]),
     ("thrombin 布洛芬", ["20260921-100000-aaaa"]),
@@ -99,7 +99,7 @@ def test_pagination_and_shape(populated: Path) -> None:
 
 
 def test_search_results_are_loadable_by_detail_api(populated: Path) -> None:
-    """检索命中的 run_id 必须能直接用于 `/api/runs/{id}` 载入（用户点「载入」的路径）。"""
+    """检索命中的 run_id 能直接用于 `/api/runs/{id}` 载入，对应界面上的载入路径。"""
     store = get_run_store()
     hit = store.search(q="阿司匹林")["runs"][0]["run_id"]
     detail = store.detail(hit)
@@ -107,7 +107,7 @@ def test_search_results_are_loadable_by_detail_api(populated: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3) HTTP 层：带检索参数返回分页结构，不带参数保持旧结构
+# 3) HTTP 层：带检索参数时返回分页结构，不带参数时保持原有结构
 # --------------------------------------------------------------------------- #
 def test_api_runs_search_and_backward_compat(populated: Path) -> None:
     from fastapi.testclient import TestClient
@@ -129,12 +129,12 @@ def test_api_runs_search_and_backward_compat(populated: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 4) 被中断的运行必须收尾：进程重启后不可能还有运行在执行
+# 4) 被中断的运行需要收尾：进程重启后不会有运行仍在执行
 # --------------------------------------------------------------------------- #
 def test_reconcile_marks_stale_running_runs_as_interrupted(populated: Path) -> None:
-    """残留的 running 只能来自进程被杀/崩溃 —— 收尾为 interrupted 并留下说明。
+    """残留的 running 只可能来自进程被杀或崩溃，收尾为 interrupted 并留下说明。
 
-    注意：用户看到历史里某次运行一直「运行中」、`finished_at` 为空，实际早已中断。
+    否则界面上该次运行会一直显示「运行中」且 `finished_at` 为空，而实际早已中断。
     """
     from docking_agent.runs import get_run_store
 
@@ -154,17 +154,17 @@ def test_reconcile_marks_stale_running_runs_as_interrupted(populated: Path) -> N
     assert after["finished_at"] and after["duration_sec"] is not None
     assert "进程重启" in str(after["error"])
     assert any("已中断" in line for line in after["log"]), after["log"][-2:]
-    # 候选必须保留：用户仍需从中点选（点选会以同一会话发起新运行）
+    # 候选需要保留：使用者仍需从中点选，点选会以同一会话发起新运行
     assert len(after["choices"]) == 1
 
-    # 已完成/失败的运行不受影响；重复调用是幂等的
+    # 已完成或失败的运行不受影响；重复调用是幂等的
     assert store.reconcile_interrupted() == []
     assert json.loads((populated / "var" / "runs" / "20260920-090000-bbbb" / "run.json")
                       .read_text(encoding="utf-8"))["status"] == "ok"
 
 
 def test_app_startup_reconciles_interrupted_runs(populated: Path) -> None:
-    """启动钩子必须真的调用收尾（否则重启后仍会显示「运行中」）。"""
+    """启动钩子会调用收尾逻辑；否则重启后仍会显示「运行中」。"""
     from fastapi.testclient import TestClient
 
     from docking_agent.api.app import app
@@ -180,13 +180,13 @@ def test_app_startup_reconciles_interrupted_runs(populated: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 5) 受体自带共晶配体且未指定阳性对照 → 询问是否用作对照（不阻塞筛选）
+# 5) 受体自带共晶配体且未指定阳性对照时，询问是否用作对照（不阻塞筛选）
 # --------------------------------------------------------------------------- #
 def _pdb_with_ligand(tmp_path: Path) -> Path:
-    """最小受体结构：一条蛋白残基 + 一个**由 RDKit 生成**的合法共晶配体块。
+    """最小受体结构：一条蛋白残基与一个由 RDKit 生成的合法共晶配体块。
 
-    手写 HETATM 太简陋会被 RDKit 判为无效价态（实测），因此这里用 RDKit 把乙醇写成 PDB 块，
-    再补一条蛋白 ATOM 记录 —— 与真实受体文件的结构形式一致。
+    手写 HETATM 会被 RDKit 判为无效价态，因此这里用 RDKit 把乙醇写成 PDB 块，
+    再补一条蛋白 ATOM 记录，与受体文件的结构形式一致。
     """
     from rdkit import Chem
 
@@ -214,7 +214,7 @@ def test_cocrystal_ligand_smiles_from_structure(tmp_path: Path) -> None:
 
 def test_offer_when_no_positive_control_specified(tmp_path: Path,
                                                   monkeypatch: pytest.MonkeyPatch) -> None:
-    """未指定对照 + 受体带共晶配体 → 发布 kind=positive_control 的两个选项。"""
+    """未指定对照且受体带共晶配体时，发布 kind=positive_control 的两个选项。"""
     from docking_agent.core.pockets import cocrystal_ligand
     from docking_agent.tools import choices as CH
 
@@ -236,7 +236,7 @@ def test_offer_when_no_positive_control_specified(tmp_path: Path,
 
 def test_no_offer_when_control_already_specified(tmp_path: Path,
                                                  monkeypatch: pytest.MonkeyPatch) -> None:
-    """用户/上游已给出阳性对照时不得再问（避免无意义的打扰）。"""
+    """已由使用者或上游给出阳性对照时不再询问，避免重复打扰。"""
     from docking_agent.core.pockets import cocrystal_ligand
     from docking_agent.tools import choices as CH
 
@@ -252,7 +252,7 @@ def test_no_offer_when_control_already_specified(tmp_path: Path,
 
 def test_no_offer_without_ligand_or_smiles(tmp_path: Path,
                                            monkeypatch: pytest.MonkeyPatch) -> None:
-    """没有共晶配体、或解不出 SMILES 时不询问（绝不拿不确定结构当对照）。"""
+    """没有共晶配体或解不出 SMILES 时不询问，不确定的结构不作为对照。"""
     from docking_agent.core.pockets import cocrystal_ligand
     from docking_agent.tools import choices as CH
 
@@ -262,7 +262,7 @@ def test_no_offer_without_ligand_or_smiles(tmp_path: Path,
     assert CH.offer_cocrystal_positive_control(
         [{"cocrystal_ligand": {}, "receptor_pdb": ""}], specified_control="") == []
 
-    # 有配体但结构文件缺失 → 解不出 SMILES → 不询问
+    # 有配体但结构文件缺失时解不出 SMILES，因此不询问
     pdb = _pdb_with_ligand(tmp_path)
     ligand = cocrystal_ligand(str(pdb))
     assert CH.offer_cocrystal_positive_control(
@@ -272,10 +272,10 @@ def test_no_offer_without_ligand_or_smiles(tmp_path: Path,
 
 def test_ligand_smiles_recovered_from_request_file(tmp_path: Path,
                                                    monkeypatch: pytest.MonkeyPatch) -> None:
-    """对接用的是「已去配体」的准备结构时，要能从请求里的原始受体文件恢复配体 SMILES。
+    """对接使用已去配体的准备结构时，从请求里的原始受体文件恢复配体 SMILES。
 
-    真实案例（7YHP 的共晶配体 5CM）：只读准备结构会解不出，
-    于是系统放弃了询问；现在按「准备结构 → 请求原始文件 → 在线解析缓存」依次尝试。
+    只读准备结构无法解出配体（如 7YHP 的共晶配体 5CM），询问会被跳过；
+    当前按准备结构、请求原始文件、在线解析缓存三个来源依次查找。
     """
     from docking_agent.core.pockets import cocrystal_ligand
     from docking_agent.tools import choices as CH
@@ -283,7 +283,7 @@ def test_ligand_smiles_recovered_from_request_file(tmp_path: Path,
     with_ligand = _pdb_with_ligand(tmp_path)
     ligand = cocrystal_ligand(str(with_ligand))
     assert ligand
-    prepared = tmp_path / "prepared.pdb"                 # 只有蛋白、没有配体
+    prepared = tmp_path / "prepared.pdb"                 # 只有蛋白，没有配体
     prepared.write_text("ATOM      1  N   ALA A   1      11.000  11.000  11.000  "
                         "1.00  0.00           N\nEND\n", encoding="utf-8")
 
@@ -302,7 +302,7 @@ def test_ligand_smiles_recovered_from_request_file(tmp_path: Path,
 
 def test_missing_ligand_message_lists_tried_paths(tmp_path: Path,
                                                   monkeypatch: pytest.MonkeyPatch) -> None:
-    """解不出时，运行日志要说清"试过哪些结构"，而不是只报一句失败。"""
+    """解不出时运行日志列出已查找过的结构，而不只记录一次失败。"""
     from docking_agent.tools import choices as CH
 
     logs: list = []
@@ -324,10 +324,10 @@ def test_missing_ligand_message_lists_tried_paths(tmp_path: Path,
 
 def test_cocrystal_offer_is_asked_at_most_once_per_run(tmp_path: Path,
                                                        monkeypatch: pytest.MonkeyPatch) -> None:
-    """一次运行内最多问一次（注意：run_docking 被重试时用户被重复打扰）。
+    """一次运行内最多询问一次，避免 run_docking 重试时重复打扰使用者。
 
-    现场：前两次调用时受体结构还没准备好 → 解不出 SMILES（日志写「因此未询问」），
-    第三次却能解出并发布选项，用户先看到「不问」再被问一次。
+    早先的实现中，前两次调用时受体结构尚未准备好，解不出 SMILES 并记录「因此未询问」，
+    第三次解出后却发布选项，使用者先看到「不问」随后又被问一次。
     """
     from docking_agent.core.pockets import cocrystal_ligand
     from docking_agent.tools import choices as CH
@@ -358,10 +358,10 @@ def test_cocrystal_offer_is_asked_at_most_once_per_run(tmp_path: Path,
 
 def test_no_late_cocrystal_ask_once_docking_started(tmp_path: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
-    """对接前判定一次：第一次解不出就**不再**在后期突然发问。
+    """对接前完成一次判定：第一次解不出时，后期不再发出询问。
 
-    真实现场：前两次调用写「因此未询问」，第三次（对接已跑完、
-    报告将生成时）却发布选项，用户被迟到的提问打扰，且与前面的「不问」自相矛盾。
+    早先的实现中，前两次调用记录「因此未询问」，第三次在对接已跑完、
+    报告即将生成时发布选项，与前面的「不问」结论不一致。
     """
     from docking_agent.tools import choices as CH
 
@@ -389,7 +389,7 @@ def test_no_late_cocrystal_ask_once_docking_started(tmp_path: Path,
 
 def test_cocrystal_smiles_failure_is_logged_once_per_run(tmp_path: Path,
                                                          monkeypatch: pytest.MonkeyPatch) -> None:
-    """解不出 SMILES 时「未询问」只写一次日志（重试不刷屏）。"""
+    """解不出 SMILES 时「未询问」只记录一次日志，重试不重复输出。"""
     from docking_agent.tools import choices as CH
 
     blocks = [{"receptor": "7YHP", "receptor_pdb": "",
@@ -413,15 +413,15 @@ def test_cocrystal_smiles_failure_is_logged_once_per_run(tmp_path: Path,
 
 
 def test_cocrystal_offer_respects_the_skip_decision(run_ctx: Any) -> None:
-    """用户点选「不使用阳性对照」后，新一轮**不得再问一遍**（否则问→跳过→又问会循环）。
+    """使用者点选「不使用阳性对照」后，新一轮不再询问，否则询问与跳过会反复循环。
 
-    前端把该决定以 `positive_control_decision="skip"` 写进请求（见 web/app.js 的 applyChoice）。
+    界面把该决定以 `positive_control_decision="skip"` 写进请求（见 web/app.js 的 applyChoice）。
     """
     from docking_agent.tools.choices import offer_cocrystal_positive_control
 
     run, _board = run_ctx
-    # 共晶配体的 SMILES 要从**原始结构**里解出来（去配体的 PDBQT 里没有配体原子），
-    # 因此这里造一个真实的 PDB 片段落在磁盘上，供 cocrystal_ligand_smiles 解析。
+    # 共晶配体的 SMILES 需要从原始结构里解出，去配体的 PDBQT 里没有配体原子；
+    # 因此这里在磁盘上生成一个 PDB 片段，供 cocrystal_ligand_smiles 解析。
     import tempfile
 
     from docking_agent.core import pockets as _pockets
@@ -442,7 +442,7 @@ def test_cocrystal_offer_respects_the_skip_decision(run_ctx: Any) -> None:
     assert offer_cocrystal_positive_control(blocks, runtime=None) == []
     run.data["request"] = {"skip_positive_control": True}
     assert offer_cocrystal_positive_control(blocks, runtime=None) == []
-    # 没给决定时仍要询问（并进入阻断态）
+    # 未给出决定时仍会询问，并进入阻断态
     run.data["request"] = {}
     run.data.pop("cocrystal_check_done", None)
     offered = offer_cocrystal_positive_control(blocks, runtime=None)

@@ -1,4 +1,4 @@
-"""分子属性评估 Agent 的工具：真实 RDKit 物化性质计算。"""
+"""分子属性评估 Agent 的工具：基于 RDKit 的物化性质计算。"""
 from __future__ import annotations
 
 import json
@@ -17,17 +17,17 @@ from langchain.tools import ToolRuntime
 logger = logging.getLogger(__name__)
 
 
-#: 逐分子属性里**聚合/展示**需要的字段（报告 §4 表与排序榜都只用这些）
+#: 逐分子属性里聚合与展示需要的字段（报告 §4 表与排序榜都只用这些）
 _PROPERTY_DATA_FIELDS = ("smiles", "protonated_smiles", "formula", "molecular_weight", "logP", "tpsa",
                          "hbd", "hba", "rotatable_bonds", "heavy_atoms", "aromatic_rings",
                          "lipinski_violations", "drug_likeness_pass", "error")
 
 
 def _agent_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    """给 Agent 的属性行：数据字段 + 压成聚合口径的质子化溯源。
+    """给 Agent 的属性行：数据字段加压成聚合口径的质子化溯源。
 
-    完整溯源（`method`/`note`/`variants`/`variant_rule`/`engine_window`/`rules`）留在产物
-    `properties_tool.json` 里 —— 逐分子把散文搬进上下文既贵又容易让模型照着复述。
+    全量溯源（`method`/`note`/`variants`/`variant_rule`/`engine_window`/`rules`）留在产物
+    `properties_tool.json` 里；逐分子把散文搬进上下文开销大，且模型容易照着复述。
     """
     from docking_agent.core.protonation import compact_protonation
 
@@ -45,18 +45,18 @@ def _agent_row(row: Dict[str, Any]) -> Dict[str, Any]:
 @tool
 def molecular_property_assessment(molecules_json: str = "", molecules_file: str = "",
                                   protonation: str = "", runtime: ToolRuntime[AgentContext] = None) -> str:
-    """对一组分子进行真实物化性质与类药性评估（RDKit 计算）。
+    """对一组分子进行物化性质与类药性评估（RDKit 计算）。
 
     参数（三选一，优先级 文件 > JSON > 共享黑板/本次运行请求）：
-      - molecules_file: **推荐**。分子库文件（SDF/CSV/SMI/MOL2…）或运行产物文件
-        （如 `/abs/var/runs/<id>/molecules_tool.json`）的路径 —— 大库按文件交接，零 token 成本；
+      - molecules_file: 推荐。分子库文件（SDF/CSV/SMI/MOL2…）或运行产物文件
+        （如 `/abs/var/runs/<id>/molecules_tool.json`）的路径，大库按文件交接，零 token 成本；
       - molecules_json: JSON 字符串，形如 [{"name":"M1","smiles":"..."}, ...]（小库可用）；
       - 都留空: 用共享黑板（其次退到本次运行请求里的分子库文件）。
 
     protonation: 可选。运行级质子化态策略（'ph' 默认，按目标 pH；/ 'neutralize' / 'keep'）。
-        留空 = 用本次运行的设置。目标 pH 是**运行级**参数（设置页 `docking.protonation_ph`，
+        留空 = 用本次运行的设置。目标 pH 是运行级参数（设置页 `docking.protonation_ph`，
         默认 7.4），本工具没有单独的 pH 入参。
-        **与对接同口径**：性质按对接实际使用的化学形式计算，并逐分子记录
+        与对接同口径：性质按对接实际使用的化学形式计算，并逐分子记录
         policy/applied/charge_before/charge_after（ph 策略下还记录命中的 pKa 规则）；
         原始 SMILES 保留在 `smiles`，实际形式在 `protonated_smiles`。
 
@@ -65,7 +65,7 @@ def molecular_property_assessment(molecules_json: str = "", molecules_file: str 
     protonation（策略溯源）。
     """
     try:
-        # 横向协作：文件优先（大库按文件交接）→ JSON → 共享黑板 → 本次运行请求的分子库文件
+        # 横向协作：文件优先（大库按文件交接），其次 JSON、共享黑板，最后本次运行请求的分子库文件
         if (molecules_file or "").strip():
             molecules = _coerce_molecule_list(molecules_file, runtime=runtime)
         else:
@@ -83,7 +83,7 @@ def molecular_property_assessment(molecules_json: str = "", molecules_file: str 
             try:
                 prop = compute_properties(smiles, protonation or None)
                 prop["name"] = name
-                # 带上输入文件的身份字段（ID / 来源文件 / 序号），报告与 CSV 才能按用户要求展示
+                # 带上输入文件的身份字段（ID / 来源文件 / 序号），报告与 CSV 才能按调用方指定的列展示
                 from docking_agent.core.docking import carry_identity
 
                 results.append(carry_identity(prop, m))
@@ -93,7 +93,7 @@ def molecular_property_assessment(molecules_json: str = "", molecules_file: str 
         if board is not None:
             board.set_properties(results)
             board.add_note(f"属性评估 Agent：完成 {len(results)} 个分子的理化性质，并写入共享黑板")
-        # 大库：完整明细落盘，只把摘要 + 前 N 条回传给模型（避免上下文被分子数撑爆）
+        # 大库：明细落盘，只把摘要与前 N 条回传给模型（避免上下文被分子数占满）
         tool_io.record("properties", results, run=active_run(runtime))
         limit = tool_io.summary_limit()
         view = [_agent_row(r) for r in results]      # 给模型/子 Agent 的视图（产物已全量落盘）
@@ -124,13 +124,13 @@ def molecular_property_assessment(molecules_json: str = "", molecules_file: str 
 def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "", runtime: ToolRuntime[AgentContext] = None) -> str:
     """规范化并校验候选分子库：统一 SMILES、去重、剔除无效项。
 
-    在做属性评估或对接**之前**调用它，可以避免重复计算与无效输入。
+    在属性评估或对接之前调用它，可以避免重复计算与无效输入。
 
-    参数 molecules_json 兼容多种「脏」写法，任一都能用（统一输入归一化层）：
+    参数 molecules_json 兼容多种写法，任一都能用（统一输入归一化层）：
       - `[{"name":"M1","smiles":"..."}, ...]` 或纯 SMILES 列表；
       - 自由文本 `名称:SMILES` / `名称 SMILES` / 逗号/分号/换行分隔的 SMILES 列表；
-      - 小分子**文件路径或 URL**（SDF/CSV/TSV/SMI/MOL2，可 gzip/zip）；
-      - 留空/无法解析时 → 直接使用**共享黑板**上的分子库（子 Agent 不必搬运清单）。
+      - 小分子文件路径或 URL（SDF/CSV/TSV/SMI/MOL2，可 gzip/zip）；
+      - 留空或无法解析时直接使用共享黑板上的分子库（子 Agent 不必搬运清单）。
     返回 JSON：{"status":"ok","count":去重后数量,"duplicates_removed":n,"invalid":[...],
     "molecules":[{"id","name","smiles"}...]}
     """
@@ -156,8 +156,8 @@ def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "
             seen.add(canonical)
             src = m or {}
             name = str(src.get("id") or src.get("name") or "").strip()
-            # 来源文件的附加信息（SDF 的 ID/CAS/自定义字段）必须原样带走：用户要"输出带上 ID 号"，
-            # 这些字段只存在于输入记录里，重建字典时丢掉就再也找不回来了（已知缺陷）。
+            # 来源文件的附加信息（SDF 的 ID/CAS/自定义字段）需要原样带走：调用方要"输出带上 ID 号"，
+            # 这些字段只存在于输入记录里，重建字典时丢弃后无法再恢复。
             extra = {k: src[k] for k in ("id", "cas", "fields", "source_file", "source_index")
                      if src.get(k) not in (None, "", {})}
             molecules.append({**extra, "id": name or canonical,
@@ -171,7 +171,7 @@ def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "
         limit = tool_io.summary_limit()
         if len(molecules) > limit:
             # 大库：清单已写入黑板（供 molecular_property_assessment 留空取用），
-            # 这里只回摘要 —— 否则 1 万条 SMILES 会把属性子 Agent 的上下文撑爆。
+            # 这里只回摘要，否则 1 万条 SMILES 会占满属性子 Agent 的上下文。
             return json.dumps({
                 "status": "ok", "count": len(molecules), "duplicates_removed": dup,
                 "invalid": invalid[:20], "molecules": molecules[:limit], "detail_omitted": True,
@@ -189,11 +189,11 @@ def normalize_molecule_library(molecules_json: str = "", molecules_file: str = "
 
 
 def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
-    """把任意输入收敛为分子列表（JSON / 自由文本 / 文件路径 / 空 → 共享黑板）。
+    """把任意输入收敛为分子列表（JSON / 自由文本 / 文件路径 / 空输入转共享黑板）。
 
-    注意：属性评估子 Agent 曾把非 JSON 文本传给 `normalize_molecule_library`，
-    触发 `json.decoder.JSONDecodeError` 并把「分子库规范化失败」写进日志。
-    这里统一交给归一化层：能解析就解析，留空就用黑板，绝不因脏输入中断流程。
+    非 JSON 文本传给 `normalize_molecule_library` 时会触发 `json.decoder.JSONDecodeError`，
+    并把「分子库规范化失败」写进日志。此处统一交给归一化层：能解析就解析，留空就用黑板，
+    脏输入不中断流程。
     """
     from docking_agent.runtime.blackboard import board_molecules_json
 
@@ -227,15 +227,15 @@ def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
         mols, _norm = normalize_ligand_text(text)
         if mols:
             return mols
-    # 留空/无法解析 → 黑板（子 Agent 不需要把清单搬进上下文）
+    # 留空或无法解析时转共享黑板（子 Agent 不需要把清单搬进上下文）
     board_text = board_molecules_json("")
     if board_text:
         parsed = json.loads(board_text) if isinstance(board_text, str) else board_text
         return [{"name": (m or {}).get("name") or (m or {}).get("id") or "",
                  "smiles": (m or {}).get("smiles") or ""} for m in (parsed or [])]
-    # 黑板为空时，退到**本次运行请求里带的分子库文件**（与 molecular_docking 同一兜底口径）：
-    # 注意：协调 Agent 可以直接把文件交给 run_docking 而跳过 import，此时黑板一直是空的，
-    # 属性评估就会拿到 0 个分子并返回 status=ok（静默降级）。
+    # 黑板为空时退到本次运行请求里带的分子库文件（与 molecular_docking 同一兜底口径）：
+    # 协调 Agent 可以直接把文件交给 run_docking 而跳过 import，此时黑板为空，
+    # 属性评估会拿到 0 个分子并返回 status=ok（静默降级）。
     run = active_run(runtime)
     request_file = str(((getattr(run, "data", None) or {}).get("request") or {}).get("molecule_file") or "")
     if request_file:
@@ -248,7 +248,7 @@ def _coerce_molecule_list(molecules_json: Any, runtime: Any = None) -> Any:
                 _fmt, molecules, _norm = read_molecule_file_normalized(resolved)
                 if molecules:
                     board = active_blackboard(runtime)
-                    if board is not None:      # 顺手发布：后面按文件的/按黑板的都能用
+                    if board is not None:      # 同时发布到黑板：后续按文件或按黑板的路径都能取用
                         board.add_molecules(molecules)
                         board.add_note(f"属性评估 Agent：从本次运行的分子库文件读取 {len(molecules)} 条"
                                        f"（{os.path.basename(resolved)}）并写入共享黑板")

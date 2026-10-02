@@ -22,12 +22,12 @@ router = APIRouter()
 async def api_runs(limit: int = 20, offset: int = 0, q: str = "", status: str = "",
                    kind: str = "", receptor: str = "", since: str = "",
                    until: str = "") -> Dict[str, Any]:
-    """历史运行列表 / 检索。
+    """运行记录列表与检索。
 
-    无检索参数时行为与以前一致（`limit` 条、按时间倒序）；带 `q`/`status`/`kind`/
-    `receptor`/`since`/`until` 时返回 `{runs, total, offset, limit, query}`，
-    `q` 会匹配 run_id、受体、状态、任务描述与排序表里的分子名/ID
-    （空格分隔多词 = AND），从而支持"关掉页面后再找回之前的运行结果"。
+    无检索参数时返回 `limit` 条记录，按时间倒序，与该端点的原有行为一致；带 `q`/`status`/`kind`/
+    `receptor`/`since`/`until` 时返回 `{runs, total, offset, limit, query}`。
+    `q` 的匹配对象为 run_id、受体、状态、任务描述与排序表里的分子名/ID，
+    空格分隔的多词按 AND 处理；调用方因此可以在关闭页面后找回先前的运行结果。
     """
     store = get_run_store()
     if not any(str(x or "").strip() for x in (q, status, kind, receptor, since, until)):
@@ -39,11 +39,11 @@ async def api_runs(limit: int = 20, offset: int = 0, q: str = "", status: str = 
 
 @router.delete("/api/runs/{run_id}")
 async def api_run_delete(run_id: str) -> Any:
-    """删除一条运行记录（含其产物目录）。
+    """删除一条运行记录及其产物目录。
 
-    门禁脚本用它清理**自己创建**的运行记录（每跑一次 ui_e2e / browser_check 会真实创建
-    十几条，长期会挤满历史列表）；用户也可用它清理不再需要的运行。删除不可撤销。
-    同源校验由全局中间件负责（带 Origin 且跨站的 DELETE 会被拒）。
+    门禁脚本用它清理自己创建的运行记录，单次 ui_e2e / browser_check 会创建十几条，
+    长期累积会占满列表；调用方也可用它清理不再需要的运行。删除不可撤销。
+    同源校验由全局中间件负责，带 Origin 的跨站 DELETE 请求会被拒绝。
     """
     try:
         ok = await asyncio.to_thread(get_run_store().delete, run_id)
@@ -79,7 +79,7 @@ async def api_run_artifact(run_id: str, name: str, inline: int = 0) -> FileRespo
 async def api_run_ranking(run_id: str, offset: int = 0, limit: int = 100,
                           sort: str = "affinity_kcal_mol", order: str = "asc",
                           q: str = "", hits_only: bool = False) -> Dict[str, Any]:
-    """结果分页：服务端排序/搜索/「只看优于对照」，供大库场景的表格与卡片使用。"""
+    """结果分页：排序、搜索与「只看优于对照」均在服务端完成，供大库场景的表格与卡片使用。"""
     store = get_run_store()
     if not store.exists(run_id):
         raise HTTPException(status_code=404, detail=f"运行记录不存在: {run_id}")
@@ -90,7 +90,7 @@ async def api_run_ranking(run_id: str, offset: int = 0, limit: int = 100,
 
 @router.get("/api/runs/{run_id}/export.csv")
 async def api_run_export_csv(run_id: str) -> Response:
-    """导出完整排序 CSV（不受分页限制）。产物缺失时由 ranking.json 现场生成。"""
+    """导出排序 CSV 全表，不受分页限制。产物缺失时由 ranking.json 现场生成。"""
     store = get_run_store()
     if not store.exists(run_id):
         raise HTTPException(status_code=404, detail=f"运行记录不存在: {run_id}")

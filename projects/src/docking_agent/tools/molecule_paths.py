@@ -1,14 +1,14 @@
-"""分子文件「来源 → 真实本地路径」的解析（`tools/` 内的公共底层）。
+"""分子文件来源到真实本地路径的解析，作为 `tools/` 内的公共底层。
 
-为什么单独成模块：这几个函数原先是 `agents/dispatch.py` 的一部分，而
-`tools/docking.py` / `tools/properties.py` 也各自需要它们 —— 于是两个子 Agent 工具
-**函数内**反向 import 协调层工具 `agents.dispatch`，把 `agents.workers ⇄ agents.dispatch`
-依赖环糊在函数体里（审计 SCC-3）。抽到本模块后，依赖方向变成纯下行：
+这几个函数原先是 `agents/dispatch.py` 的一部分，`tools/docking.py` 与 `tools/properties.py`
+也需要它们，两个子 Agent 工具因此在函数体内反向 import 协调层工具 `agents.dispatch`，
+形成 `agents.workers ⇄ agents.dispatch` 依赖环（结构分析条目 SCC-3）。抽到本模块后依赖方向
+为单向下行：
 
-    agents.workers → tools.{docking,properties,dispatch} → tools.molecule_paths
+    agents.workers 依赖 tools.{docking,properties,dispatch}，后者依赖 tools.molecule_paths
 
-缺陷背景：上传端点的落盘名带时间戳前缀
-（`20260917-112109-3e5739-PGR.sdf`），而模型往往只拿到显示名 `PGR.sdf`，
+背景：上传端点的落盘名带时间戳前缀
+（`20260917-112109-3e5739-PGR.sdf`），而模型通常只拿到显示名 `PGR.sdf`，
 于是把裸文件名当路径传给工具，RDKit 报 `Bad input file PGR.sdf`，最终静默退回示例库。
 """
 from __future__ import annotations
@@ -19,19 +19,19 @@ from typing import List, Tuple
 
 from docking_agent.paths import cache_dir, libraries_dir, uploads_dir, workspace_dir
 
-# 分子库文件后缀（用于把「路径」与「SMILES 文本」区分开）
+# 分子库文件后缀（用于区分路径与 SMILES 文本）
 _MOLECULE_FILE_EXTS = (".sdf", ".sd", ".smi", ".smiles", ".csv", ".tsv", ".mol2", ".mol",
-                       ".txt", ".json")   # .json：运行产物（molecules_tool.json）按文件交接
+                       ".txt", ".json")   # `.json`：运行产物（`molecules_tool.json`）按文件交接
 
 
 def looks_like_molecule_path(value: str) -> bool:
-    """启发式判断某个参数值是不是「分子文件路径」而不是 SMILES/名称文本。
+    """启发式判断参数值是分子文件路径还是 SMILES 或名称文本。
 
-    注意：模型把上传文件的显示名（`PGR.sdf`）塞进参数，
-    工具却按纯文本解析，什么都没得到。规则（任一命中即算路径）：
+    原实现会按纯文本解析模型塞进参数的上传文件显示名（`PGR.sdf`），结果为空。
+    规则为任一命中即算路径：
       - http(s) URL；
       - 字符串本身是存在的本地文件；
-      - 扩展名属于分子文件格式（SMILES 几乎不会以 .sdf/.smi/.csv/.mol2 结尾）。
+      - 扩展名属于分子文件格式（SMILES 几乎不以 .sdf/.smi/.csv/.mol2 结尾）。
     """
     text = str(value or "").strip()
     if not text:
@@ -41,14 +41,14 @@ def looks_like_molecule_path(value: str) -> bool:
     try:
         if os.path.isfile(text):
             return True
-    except (OSError, ValueError):  # 超长字符串 / 含 NUL：一定不是路径
+    except (OSError, ValueError):  # 超长字符串或含 NUL：不是路径
         return False
     ext = os.path.splitext(text.split("?")[0])[1].lower()
     return ext in _MOLECULE_FILE_EXTS
 
 
 def molecule_search_dirs() -> List[Path]:
-    """解析分子文件时按序查找的目录（cwd → 工作区 → assets → uploads → cache → 示例库）。"""
+    """解析分子文件时按序查找的目录：`cwd`、工作区、`assets`、`uploads`、`cache`、示例库。"""
     candidates = [Path.cwd(), workspace_dir(), workspace_dir() / "assets",
                   uploads_dir(), cache_dir(), libraries_dir()]
     out: List[Path] = []
@@ -65,18 +65,18 @@ def molecule_search_dirs() -> List[Path]:
 
 
 def resolve_molecule_file(value: str) -> Tuple[str, List[str], List[str]]:
-    """把模型/用户给出的分子文件来源解析成**真实存在的本地路径**。
+    """把模型或调用方给出的分子文件来源解析成实际存在的本地路径。
 
-    为什么需要：上传端点的落盘名带时间戳前缀（`20260917-112109-3e5739-PGR.sdf`），
-    而模型往往只拿到显示名 `PGR.sdf`，于是把裸文件名当路径传给工具，
-    RDKit 报 `Bad input file PGR.sdf`，最终静默退回示例库（已知缺陷）。
-    这里按「绝对/相对 → 各候选目录精确文件名 → `<前缀>-<原名>` 后缀匹配」逐级解析，
-    并把每次尝试的候选与原因一并返回，便于如实上报而不是让模型瞎猜。
+    用途：上传端点的落盘名带时间戳前缀（`20260917-112109-3e5739-PGR.sdf`），
+    而模型通常只拿到显示名 `PGR.sdf`，于是把裸文件名当路径传给工具，
+    RDKit 报 `Bad input file PGR.sdf`，最终静默退回示例库。
+    本函数按顺序匹配绝对或相对路径、各候选目录下的精确文件名、`<前缀>-<原名>` 后缀匹配，
+    并返回每一步的候选与原因，供上层如实上报。
 
     返回 `(resolved, attempts, candidates)`：
-      - 唯一命中：`resolved` = 本地绝对路径（或 URL），`candidates` 为空；
-      - 命中多个不同文件（歧义）：`resolved` 原样返回、**不猜**，`candidates` 为候选绝对路径清单，
-        由上层决定报错/向用户提问；
+      - 唯一命中：`resolved` 为本地绝对路径（或 URL），`candidates` 为空；
+      - 命中多个不同文件（歧义）：`resolved` 原样返回且不做猜测，`candidates` 为候选绝对路径清单，
+        由上层决定报错或向调用方提问；
       - 未命中：`resolved` 原样返回，`candidates` 为空，`attempts` 逐条记录失败原因。
     """
     text = str(value or "").strip()
@@ -95,7 +95,7 @@ def resolve_molecule_file(value: str) -> Tuple[str, List[str], List[str]]:
     dirs = molecule_search_dirs()
     empty: List[str] = []
 
-    # ① 候选目录下的精确文件名（相对路径 `assets/uploads/x.sdf` 也会在此命中）
+    # ① 候选目录下的精确文件名（相对路径 `assets/uploads/x.sdf` 也在此命中）
     exact_hits: List[Path] = []
     for directory in dirs:
         candidate = directory / name
@@ -103,7 +103,7 @@ def resolve_molecule_file(value: str) -> Tuple[str, List[str], List[str]]:
             if candidate.is_file():
                 exact_hits.append(candidate)
                 continue
-        except OSError:  # 允许静默：候选路径不可访问等同于不存在
+        except OSError:  # 允许静默：候选路径不可访问时按不存在处理
             pass
         attempts.append(f"{candidate}：不存在")
     hits = _unique_paths(exact_hits)
@@ -113,8 +113,8 @@ def resolve_molecule_file(value: str) -> Tuple[str, List[str], List[str]]:
         attempts.append(f"{name}：在多个目录命中同名文件，无法确定用哪一个")
         return text, attempts, [str(p) for p in hits]
 
-    # ② 后缀匹配：上传文件形如 `<时间戳>-<哈希>-<原名>`，用原名结尾即可命中；
-    #    无扩展名时按词干匹配（`PGR` → `<...>-PGR.sdf`）。
+    # ② 后缀匹配：上传文件形如 `<时间戳>-<哈希>-<原名>`，以原名结尾即可命中；
+    #    无扩展名时按词干匹配（`PGR` 命中 `<...>-PGR.sdf`）。
     suffix_hits: List[Path] = []
     for directory in dirs:
         try:
@@ -143,7 +143,7 @@ def resolve_molecule_file(value: str) -> Tuple[str, List[str], List[str]]:
 
 
 def _unique_paths(paths: List[Path]) -> List[Path]:
-    """按解析后的绝对路径去重并保持顺序（同一文件经不同相对路径命中只算一次）。"""
+    """按解析后的绝对路径去重并保持顺序（同一文件经不同相对路径命中只计一次）。"""
     out: List[Path] = []
     seen = set()
     for path in paths:

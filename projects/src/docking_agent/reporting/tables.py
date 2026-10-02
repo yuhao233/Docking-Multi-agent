@@ -9,7 +9,7 @@ from docking_agent.core.ranking import sort_by_affinity
 
 # 排序 CSV 列：带上 engine / exhaustiveness / box_group / box_size / seed，保证结果可追溯、可复现
 # （`box_group`：main=主组共用同一个盒子；large=跨度超出主盒、用同中心的更大盒子单独重跑）
-# `status` / `error`：成功行标 ok，失败/跳过行标 error 并写原因，绝不静默丢弃失败分子。
+# `status` / `error`：成功行标记 ok，失败或跳过行标记 error 并写入原因，失败分子不静默丢弃。
 CSV_FIELDS = [
     "rank", "id", "cas", "name", "remark", "smiles", "affinity_kcal_mol", "engine", "exhaustiveness",
     "box_group", "box_size",
@@ -99,7 +99,7 @@ def build_ranking_csv(molecules: List[Dict[str, Any]], pos_control: Dict[str, An
     for i, m in enumerate(ordered, 1):
         row = {k: _fmt(m.get(k)) for k in CSV_FIELDS}
         row["rank"] = i
-        # 备注：来源文件里的其它字段（ID/CAS 以外的）拼成一栏，用户可直接看到自定义信息
+        # 备注：来源文件里的其它字段（ID / CAS 以外的）拼成一栏，调用方可直接看到自定义信息
         fields = m.get("fields") or {}
         row["remark"] = "; ".join(f"{k}={v}" for k, v in fields.items()
                                   if str(k).upper() not in ("ID", "CAS", "MOLENAME", "NAME", "名称"))

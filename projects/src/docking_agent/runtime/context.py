@@ -1,9 +1,9 @@
-"""运行上下文：替代 coze_coding_utils.runtime_ctx.context。
+"""运行上下文：替代 coze_coding_utils.runtime_ctx.context，承载一次运行的标识与请求头。
 
-语义与原平台保持一致：
-  - `new_context(method=..., headers=...)` 生成一次运行的上下文，run_id 为 uuid hex；
-  - `request_context` 是 ContextVar，供工具函数取当前上下文（原平台亦如此）；
-  - `default_headers(ctx)` 原用于携带平台鉴权头，本地返回空 dict。
+对外接口与语义：
+  - `new_context(method=..., headers=...)` 生成一次运行的上下文，`run_id` 为 uuid hex；
+  - `request_context` 是 ContextVar，工具函数据此取当前上下文（与原平台一致）；
+  - `default_headers(ctx)` 用于携带平台鉴权头，本地返回空 dict。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class Context:
     run_id: str = ""
     method: str = ""
     headers: Dict[str, str] = field(default_factory=dict)
-    # 兼容原平台 Context.run_id 类属性访问方式（Context.run_id == ""）
+    # 附加字段，兼容原平台的类属性访问方式（如 `Context.run_id == ""`）
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -40,22 +40,22 @@ request_context: ContextVar[Optional[Context]] = ContextVar("request_context", d
 
 
 # --------------------------------------------------------------------------- #
-# LangGraph 规范化运行上下文（P1）：随 `graph.invoke(..., context=...)` 传入
+# LangGraph 规范化运行上下文：随 `graph.invoke(..., context=...)` 传入
 # --------------------------------------------------------------------------- #
 @dataclass
 class AgentContext:
-    """一次 Agent 运行的上下文，交给 LangGraph 的 `context_schema` 机制传递。
+    """一次 Agent 运行的上下文，由 LangGraph 的 `context_schema` 机制传递。
 
-    与既有 ContextVar 的关系（**双读期**，P2 会删掉 ContextVar）：
+    与既有 ContextVar 的关系（双读期，ContextVar 后续删除）：
 
     | 通道 | 谁在用 | 地位 |
     | --- | --- | --- |
-    | `AgentContext`（本类，经 `Runtime.context` 注入工具） | 所有走图的调用（网页 / CLI / Studio） | **权威来源** |
+    | `AgentContext`（本类，经 `Runtime.context` 注入工具） | 所有走图的调用（网页 / CLI / Studio） | 权威来源 |
     | `current_run` / `current_blackboard` / `request_context` | CLI 直调、单测、不经图的工具调用 | 兼容兜底 |
 
-    工具的读取一律走 `active_run(runtime)` / `active_blackboard(runtime)` /
-    `active_request(runtime)`：有 runtime 就用它，没有才回退 ContextVar ——
-    这样"图调用"与"直接调用"两条路径**行为一致**，迁移期间也不会出现半吊子状态。
+    工具读取上下文一律走 `active_run(runtime)` / `active_blackboard(runtime)` /
+    `active_request(runtime)`：有 runtime 时用它，没有才回退 ContextVar，
+    因此「图调用」与「直接调用」两条路径行为一致。
     """
 
     run: Any = None
@@ -83,10 +83,10 @@ def active_run(runtime: Any = None) -> Any:
 
 
 def request_value(name: str, runtime: Any = None) -> str:
-    """本次运行请求里的字段（上传文件路径等）—— 工具兜底用它，不依赖模型转发。
+    """本次运行请求里的字段（上传文件路径等），工具兜底读取，不依赖模型转发。
 
-    注意：界面「本次下发参数」里的上传受体/分子库只被部分工具自动采用
-    （口袋工具有兜底、对接工具没有），于是对接子 Agent 报"未提供任何受体"。
+    界面「本次下发参数」里的上传受体与分子库只被部分工具自动采用
+    （口袋工具有兜底、对接工具没有），对接子 Agent 因此报「未提供任何受体」。
     """
     run = active_run(runtime)
     data = getattr(run, "data", None) if run is not None else None
@@ -95,11 +95,11 @@ def request_value(name: str, runtime: Any = None) -> str:
 
 
 def active_blackboard(runtime: Any = None) -> Any:
-    """当前共享黑板，按 **context → LangGraph store → ContextVar** 的优先级取。
+    """当前共享黑板，取值优先级为 `context` > LangGraph store > ContextVar。
 
     - `runtime.context.blackboard`：调用方显式给的黑板视图（生产路径都是 store 视图）；
-    - `runtime.store` + run id：P2-c 的规范后端（父图与子 Agent 共享同一命名空间）；
-    - ContextVar：CLI / 单测 / 不经图的直调兜底（按用户决策保留）。
+    - `runtime.store` 与 run id：规范后端（父图与子 Agent 共享同一命名空间）；
+    - ContextVar：CLI / 单测 / 不经图的直调兜底。
     """
     ctx = context_of(runtime)
     if ctx is not None and ctx.blackboard is not None:

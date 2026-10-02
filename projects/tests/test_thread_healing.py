@@ -1,18 +1,18 @@
-"""跨轮次会话自愈回归：中断留下的悬空 tool_calls 必须补齐，否则下一轮被 OpenAI 400 拒绝。
+"""跨轮次会话自愈回归：中断留下的悬空 tool_calls 需补齐，否则下一轮被 OpenAI 以 400 拒绝。
 
-注意：
+供应商返回的错误：
 
     400 - An assistant message with 'tool_calls' must be followed by tool messages
           responding to each 'tool_call_id'. (insufficient tool messages …)
 
-成因：点「停止」或运行失败时，模型已经发出 `tool_calls`，工具回执永远不会产生；
-checkpointer 把那条 AIMessage 记进 thread 历史 → 同一会话的**下一轮**直接 400，整段对话卡死。
+成因：点「停止」或运行失败时，模型已经发出 `tool_calls`，工具回执不会产生；
+checkpointer 把那条 AIMessage 记进 thread 历史，同一会话的下一轮直接 400，整段对话卡死。
 
 看护三件事：
-1. `dangling_tool_calls()` / `orphan_tool_call_ids()` 能准确找出两种非法形态；
-2. `pairing_updates()` 用**同 id 改写 AIMessage**（原地生效、顺序天然合法）修掉悬空调用，
-   并移除孤儿回执 —— 而不是往中间插消息（`add_messages` 只会把新 id 追加到末尾，插不进去）；
-3. `repair_thread_state()` 真的把修复写回 LangGraph checkpointer（用真实编译图 + MemorySaver）。
+1. `dangling_tool_calls()` 与 `orphan_tool_call_ids()` 能找到两种非法形态；
+2. `pairing_updates()` 用同 id 改写 AIMessage 修掉悬空调用（原地生效、顺序合法），
+   并移除孤儿回执，而不是往中间插消息（`add_messages` 只把新 id 追加到末尾）；
+3. `repair_thread_state()` 把修复写回 LangGraph checkpointer（用真实编译图与 MemorySaver）。
 """
 from __future__ import annotations
 
@@ -63,10 +63,10 @@ def test_dangling_detects_tail_partial_and_middle() -> None:
 
 
 def test_pairing_rewrites_the_ai_message_in_place() -> None:
-    """悬空调用靠**同 id 改写 AIMessage**修掉：位置不变、顺序天然合法。
+    """悬空调用通过同 id 改写 AIMessage 修复：位置不变，顺序合法。
 
-    为什么不是「插一条占位 ToolMessage」：`add_messages` 只把**新 id** 追加到末尾，
-    往中间插消息做不到 —— 第一版就这样，占位回执落到了最新一条人类消息之后，模型端照样 400。
+    `add_messages` 只把新 id 追加到末尾，往中间插入占位 ToolMessage 不可行；
+    此前的实现采用插入方式，占位回执落到最新一条人类消息之后，模型端仍返回 400。
     """
     from langgraph.graph.message import add_messages
 
@@ -87,7 +87,7 @@ def test_pairing_rewrites_the_ai_message_in_place() -> None:
 
 
 def test_pairing_drops_orphan_tool_messages() -> None:
-    """孤儿回执（配对的 AIMessage 被摘要/裁剪切掉）必须移除。"""
+    """孤儿回执（配对的 AIMessage 被摘要或裁剪切掉）需要移除。"""
     from langgraph.graph.message import add_messages
 
     messages = [HumanMessage("x", id="h1"),
@@ -101,7 +101,7 @@ def test_pairing_drops_orphan_tool_messages() -> None:
 
 
 def test_pairing_keeps_answered_calls_when_batch_is_partial() -> None:
-    """并行工具调用只回了一半：保留有回执的那一个，只去掉没回执的。"""
+    """并行工具调用只回了一半：保留有回执的调用，去掉无回执的调用。"""
     from langgraph.graph.message import add_messages
 
     messages = [HumanMessage("x", id="h1"),
@@ -124,11 +124,11 @@ def test_pairing_is_noop_when_history_is_valid() -> None:
 
 
 def test_repair_thread_state_heals_real_checkpointer_state() -> None:
-    """用真实编译图 + MemorySaver：注入悬空状态 → 自愈 → 状态里不再有悬空调用。"""
+    """用真实编译图与 MemorySaver：注入悬空状态，自愈后状态里不再有悬空调用。"""
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, START, MessagesState, StateGraph
 
-    def _model(_state):  # 只用于把图编译出来，不参与本用例
+    def _model(_state):  # 仅用于把图编译出来，不参与本用例
         return {}
 
     builder = StateGraph(MessagesState)
@@ -157,14 +157,14 @@ def test_repair_thread_state_heals_real_checkpointer_state() -> None:
         assert after[1].id == "a1", "必须是原地替换（同 id），不能新增一条"
         assert "run_pocket_analysis" in after[1].content and INTERRUPT_NOTE[:12] in after[1].content
 
-        # 幂等：已是合法历史 → 不再改动
+        # 幂等：已是合法历史时不再改动
         assert (await repair_thread_state(graph, config))["repaired"] == 0
 
     asyncio.run(_scenario())
 
 
 def test_repair_thread_state_survives_broken_graph() -> None:
-    """自愈绝不能把运行带崩：图不可用时返回 repaired=0。"""
+    """自愈不把运行带崩：图不可用时返回 repaired=0。"""
     from typing import Any
 
     class _Broken:

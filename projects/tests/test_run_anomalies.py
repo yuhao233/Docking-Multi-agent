@@ -1,17 +1,17 @@
-"""两处真实异常的回归护栏（报告里的「执行过程异常」1 与 2）。
+"""两处执行异常的回归护栏（报告中的「执行过程异常」1 与 2）。
 
-## 异常 1：首轮对接误用默认受体 → 分数全为 0.0
+## 异常 1：首轮对接误用默认受体，分数全为 0.0
 
-机制（已复现）：Vina 在**盒子内没有任何受体原子**时不报错、不告警，直接返回**全 0 能量**
-（`affinity_kcal_mol = 0.0`）。0.0 不是分数，是「什么都没算」。事故里盒子来自另一个蛋白
-（盒中心距该受体最近原子 75.2 Å），147 个分子跑了 7.5 分钟得到一堆 0.0。
-本文件看护两道护栏：**开跑前**按盒内原子数拒绝 + **行级**把全 0 能量判为失败。
+机制（已复现）：Vina 在盒子内没有任何受体原子时不报错、不告警，直接返回全 0 能量
+（`affinity_kcal_mol = 0.0`）。0.0 不是分数，表示本次计算没有结果。已记录的案例中盒子
+来自另一个蛋白（盒中心距该受体最近原子 75.2 Å），147 个分子运行 7.5 分钟后得到 0.0。
+覆盖两道护栏：开跑前按盒内原子数拒绝，以及行级把全 0 能量判为失败。
 
 ## 异常 2：属性评估 Agent 读到「黑板上无分子」
 
-机制：`import_molecule_library` 从不写共享黑板（全仓只有属性子 Agent 自己的 normalize 写过），
-而提示词却承诺「子 Agent 工具留空参数即可用黑板」→ 属性阶段读到 0 条，147 条库只有前 20 条被评估。
-本文件看护：导入成功即写黑板，且照该契约留空调用 normalize 能拿到同一批分子。
+机制：`import_molecule_library` 不写共享黑板（全仓仅属性子 Agent 自身的 normalize 写过），
+而提示词承诺「子 Agent 工具留空参数即可用黑板」，属性阶段因此读到 0 条，147 条库只有
+前 20 条被评估。护栏为：导入成功即写黑板，且按该契约留空调用 normalize 能拿到同一批分子。
 """
 from __future__ import annotations
 
@@ -31,13 +31,13 @@ from docking_agent.config import ensure_runtime_env  # noqa: E402
 
 ensure_runtime_env()
 
-#: 8ZE2 的口袋坐标：对上传的 8ZE2 是口袋内，对注册表 thrombin 是**空盒**（相距 75 Å）
+#: 8ZE2 的口袋坐标：对上传的 8ZE2 位于口袋内，对注册表 thrombin 为空盒（相距 75 Å）
 BOX_FAR = [86.63, 76.165, 91.953]
 SIZE_FAR = [28.9, 28.9, 28.9]
 
 
 # --------------------------------------------------------------------------- #
-# 异常 1：盒子内没有受体原子 → 拒绝对接（不产生 0.0 分）
+# 异常 1：盒子内没有受体原子时拒绝对接（不产生 0.0 分）
 # --------------------------------------------------------------------------- #
 def test_box_atom_stats_counts_atoms_and_nearest_distance() -> None:
     from docking_agent.core.receptors import box_atom_stats
@@ -53,7 +53,7 @@ def test_box_atom_stats_counts_atoms_and_nearest_distance() -> None:
 
 
 def test_dock_library_refuses_box_without_receptor_atoms(monkeypatch) -> None:
-    """盒内 0 个受体原子 → 状态 error、零引擎调用、notes 写明差多远。"""
+    """盒内 0 个受体原子时状态为 error、引擎调用为 0 次、`notes` 写明距离。"""
     from docking_agent.core import docking as D
 
     calls: list = []
@@ -74,7 +74,7 @@ def test_dock_library_refuses_box_without_receptor_atoms(monkeypatch) -> None:
 
 
 def test_all_zero_energy_row_is_reported_as_failure() -> None:
-    """行级兜底：引擎真的返回全 0 能量时，该行必须是 error，不能当成 0.0 分。"""
+    """行级兜底：引擎返回全 0 能量时该行判为 `error`，不当作 0.0 分。"""
     from docking_agent.core import DockingSession, resolve_receptor_specs
 
     spec = dict(resolve_receptor_specs("thrombin")[0][0])
@@ -88,7 +88,7 @@ def test_all_zero_energy_row_is_reported_as_failure() -> None:
 
 
 def test_valid_box_still_docks_normally() -> None:
-    """对照：正常盒子必须照常出分（护栏不得误伤）。"""
+    """对照用例：正常盒子按常规出分，护栏在此不介入。"""
     from docking_agent.core import DockingSession, resolve_receptor_specs
 
     spec = resolve_receptor_specs("thrombin")[0][0]
@@ -99,7 +99,7 @@ def test_valid_box_still_docks_normally() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 异常 2：导入即写共享黑板 → 属性阶段能拿到同一批分子
+# 异常 2：导入即写共享黑板，属性阶段由此拿到同一批分子
 # --------------------------------------------------------------------------- #
 def _write_sdf(path: Path, count: int = 5) -> Path:
     from rdkit import Chem
@@ -117,7 +117,7 @@ def _write_sdf(path: Path, count: int = 5) -> Path:
 
 
 def test_import_seeds_shared_blackboard(tmp_path: Path) -> None:
-    """导入成功必须写进共享黑板（否则「留空即用黑板」的承诺是空话）。"""
+    """导入成功时写入共享黑板，否则「留空即用黑板」的约定不成立。"""
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.agents.dispatch import import_molecule_library
 
@@ -136,7 +136,7 @@ def test_import_seeds_shared_blackboard(tmp_path: Path) -> None:
 
 
 def test_property_stage_sees_library_after_import(tmp_path: Path) -> None:
-    """端到端契约：导入 → 子 Agent 留空调用 normalize → 拿到**全部**分子（异常 2 的修复）。"""
+    """端到端契约：导入后由子 Agent 留空调用 normalize，取回全部分子（异常 2 的回归）。"""
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.agents.dispatch import import_molecule_library
     from docking_agent.tools.properties import normalize_molecule_library
@@ -157,7 +157,7 @@ def test_property_stage_sees_library_after_import(tmp_path: Path) -> None:
 
 def test_normalize_payload_is_bounded_for_large_library(tmp_path: Path,
                                                         monkeypatch: pytest.MonkeyPatch) -> None:
-    """大库：完整清单留在黑板，只把前 N 条回给子 Agent（否则上下文会被撑爆）。"""
+    """大库场景：全量清单留在黑板，回给子 Agent 的仅前 N 条，避免上下文被撑爆。"""
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.tools.properties import normalize_molecule_library
 
@@ -177,11 +177,11 @@ def test_normalize_payload_is_bounded_for_large_library(tmp_path: Path,
 
 
 # --------------------------------------------------------------------------- #
-# 异常 2 的**漏网路径**：协调 Agent 跳过 import，直接把文件交给 run_docking
-# （提示词明确允许）→ 黑板一直是空的 → 属性评估拿到 0 条却 status=ok
+# 异常 2 的漏网路径：协调 Agent 跳过 import，直接把文件交给 run_docking
+# （提示词明确允许），黑板保持为空，属性评估拿到 0 条却返回 status=ok
 # --------------------------------------------------------------------------- #
 def _run_probe(tmp_path: Path, molecule_file: str) -> Any:
-    """最小 Run 替身：带本次运行请求（含 molecule_file）与产物目录。"""
+    """最小 Run 替身：带本次运行请求（含 `molecule_file`）与产物目录。"""
     class _Run:
         id = "PROBE-RUN"
 
@@ -204,10 +204,10 @@ def _run_probe(tmp_path: Path, molecule_file: str) -> Any:
 
 
 def test_property_stage_falls_back_to_run_request_when_board_empty(tmp_path: Path) -> None:
-    """黑板为空但本次运行请求带分子库文件 → 属性评估必须拿到**全量**（而不是 0 条 + status=ok）。
+    """黑板为空但本次运行请求带分子库文件时，属性评估取到全量，而不是 0 条加 `status=ok`。
 
-    缺陷路径：协调 Agent 可以直接把文件交给 run_docking（跳过 import），
-    此时若没人发布到黑板，属性评估读到 0 条，147 条库只有 20 条被评估甚至全空。
+    漏网路径：协调 Agent 可以直接把文件交给 run_docking（跳过 import），
+    此时若没有发布到黑板，属性评估读到 0 条，147 条库只有 20 条被评估甚至全空。
     """
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
@@ -229,7 +229,7 @@ def test_property_stage_falls_back_to_run_request_when_board_empty(tmp_path: Pat
 
 def test_docking_publishes_resolved_library_to_blackboard(monkeypatch: pytest.MonkeyPatch,
                                                           tmp_path: Path) -> None:
-    """谁解析到分子谁就发布：molecular_docking 从文件解析后必须写黑板。"""
+    """解析到分子的一侧负责发布：`molecular_docking` 从文件解析后写入黑板。"""
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools import docking as TD
@@ -250,10 +250,10 @@ def test_docking_publishes_resolved_library_to_blackboard(monkeypatch: pytest.Mo
 
 
 # --------------------------------------------------------------------------- #
-# 文件优先的 Agent 间交接（v0.19）
+# 文件优先的 Agent 间交接（`v0.19`）
 # --------------------------------------------------------------------------- #
 def test_molecular_property_assessment_reads_molecules_file(tmp_path: Path) -> None:
-    """molecules_file 指向运行产物 JSON 也能读（不依赖黑板、不把清单搬进上下文）。"""
+    """`molecules_file` 指向运行产物 JSON 时同样可读，不依赖黑板，也不把清单搬进上下文。"""
     from docking_agent.runtime import tool_io
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
@@ -276,7 +276,7 @@ def test_molecular_property_assessment_reads_molecules_file(tmp_path: Path) -> N
 
 
 def test_check_binding_consistency_reads_docking_file(tmp_path: Path) -> None:
-    """对接明细按文件交接：check_binding_consistency(docking_file=…) 应读到文件里的行。"""
+    """对接明细按文件交接：`check_binding_consistency(docking_file=…)` 读取文件中的行。"""
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
     from docking_agent.tools.binding import check_binding_consistency
@@ -300,7 +300,7 @@ def test_check_binding_consistency_reads_docking_file(tmp_path: Path) -> None:
 
 
 def test_artifact_refs_exposes_absolute_paths_for_handoff(tmp_path: Path) -> None:
-    """artifact_refs 必须给出可直接传参的绝对路径（文件交接的发现入口）。"""
+    """`artifact_refs` 给出可直接传参的绝对路径，作为文件交接的检索入口。"""
     from docking_agent.runtime import tool_io
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run

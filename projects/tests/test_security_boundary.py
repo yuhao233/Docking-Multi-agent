@@ -1,15 +1,13 @@
 """安全边界的负向回归：路径穿越 / 任意文件读取 / 跨站请求 / URL 方案白名单。
 
-这四条都是 审计****过的漏洞，属于「一旦信任模型被打破就全盘失守」
-的一类，因此每条都留一个负向用例钉住：
+四类输入校验各留一个负向用例：
+1. `POST /run` 的 `x-run-id` 头被当成目录名，`../x` 会写到运行目录之外；
+2. 标准面 `POST /threads` 的 `thread_id` 来自请求体，可覆盖工作区任意 `*.json`；
+3. `POST /api/uploads/inspect` 接受任意绝对路径，可读任意文件，解析失败还会回显文件行；
+4. 无鉴权且无同源校验时，任意网页可跨站触发 `PUT /api/settings` 等写操作。
 
-1. `POST /run` 的 `x-run-id` 头被当成目录名 → `../x` 逃出运行目录（任意路径写）；
-2. 标准面 `POST /threads` 的 `thread_id` 来自请求体 → 可覆盖工作区任意 `*.json`；
-3. `POST /api/uploads/inspect` 接受任意绝对路径 → 任意文件读取，且解析失败会回显文件行；
-4. 无鉴权 + 无同源校验 → 任意网页可跨站触发 `PUT /api/settings` 等写操作。
-
-服务定位是「本机工具」，所以这里守的是**默认部署**下的边界；`--host 0.0.0.0`
-只是把攻击面从"本机进程"扩大到"局域网"，校验逻辑本身与监听地址无关。
+服务定位为本机工具，校验覆盖默认部署下的边界；`--host 0.0.0.0`
+把攻击面从本机进程扩大到局域网，校验逻辑本身与监听地址无关。
 """
 from __future__ import annotations
 
@@ -82,7 +80,7 @@ def test_run_store_rejects_unsafe_run_id(tmp_path: Path) -> None:
 # 2) `x-run-id` 路径穿越（兼容入口）
 # --------------------------------------------------------------------------- #
 def test_legacy_run_rejects_traversal_in_x_run_id(client: TestClient, tmp_path: Path) -> None:
-    """`x-run-id: ../escaped-run` 必须 400，且不得在 var/ 之外创建目录。"""
+    """`x-run-id: ../escaped-run` 返回 400，且不在 var/ 之外创建目录。"""
     from docking_agent.paths import runs_dir
 
     resp = client.post("/run", headers={"x-run-id": "../escaped-run"},
@@ -95,10 +93,10 @@ def test_legacy_run_rejects_traversal_in_x_run_id(client: TestClient, tmp_path: 
 
 def test_legacy_run_accepts_wellformed_x_run_id(client: TestClient,
                                                 monkeypatch: pytest.MonkeyPatch) -> None:
-    """正常 id 不受影响（兼容入口必须继续可用）；用完即清理，避免污染运行目录。
+    """正常 id 不受影响（兼容入口继续可用）；用完即清理，避免污染运行目录。
 
-    本用例只验证 id 白名单与运行目录落盘，因此把图替换成**最小假图**：
-    真图会把请求打到模型端点，既慢又依赖本机是否配置了 API Key（干净检出/CI 上曾因此假失败）。
+    本用例只验证 id 白名单与运行目录落盘，因此把图替换成最小假图：
+    真图会把请求打到模型端点，既慢又依赖本机是否配置了 API Key。
     """
     import shutil
     import uuid
@@ -144,7 +142,7 @@ def test_legacy_run_accepts_wellformed_x_run_id(client: TestClient,
 # 3) `thread_id` 路径穿越（标准面）
 # --------------------------------------------------------------------------- #
 def test_create_thread_rejects_traversal(client: TestClient) -> None:
-    """`thread_id: ../escaped-thread` 必须 400，且不得在 var/ 下留下文件。"""
+    """`thread_id: ../escaped-thread` 返回 400，且不在 var/ 下留下文件。"""
     from docking_agent.paths import var_dir
 
     resp = client.post("/threads", json={"thread_id": "../escaped-thread",
@@ -162,7 +160,7 @@ def test_create_thread_accepts_normal_id(client: TestClient) -> None:
 
 
 def test_conversation_id_traversal_is_rejected(client: TestClient) -> None:
-    """会话 id 会当 thread_id 用，同样必须过白名单。"""
+    """会话 id 会当 thread_id 用，同样经过白名单校验。"""
     resp = client.post("/api/agent/stream", json={"mode": "chat", "message": "hi",
                                                   "conversation_id": "../evil"})
     assert resp.status_code == 400, resp.text
@@ -172,7 +170,7 @@ def test_conversation_id_traversal_is_rejected(client: TestClient) -> None:
 # 4) 任意文件读取 + 明文回显（上行校验端点）
 # --------------------------------------------------------------------------- #
 def test_upload_inspect_rejects_paths_outside_uploads(client: TestClient) -> None:
-    """只允许校验本次上传的文件；工作区内的其它文件（如 .env）必须 403。"""
+    """只允许校验本次上传的文件；工作区内的其它文件（如 .env）返回 403。"""
     env_file = PROJECT_ROOT / ".env"
     target = str(env_file if env_file.is_file() else PROJECT_ROOT / "pyproject.toml")
     resp = client.post("/api/uploads/inspect", json={"path": target, "kind": "ligand"})
@@ -192,7 +190,7 @@ def test_upload_inspect_rejects_absolute_system_path(client: TestClient) -> None
 
 
 def test_upload_inspect_still_accepts_uploaded_file(client: TestClient, tmp_path: Path) -> None:
-    """正常路径不受影响：上传 → 校验 → 200。"""
+    """正常路径不受影响：先上传，再校验，返回 200。"""
     smi = tmp_path / "lib.smi"
     smi.write_text("CCO\nCCN\nCCC\n", encoding="utf-8")
     with open(smi, "rb") as fh:
@@ -206,7 +204,7 @@ def test_upload_inspect_still_accepts_uploaded_file(client: TestClient, tmp_path
 
 
 def test_parse_failure_hint_never_echoes_credential_lines(tmp_path: Path) -> None:
-    """`.env` 这类内容交给解析器时，失败提示**不得**回显疑似凭据行。"""
+    """`.env` 这类内容交给解析器时，失败提示不回显疑似凭据行。"""
     from docking_agent.core.normalize import normalize_ligand_text
 
     text = "LLM_API_KEY=sk-1eaf945e6e584c4b837282e5f5f77e97\nLLM_BASE_URL=https://example.test\n"
@@ -229,7 +227,7 @@ def test_parse_failure_hint_still_shows_normal_bad_lines() -> None:
 # 5) 跨站请求（同源校验）
 # --------------------------------------------------------------------------- #
 def test_cross_site_write_is_rejected(client: TestClient) -> None:
-    """带不同源 Origin 的写请求必须 403（无鉴权服务的唯一浏览器侧防线）。"""
+    """带不同源 Origin 的写请求返回 403（无鉴权服务的浏览器侧防线）。"""
     resp = client.put("/api/settings", headers={"origin": "http://evil.example"},
                       json={"values": {}})
     assert resp.status_code == 403, resp.text
@@ -251,7 +249,7 @@ def test_same_origin_write_is_allowed(client: TestClient) -> None:
 
 
 def test_request_without_origin_is_allowed(client: TestClient) -> None:
-    """CLI / 测试 / 同源导航不带 Origin，必须放行。"""
+    """CLI / 测试 / 同源导航不带 Origin，予以放行。"""
     resp = client.get("/api/health")
     assert resp.status_code == 200, resp.text
 
@@ -264,12 +262,11 @@ def test_security_headers_are_present(client: TestClient) -> None:
 
 
 def test_frontend_assets_forbid_heuristic_caching(client: TestClient) -> None:
-    """页面与静态脚本必须禁止浏览器"猜"缓存。
+    """页面与静态脚本禁止浏览器"猜"缓存。
 
-    注意：引擎下拉新增 `external` 后，旧标签页仍显示旧选项，用户以为
-    功能没上线。页面响应只有 ETag/Last-Modified、没有 Cache-Control 时，浏览器会按
-    启发式新鲜度直接用本地副本；显式 `no-cache`（每次使用前必须回源校验）可以消除这类
-    "改了前端却看不到"的假象。API 响应不受影响（保持默认，便于压测/缓存代理）。
+    页面响应只有 ETag/Last-Modified、没有 Cache-Control 时，浏览器会按
+    启发式新鲜度直接使用本地副本，新增选项因此在旧标签页上不可见；
+    显式 `no-cache`（使用前回源校验）会消除这类现象。API 响应不受影响（保持默认，便于压测/缓存代理）。
     """
     for path in ("/", "/advanced", "/simple", "/static/app.js", "/static/simple.js"):
         resp = client.get(path)
@@ -280,7 +277,7 @@ def test_frontend_assets_forbid_heuristic_caching(client: TestClient) -> None:
 
 
 def test_models_endpoint_does_not_echo_upstream_base_url(client: TestClient) -> None:
-    """端点指纹不必要地暴露给无鉴权接口。"""
+    """端点指纹不暴露给无鉴权接口。"""
     resp = client.get("/api/models")
     assert resp.status_code == 200, resp.text
     assert "base_url" not in resp.json()

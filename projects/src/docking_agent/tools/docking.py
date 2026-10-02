@@ -1,4 +1,4 @@
-"""Docking 执行 Agent 的工具：真实 Vina 分子对接计算（支持蛋白质库 × 小分子库）。"""
+"""Docking 执行 Agent 的工具：Vina 分子对接计算（支持蛋白质库与小分子库组合）。"""
 from __future__ import annotations
 
 import json
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_site(center: str, size: str) -> Optional[Dict[str, Any]]:
-    """解析 "31.5,13.74,24.36" / "22,22,22" 形式的已知位点参数。"""
+    """解析 "31.5,13.74,24.36" / "22,22,22" 形式的已知位点参数；格式不合法时返回 None。"""
     def _nums(text: str, expect: int) -> Optional[List[float]]:
         text = (text or "").strip().strip("[]()")
         if not text:
@@ -59,7 +59,7 @@ def _receptor_unspecified(receptor: Any, run: Any, receptor_file: str = "") -> b
 
 def _live_molecule_row(result: Dict[str, Any], index: int, total: int,
                        runtime: Any = None) -> Dict[str, Any]:
-    """把一条对接结果整理成实时表的一行（含物化性质，若有）。"""
+    """把一条对接结果整理成实时表的一行（分子带理化性质时一并写入）。"""
     row: Dict[str, Any] = {k: result.get(k) for k in _LIVE_ROW_FIELDS}
     row["index"] = index
     row["total"] = total
@@ -73,24 +73,24 @@ def _live_molecule_row(result: Dict[str, Any], index: int, total: int,
     return row
 
 
-#: 逐分子对接行里给 Agent 的字段（报告/排序只读这些；完整行留在 `docking_tool.json`）
+#: 逐分子对接行里给 Agent 的字段（报告/排序只读这些；明细行留在 `docking_tool.json`）
 _DOCK_ROW_FIELDS = ("name", "smiles", "id", "source_file", "affinity_kcal_mol", "affinity_coarse",
                     "engine", "exhaustiveness", "n_poses", "seed", "box_group", "box_size",
                     "box_fit_warning", "pass", "pose_file", "pose_url", "pose_artifact",
                     "intermolecular_kcal_mol", "intramolecular_kcal_mol", "torsion_kcal_mol",
                     "ligand_warnings", "error", "status")
 
-#: 受体块里**报告才需要**的字段：给模型的视图不重复（完整块在产物里）
+#: 受体块里只有报告需要的字段：给模型的视图不再重复（该块明细在产物里）
 _DOCK_BLOCK_REPORT_ONLY = ("box_atom_stats",)
 
 
 def _agent_view(out: Dict[str, Any]) -> Dict[str, Any]:
     """给模型/子 Agent 的对接视图：保留溯源与结论所需字段，压掉逐分子散文细节。
 
-    为什么能压：`tool_io.record()` 已经把**完整**结果写进 `docking_tool.json`，
-    报告与排序读的是那份产物（`persistence` 以产物优先、消息只作回填），所以视图变薄
-    不会丢事实；而逐分子的 `ligand_facts.protonation` 明细（`variants`/`variant_rule`/
-    `method`/`note`）在上下文里占大头、正是模型最容易照抄成正文的部分。
+    可以这样压缩的依据：`tool_io.record()` 已把结果全量写入 `docking_tool.json`，
+    报告与排序读的是那份产物（`persistence` 以产物优先、消息只作回填），因此视图变薄
+    不会丢事实；逐分子的 `ligand_facts.protonation` 明细（`variants`/`variant_rule`/
+    `method`/`note`）在上下文里占比较大，也是模型最容易照抄成正文的部分。
     """
     from docking_agent.core.protonation import compact_protonation
 
@@ -133,56 +133,56 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                       keep_hetatm: str = "", protonation: str = "",
                       protonation_ph: float = 0.0, save_poses: bool = True,
                       max_ligands: int = 0, runtime: ToolRuntime[AgentContext] = None) -> str:
-    """对一组小分子配体（小分子库）向一个或多个蛋白质受体（蛋白质库）执行真实 Vina 分子对接。
+    """对一组小分子配体（小分子库）向一个或多个蛋白质受体（蛋白质库）执行 Vina 分子对接。
 
     参数（配体与受体二选一来源均支持"直接数据"与"上传文件"两种方式）：
       molecules_json: 可选。JSON 字符串，[{"name":"M1","smiles":"..."}, ...]；为空时返回提示。
-      molecule_file: 可选。用户上传/提供的小分子文件，支持 SDF/SMILES/.smi/.csv/.mol2（本地路径或 URL），
+      molecule_file: 可选。上传/提供的小分子文件，支持 SDF/SMILES/.smi/.csv/.mol2（本地路径或 URL），
           自动读取为小分子库；与 molecules_json 二选一（优先 molecule_file）。
-      receptor_file: 可选。用户上传/提供的蛋白质受体文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt，本地路径或 URL），
+      receptor_file: 可选。上传/提供的蛋白质受体文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt，本地路径或 URL），
           自动读取并现场准备为 PDBQT 受体；与 receptor_sources 二选一（优先 receptor_file）。
       receptor_sources: 受体来源，可空(''/default)或一个受体，或 JSON 数组/分号分隔的多个受体（蛋白质库）。
           支持三种形式：
             - PDB 编号 / UniProt accession / 基因或蛋白名（如 4HHB / P08922 / EGFR）
-            - 用户上传的蛋白质文件：本地/URL 的 .pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt 路径（结构文件会现场准备为 PDBQT，.cif/.mmcif 先转 PDB）
-            - 多个受体组合，例如 '["4HHB","P08922"]'，将按 受体×配体 全组合对接
-          **为空或未提供时不再回退任何默认受体**：直接返回 `needs_user_input` 并请用户指定受体
-          （预置受体注册表只用于内部测试，不是用户可选来源）。
+            - 上传的蛋白质文件：本地/URL 的 .pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt 路径（结构文件会现场准备为 PDBQT，.cif/.mmcif 先转 PDB）
+            - 多个受体组合，例如 '["4HHB","P08922"]'，按 受体×配体 全组合对接
+          为空或未提供时不回退任何默认受体：直接返回 `needs_user_input` 并请调用方指定受体
+          （预置受体注册表只用于内部测试，不是调用方可选来源）。
       site_center: 可选。已知结合位点的盒中心 `[x, y, z]`（Å），用于覆盖受体注册位点；
         也接受逗号分隔字符串 "31.5,13.74,24.36"（旧调用方兼容）。
       site_size: 可选。位点盒尺寸 `[x, y, z]`（Å）；也接受 "22,22,22"。
-      exhaustiveness: 对接蒙特卡洛搜索强度。**留空(0)=用本次运行的自动规划值**
+      exhaustiveness: 对接蒙特卡洛搜索强度。留空(0)=用本次运行的自动规划值
           （受理层算好的运行级值，同一阶段内所有分子一致）；本次没有规划值时才落到设置页默认
           （16）。只有刻意做参数对比时才显式给值，并在报告里说明两次的差别。
       n_poses: 返回的构象个数（默认 1）
-      engine: 对接引擎，**留空 = 跟随「设置页 → 对接引擎（默认）」**（默认 auto：优先 Vina，失败自动回退
+      engine: 对接引擎，留空 = 跟随「设置页」的「对接引擎（默认）」设置（默认 auto：优先 Vina，失败自动回退
               AutoDock4 CPU）/ 'vina' / 'autodock'(经典 AutoDock4 CPU 模式) /
               'external'(用设置页登记的外部引擎，如 AutoDock-GPU；未登记或未就绪会直接报错，不静默回退)。
-              只有用户明确要求换引擎时才显式传值。
+              只有调用方明确要求换引擎时才显式传值。
       save_poses: 是否把每个分子的最佳位姿写入运行目录（表单里的「保存对接位姿」；False 时不落位姿文件）
       max_ligands: 本次最多对接多少个分子（表单里的「最大分子数」；0=不限制，仍受部署级上限约束）
-      protonation: **一般留空**。运行级质子化态策略：'ph'(默认，按目标 pH 分配，见 protonation_ph) /
+      protonation: 一般留空。运行级质子化态策略：'ph'(默认，按目标 pH 分配，见 protonation_ph) /
           'neutralize'(只对带净电荷的分子中和) / 'keep'(保持输入形式，仅告警)。
-          留空 = 用**本次运行的设置**（设置页里的
-          质子化态策略）—— 这是推荐做法：理化性质与对接必须同口径，逐次覆盖会让两者错位。
-          仅在刻意做"离子态 vs 中性态"对比时才传，并必须在报告中说明两者的差异。
+          留空 = 用本次运行的设置（设置页里的
+          质子化态策略）。理化性质与对接需要同口径，逐次覆盖会使两者错位。
+          仅在刻意做"离子态 vs 中性态"对比时才传，并在报告中说明两者的差异。
           逐分子结果里带 policy/applied/charge 溯源，原始 SMILES 始终保留。
       protonation_ph: 可选。仅当 protonation='ph' 时有意义：目标 pH（默认 7.4，生理 pH）。
           常用值：胃酸 1.5 / 溶酶体 4.5 / 生理 7.4；传 0（默认）表示用本次运行的设置。
-      keep_hetatm: 可选。受体准备时**要保留的非水杂原子残基名**，逗号分隔（如 'HEM,ZN,MG,NAD,FAD'）。
-          默认空 = 按标准流程只留蛋白质 ATOM 记录（水与杂原子剔除），但这会**默默丢掉金属/辅因子**。
-          因此受体里存在非水杂原子时，结果 notes 会如实列出被丢弃的残基名与数量；
+      keep_hetatm: 可选。受体准备时要保留的非水杂原子残基名，逗号分隔（如 'HEM,ZN,MG,NAD,FAD'）。
+          默认空 = 按标准流程只留蛋白质 ATOM 记录（水与杂原子剔除），金属与辅因子会随之丢弃。
+          受体里存在非水杂原子时，结果 notes 会如实列出被丢弃的残基名与数量；
           金属酶/含辅因子体系（血红素、锌指、NAD/FAD 依赖酶等）应先据 notes 判断，
           再用本参数指定保留并重跑，不要默认忽略。
 
-    校验：分子对接需要「蛋白质受体 + 小分子配体」两部分。若两者都缺失或配体为空，会返回明确提示，不做计算。
+    校验：分子对接需要「蛋白质受体 + 小分子配体」两部分。若两者都缺失或配体为空，返回明确提示，不做计算。
     返回 JSON：{status, notes:[提示信息], receptors:[{receptor_key, receptor, protein,
     box_center, box_size, results:[每分子: name,smiles,engine,affinity_kcal_mol,intermolecular_kcal_mol,
     intramolecular_kcal_mol,torsion_kcal_mol,pose_file,...]}]}
-    其中 affinity_kcal_mol 为对接结合亲和力（Vina score 或 AutoDock 自由能估计），越负结合越强。失败分子以 error 字段如实标识。
+    其中 affinity_kcal_mol 为对接结合亲和力（Vina score 或 AutoDock 自由能估计），越负结合越强。失败分子以 error 字段标识。
     """
-    # 「未指定」是 0 而不是 16 —— 见 `core/params.UNSET_EXHAUSTIVENESS` 的说明：
-    # 默认 16 无法区分「用户设了 16」与「没人给值」，会让运行**静默退回** 16。
+    # 「未指定」记为 0 而不是 16，理由见 `core/params.UNSET_EXHAUSTIVENESS`：
+    # 默认 16 无法区分「显式设了 16」与「没有给值」，运行会静默退回 16。
     _explicit_exh = False
     try:
         _explicit_exh = int(exhaustiveness or 0) > 0
@@ -192,7 +192,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
     _planned_exh = resolve_exhaustiveness(
         exhaustiveness,
         (getattr(active_run(runtime), "data", None) or {}).get("param_plan"))
-    # 引擎：显式参数 > 本次运行请求（表单）> 设置页默认；留空不再等价于硬编码 "auto"
+    # 引擎优先级：显式参数 > 本次运行请求（表单）> 设置页默认；留空不再等价于硬编码 "auto"
     _run_req_engine = (getattr(active_run(runtime), "data", None) or {}).get("request") or {}
     engine = resolve_engine(engine, _run_req_engine)
     exhaustiveness = int(_planned_exh) if _planned_exh else DEFAULT_EXHAUSTIVENESS
@@ -201,14 +201,14 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         refine_from: List[Dict[str, Any]] = []
         coarse_map: Dict[str, Any] = {}
         if int(top_from_previous or 0) > 0:
-            # 漏斗第二阶段：直接从共享黑板/产物里取"上一轮最好的前 N 个"，
-            # 这一步**不经过模型上下文**（大库时模型根本拿不到全量明细）。
+            # 漏斗第二阶段：从共享黑板/产物里取"上一轮最好的前 N 个"，
+            # 这一步不经过模型上下文（大库时模型拿不到全量明细）。
             board = active_blackboard(runtime)
             previous = board.docking() if board is not None else []
             if not previous:
                 previous = tool_io.load("docking_rows", run=active_run(runtime)) or []
             ranked = sort_by_affinity(previous, drop_missing=True)
-            # 注意：必须在对接**之前**记下粗筛分数 —— 对接后黑板会被精算结果覆盖
+            # 粗筛分数需在对接之前记下，对接后黑板会被精算结果覆盖
             coarse_map = {r.get("smiles"): r.get("affinity_kcal_mol") for r in previous if r.get("smiles")}
             refine_from = [{"name": r.get("name") or r.get("smiles"), "smiles": r.get("smiles")}
                            for r in ranked[: int(top_from_previous)] if r.get("smiles")]
@@ -217,15 +217,15 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                                    "message": "没有可精算的上一轮对接结果：请先做一次全库粗筛。"},
                                   ensure_ascii=False)
             molecules = refine_from
-        # 兜底：本次运行请求带的上传文件（对话附件）→ 直接用，不依赖模型是否转发路径。
-        # 注意：口袋工具有受体兜底、对接工具没有 → 用户上传了受体却被要求再指定。
+        # 兜底：本次运行请求带的上传文件（对话附件）直接使用，不依赖模型是否转发路径。
+        # 口袋工具有受体兜底而对接工具没有，缺少这段兜底时上传的受体仍会被要求再指定一次。
         if not (molecule_file or "").strip():
             molecule_file = request_value("molecule_file", runtime)
         if not (receptor_file or "").strip():
             receptor_file = request_value("receptor_file", runtime)
         if molecule_file and molecule_file.strip():
-            # 裸文件名（如上传显示名 `PGR.sdf`）先在上传/缓存目录里解析成真实路径 ——
-            # 不要求模型拼绝对路径（已知缺陷）。
+            # 裸文件名（如上传显示名 `PGR.sdf`）先在上传/缓存目录里解析成真实路径，
+            # 模型无需拼出绝对路径。
             from docking_agent.tools.molecule_paths import resolve_molecule_file
             resolved, attempts, candidates = resolve_molecule_file(molecule_file.strip())
             if candidates:
@@ -257,15 +257,15 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
             # 横向协作：优先使用共享黑板里（属性评估 Agent 规范化去重过）的分子库
             effective = board_molecules_json(molecules_json if isinstance(molecules_json, str) else "")
             molecules = json.loads(effective) if isinstance(effective, str) and effective.strip() else None
-        # refine_from 已给出「精算清单」时不要被黑板全量清单覆盖
+        # refine_from 已给出「精算清单」时不被黑板全量清单覆盖
         if not isinstance(molecules, list) or not molecules:
             return json.dumps(
                 {"status": "no_molecules",
                  "message": "未提供待对接的小分子配体：分子对接需要蛋白质受体与小分子配体两部分。"
                             "请提供候选小分子库（SMILES/名称列表），或上传小分子文件（SDF/SMILES/CSV）。"},
                 ensure_ascii=False)
-        # 身份去重：同一物质的两种 SMILES 写法（PubChem 原始写法 vs 用户点选写法）只能占一行。
-        # 注意：只给 1 个分子却对接出 2 行 —— 黑板里同一物质以两种
+        # 身份去重：同一物质的两种 SMILES 写法（PubChem 原始写法与调用方点选写法）只占一行。
+        # 仅给出 1 个分子却对接出 2 行即由此而来：黑板里同一物质以两种
         # 写法各占一个键（见 `runtime/blackboard.canonical_key`），清单到这里仍是 2 条。
         if isinstance(molecules, list) and len(molecules) > 1:
             from docking_agent.runtime.blackboard import dedupe_molecules
@@ -274,8 +274,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
             if dropped:
                 logger.info("配体清单按化学身份去重：去掉 %d 条重复写法", dropped)
 
-        # ---- 阳性对照必须一并真实对接（方法学基线）----
-        # 不依赖模型是否记得把对照放进清单：从本次运行的请求参数里取，缺了就补上。
+        # ---- 阳性对照须一并实际对接（方法学基线）----
+        # 不依赖模型是否把对照放进清单：从本次运行的请求参数里取，缺失时补上。
         _run_for_control = active_run(runtime)
         control = ""
         if _run_for_control is not None:
@@ -296,8 +296,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                     logger.info("阳性对照未在清单中，已自动补入一并对接：%s", control)
 
         # ---- 库已知后补一次参数规划（大库漏斗的前提）----
-        # 注意：分子来自上传文件 → 受理层规划时库还没解析 → `param_plan` 为空
-        # → 2961 条按默认 16 全量精算 40 分钟，两阶段漏斗一次没跑。这里补规划并写回运行。
+        # 分子来自上传文件时，受理层规划时库还没解析，`param_plan` 为空，
+        # 2961 条会按默认 16 全量精算 40 分钟，两阶段漏斗一次不跑。这里补规划并写回运行。
         _plan = (getattr(active_run(runtime), "data", None) or {}).get("param_plan") or {}
         if isinstance(molecules, list) and len(molecules) > 1 and not _plan.get("exhaustiveness"):
             try:
@@ -320,9 +320,9 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                     _site_size = _rec.get("size") or None
                 _request_params = ((getattr(active_run(runtime), "data", None) or {})
                                    .get("request") or {})
-                # 注意：此刻 `exhaustiveness` 已被解析成具体数字（未指定时是系统默认 16），
-                # 只有 `_explicit_exh` 为真才是**用户真的给了值**，否则会被规划当成用户参数、
-                # 于是规划原样返回 16 —— 那正是这次"没有漏斗"的一半原因。
+                # 此刻 `exhaustiveness` 已被解析成具体数字（未指定时是系统默认 16），
+                # 只有 `_explicit_exh` 为真才代表调用方显式给了值，否则会被规划当成调用方参数、
+                # 规划随即原样返回 16，两阶段漏斗因此不生效。
                 _user_params = {k: v for k, v in (
                     ("exhaustiveness", exhaustiveness if _explicit_exh else None),
                     ("n_poses", n_poses),
@@ -341,7 +341,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                                     f"精算前 {_late_plan.get('refine_top_n')} 个）"
                                     if _late_plan.get("two_stage") else "（单阶段）"))
                     logger.info("库解析后补参数规划：%s", _late_plan.get("exhaustiveness"))
-                    # 漏斗在**本工具内**确定性执行：粗筛全库 → 精算头部 N 个（不依赖模型再调一次）。
+                    # 漏斗在本工具内确定性执行：先粗筛全库，再对头部 N 个精算（不依赖模型再调一次）。
                     if _late_plan.get("two_stage") and not _explicit_exh and not top_from_previous:
                         _funnel = {
                             "coarse": int(_late_plan.get("coarse_exhaustiveness")
@@ -355,7 +355,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
 
         receptor = None
         if receptor_file and receptor_file.strip():
-            # 统一归一化：gzip/zip、内容嗅探（扩展名只是提示）、CIF→PDB、杂原子溯源
+            # 统一归一化：gzip/zip、内容嗅探（扩展名只是提示）、CIF 转 PDB、杂原子溯源
             try:
                 from docking_agent.core.normalize import (normalize_receptor_source,
                                                           record_input_normalization)
@@ -367,8 +367,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                 record_input_normalization(receptor_norm, kind="receptor")
                 receptor = receptor_path
             except Exception as re_err:  # noqa: BLE001
-                # 输入归一化失败 = 受体不可用：**不计算**，把原因与出路交回用户
-                # （旧行为只回一个 file_error，主管 Agent 还可能换个受体继续跑）。
+                # 输入归一化失败即受体不可用：不执行计算，把原因与出路交回调用方
+                # （只回一个 file_error 时，主管 Agent 可能换个受体继续跑）。
                 from docking_agent.tools.choices import (  # noqa: PLC0415
                     receptor_input_problem)
 
@@ -392,18 +392,18 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                     receptor = rs
         # 当前运行（多 Agent 模式由 API 层注入）：位姿写入该次运行目录，作为可下载中间数据
         run = active_run(runtime)
-        # 谁解析到分子谁就**发布**：协调 Agent 允许跳过 import 直接把文件交给本工具
-        # （提示词明确允许），此时若只有本工具知道分子，属性评估等子 Agent 就会读到「黑板上无分子」
-        # —— 注意：属性评估拿到 0 条却返回 status=ok。发布后再写一条文件交接路径供下游直接读。
+        # 解析到分子的组件负责发布：协调 Agent 可跳过 import 直接把文件交给本工具
+        # （提示词明确允许），此时若只有本工具知道分子，属性评估等子 Agent 会读到「黑板上无分子」，
+        # 而属性评估拿到 0 条仍返回 status=ok。发布后再写一条文件交接路径供下游直接读。
         if molecules:
             board_now = active_blackboard(runtime)
             if board_now is not None and not board_now.molecules():
                 board_now.add_molecules(molecules)
                 board_now.add_note(f"Docking 执行 Agent：从分子库文件读取 {len(molecules)} 条"
                                    f"并写入共享黑板（供属性评估/结合模式等子 Agent 使用）")
-        # 已取消/已结束的运行**绝不允许再开始新的对接**：用户点「停止」后，API 的
-        # `clear_cancel()` 会清掉取消标志，而图里可能还有一次在途的工具调用 —— 若不拦住，
-        # 它会用「新的、未置位的」标志重新跑整库对接（注意：取消后 load 反而涨到 40）。
+        # 已取消/已结束的运行不再开始新的对接：调用方点「停止」后，API 的
+        # `clear_cancel()` 会清掉取消标志，而图里可能还有一次在途的工具调用；不拦住时
+        # 它会用「新的、未置位的」标志重新跑整库对接（取消后 load 会涨到 40）。
         if run is not None and str(run.data.get("status") or "") in ("cancelled", "error"):
             logger.info("运行已 %s，拒绝开始新的对接", run.data.get("status"))
             return json.dumps({
@@ -411,12 +411,12 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                 "message": f"本次运行已{'被取消' if run.data.get('status') == 'cancelled' else '失败'}"
                            "，不再开始新的对接计算。如需继续，请重新提交任务。",
             }, ensure_ascii=False)
-        # 未指定受体（受理层判定 source==default，或干脆什么都没给）→ **不执行对接**，
-        # 先把可选受体交给用户选：用户没要求就替它挑一个受体来跑，等于答非所问
-        # （旧实现会静默回退内建默认受体）。
+        # 未指定受体（受理层判定 source==default，或未给出任何来源）时不执行对接，
+        # 先把可选受体交给调用方选择：未指定就挑一个受体开跑会偏离任务意图
+        # （该路径不再静默回退内建默认受体）。
         if _receptor_unspecified(receptor, run, receptor_file):
-            # 预置受体清单**只用于内部测试**，不再作为用户可选来源；
-            # 因此这里不给 choices，只把三条真出路交给用户（PDB 号 / UniProt / 上传文件）。
+            # 预置受体清单只用于内部测试，不作为可选来源；
+            # 因此这里不给 choices，只把三条出路交给调用方（PDB 号 / UniProt / 上传文件）。
             return json.dumps({
                 "status": "needs_user_input",
                 "message": ("未指定受体：不能默认挑一个受体开跑。请给出受体来源 —— "
@@ -426,7 +426,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
             }, ensure_ascii=False)
         site = _parse_site(floats_to_text(site_center, expect=3),
                            floats_to_text(site_size, expect=3))
-        # 横向协作：口袋分析 Agent 已提交的盒子直接用（用户显式给坐标时以用户为准）
+        # 横向协作：口袋分析 Agent 已提交的盒子直接使用（调用方显式给坐标时以调用方为准）
         if site is None:
             board_for_site = active_blackboard(runtime)
             pinned = board_for_site.get_site() if board_for_site is not None else None
@@ -440,10 +440,10 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
 
         def _live_progress(done: int, total: int, _result: dict,
                            runtime: Any = None) -> None:
-            """把对接进度**与逐分子结果**写进当前运行，供 SSE 心跳实时推送。
+            """把对接进度与逐分子结果写进当前运行，供 SSE 心跳实时推送。
 
             多 Agent（对话）模式下父流程阻塞、没有 token/tool_call 事件，`live_progress`
-            与这里的 `live_molecules` 是「实时逐分子结果」表的唯一数据来源：API 层心跳
+            与这里的 `live_molecules` 是「实时逐分子结果」表唯一的数据来源：API 层心跳
             每秒把它们转成 progress / molecules 事件。阳性对照只作基线，不进实时流。
             """
             if run is None:
@@ -464,24 +464,24 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         if run is not None:
             run.data["live_progress"] = {"stage": "docking", "done": 0, "total": len(molecules),
                                          "percent": 0.0,
-                                         # 此刻还没进对接：自动定盒/库级跨度抽样要先跑（大库首次几十秒），
-                                         # 措辞必须如实，否则界面显示「开始对接」却长时间不动
+                                         # 此刻还没进对接：自动定盒/库级跨度抽样先跑（大库首次几十秒），
+                                         # 措辞据此如实描述，否则界面会长时间显示「开始对接」不动
                                          "message": f"准备对接 {len(molecules)} 个分子"}
         keep = [x.strip() for x in (keep_hetatm or "").replace("；", ",").replace(";", ",").split(",")
                 if x.strip()]
         def _live_note(message: str) -> None:
-            """准备阶段（定盒 / 库级下限抽样）也要给界面一条真实说明，避免长时间无反馈。"""
+            """准备阶段（定盒 / 库级下限抽样）也向界面写一条说明，避免长时间没有状态更新。"""
             if run is None:
                 return
             run.data["live_progress"] = {"stage": "docking", "done": 0,
                                          "total": len(molecules), "percent": 0.0,
                                          "message": message}
 
-        # 真正的「停止」：把本次运行的协作式取消标志接进对接层。
-        # 没有它时，chat/多 Agent 模式下按停止只会等工具自己跑完（已知缺陷）。
+        # 「停止」的实际接线：把本次运行的协作式取消标志接进对接层。
+        # 缺少该标志时，chat/多 Agent 模式下按停止只能等工具自己跑完。
         from docking_agent.cancellation import cancel_flag  # noqa: PLC0415  # 避免循环导入
 
-        # ---- 对接前询问：受体自带共晶配体且未指定阳性对照时，先问用户是否用作对照 ----
+        # ---- 对接前询问：受体自带共晶配体且未指定阳性对照时，先问是否用作对照 ----
         # 设计约束"在开始对接前询问"：这里在调用任何引擎之前拦下，避免先跑一遍再问，
         # 也避免"跑完又问一次"（选择会由前端作为 positive_control 下发）。
         try:
@@ -496,7 +496,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                     receptor, keep_hetatm=tuple(keep), protonation=(protonation or None),
                     ph=(protonation_ph or None))
             except ReceptorInputError as exc:
-                # 受体输入不可用：在调用任何引擎之前把选择权交回用户（不回退预置受体）
+                # 受体输入不可用：在调用任何引擎之前把选择权交回调用方（不回退预置受体）
                 return receptor_input_guard(exc, runtime=runtime)
             preview_blocks = [{"receptor": s.get("key") or s.get("label") or "",
                                "receptor_key": s.get("key") or "",
@@ -507,8 +507,8 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                               for s in preview_specs]
             offered = offer_cocrystal_positive_control(
                 preview_blocks, specified_control=control, runtime=runtime)
-            # 阻断式询问未回答前**不许开跑**：重复调用到这里也必须原地返回。
-            # 注意：幂等标记让第二次调用直接开局，用户还没点选就算了 40 分钟。
+            # 阻断式询问未回答前不开始对接：重复调用到这里也原地返回。
+            # 幂等标记会使第二次调用直接开局，调用方尚未点选时整库对接仍会跑满 40 分钟。
             if offered or blocking_choice_pending("positive_control", runtime=runtime):
                 # 选项明细只走界面；给模型的载荷不带 SMILES/选项内容，避免正文里再抄一遍
                 return json.dumps(choices_payload(
@@ -525,11 +525,11 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                            engine=engine, protonation=(protonation or ""),
                            protonation_ph=(protonation_ph or None),
                            site=site,
-                           # 表单里的这两项此前在 Agent 路径被忽略（恒存位姿、不套上限）→ 真实行为缺口
+                           # 表单里的这两项在 Agent 路径曾被忽略（恒存位姿、不套上限），此处补齐
                            pose_dir=(str(run.dir / "poses")
                                      if (run is not None and save_poses) else None),
                            max_ligands=(int(max_ligands) or None),
-                           # 闭包绑定 runtime：回调由 dock_library 以 (done, total, result) 调用
+                           # 闭包绑定 runtime：回调由 dock_library 按 (done, total, result) 调用
                            progress_cb=(partial(_live_progress, runtime=runtime)
                                         if run is not None else None),
                            note_cb=_live_note if run is not None else None,
@@ -537,7 +537,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         if run is not None:
             run.data.pop("live_progress", None)
 
-        # ---- 漏斗第二遍：只对头部 N 个用精算强度重算 ----
+        # ---- 漏斗第二遍：只对头部 N 个按精算强度重算 ----
         # 按 (name, smiles) 合并，精算行 pass=fine 且保留 affinity_coarse（与 top_from_previous 同口径）。
         if _funnel and isinstance(out.get("receptors"), list):
             _flat = [r for b in out["receptors"] for r in (b.get("results") or [])
@@ -623,7 +623,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
                     r["pose_url"] = f"/api/runs/{run.id}/artifacts/{art_name}"
                     registered = len([a for a in run.artifacts() if a["name"].startswith("pose_")])
                     if registered >= max_artifacts:
-                        continue  # 大库不逐个登记，仍可按名直取 + poses.zip
+                        continue  # 大库不逐个登记，仍可按名直取或打包 poses.zip
                     try:
                         rel = run.rel(pose)
                         run.add_artifact(rel, art_name, f"位姿：{label}", "chemical/x-pdbqt")
@@ -638,7 +638,7 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
             return receptor_input_guard(e, runtime=runtime)
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
-    # 搜索强度的来源必须可追溯（审计缺陷：静默退回 16 时报告里看不出来）
+    # 搜索强度的来源需要可追溯（静默退回 16 时报告里看不出取值依据）
     out["notes"] = list(out.get("notes") or []) + [
         f"搜索强度：exhaustiveness={exhaustiveness}"
         f"（{'调用方显式指定' if _explicit_exh else ('受理层自动规划' if _planned_exh else '系统默认（本次无规划值）')}"
@@ -659,13 +659,13 @@ def molecular_docking(molecules_json: str = "", molecule_file: str = "",
         out["notes"] = list(out.get("notes") or []) + [
             f"精算轮次：对上一轮最好的 {len(refine_from)} 个分子用 exhaustiveness={exhaustiveness} 重算"]
 
-    # ---- 完整结果落盘（不依赖模型搬运），并按规模决定回传给模型的视图 ----
+    # ---- 结果落盘（不依赖模型搬运），并按规模决定回传给模型的视图 ----
     tool_io.record("docking", out, run=active_run(runtime))
     limit = tool_io.summary_limit()
     blocks = out.get("receptors") or []
     total_rows = sum(len(b.get("results") or []) for b in blocks)
     if total_rows <= limit:
-        # 小库：结构保持完整（下游按字段读），但逐分子溯源压成聚合口径 —— 完整明细在产物里
+        # 小库：结构保持原样（下游按字段读），但逐分子溯源压成聚合口径，明细在产物里
         return json.dumps(_agent_view(out), ensure_ascii=False)
     flat = [r for b in blocks for r in (b.get("results") or [])]
     ranked = sort_by_affinity(flat)

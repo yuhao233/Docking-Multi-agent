@@ -1,19 +1,19 @@
-"""模型调用前的「工具调用配对」自愈：协调 Agent 与 4 个子 Agent 都不能把非法序列发给模型。
+"""模型调用前的工具调用配对自愈：协调 Agent 与 4 个子 Agent 都不把非法序列发给模型。
 
-注意（400）：
+非法序列对应的 400 响应：
 
     400 - An assistant message with 'tool_calls' must be followed by tool messages
           responding to each 'tool_call_id'. (insufficient tool messages …)
 
-`agents/threads.py::repair_thread_state()` 只在**每轮开始前**修**协调 Agent** 的 thread；
-4 个子 Agent 用的是**固定角色线程**（`thread_id="property"/"pocket"/"docking"/"binding"`）
-与各自的 `InMemorySaver` —— 一次取消 / 限额 / 工具异常把悬空 tool_calls 留在子 Agent 线程里，
-下一次调用就直接 400，且当时没有任何补丁路径。本文件看护
-`ToolCallPairingMiddleware`（包裹 `wrap_model_call` —— **不能**用 `before_model`：那是图里的一个
-节点，每次模型调用多一个 super-step，会把长任务顶到 `GRAPH_RECURSION_LIMIT`）以及它真实的图内行为。
+`agents/threads.py::repair_thread_state()` 只在每轮开始前修协调 Agent 的 thread；
+4 个子 Agent 使用固定角色线程（`thread_id="property"/"pocket"/"docking"/"binding"`）
+与各自的 `InMemorySaver`，一次取消、限额或工具异常会把悬空 tool_calls 留在子 Agent 线程里，
+下一次调用即返回 400，且当时不存在补丁路径。本模块看护
+`ToolCallPairingMiddleware`（包裹 `wrap_model_call`；不使用 `before_model`：后者是图里的一个
+节点，每次模型调用多一个 super-step，会把长任务顶到 `GRAPH_RECURSION_LIMIT`）以及它在图内的实际行为。
 
 断言一律用 LangGraph 自己的 `add_messages` 当作 reducer（与运行时同一实现），
-避免"测试里的合并规则比真实更宽松"。
+避免测试里的合并规则比运行时更宽松。
 """
 from __future__ import annotations
 
@@ -78,12 +78,12 @@ def _run(messages: List[Any], *, is_async: bool = False) -> Dict[str, Any]:
 
 
 def _apply(messages: List[Any], update: Any) -> List[Any]:
-    """（保留给 state 形式的修复用）用真实的 `add_messages` 应用更新。"""
+    """（保留给 state 形式的修复用）按 `add_messages` 的实际语义应用更新。"""
     return list(add_messages(messages, update["messages"]))
 
 
 def test_legal_history_is_left_untouched() -> None:
-    """合法历史（含完整回执）不得被改写：返回 None，不产生额外消息。"""
+    """合法历史（回执齐全）不被改写：返回 None，不产生额外消息。"""
     messages: List[Any] = [HumanMessage("跑一次", id="h1"),
                            AIMessage("", tool_calls=[_call(1)], id="a1"),
                            ToolMessage("ok", tool_call_id="call_1", id="t1"),
@@ -94,7 +94,7 @@ def test_legal_history_is_left_untouched() -> None:
 
 
 def test_tail_dangling_call_is_dropped_in_place() -> None:
-    """中断在尾部（最常见：取消 / 限额）→ 原地改写那条 AIMessage，序列变合法。"""
+    """中断位于尾部（常见于取消或限额）：原地改写那条 AIMessage，序列变为合法。"""
     messages: List[Any] = [HumanMessage("跑一次", id="h1"),
                            AIMessage("先做口袋分析", tool_calls=[_call(1), _call(2)], id="a1")]
     seen = _run(messages)
@@ -109,7 +109,7 @@ def test_tail_dangling_call_is_dropped_in_place() -> None:
 
 
 def test_middle_dangling_call_keeps_message_order() -> None:
-    """中间位置悬空：改写后位置与后续消息顺序都不变（插消息是插不进去的，见模块说明）。"""
+    """中间位置悬空：改写后位置与后续消息顺序都不变（插消息不可行，见模块 docstring）。"""
     messages: List[Any] = [HumanMessage("x", id="h1"),
                            AIMessage("", tool_calls=[_call(9, "run_pocket_analysis")], id="a2"),
                            HumanMessage("继续", id="h2"),
@@ -134,7 +134,7 @@ def test_partial_batch_keeps_the_answered_call() -> None:
 
 
 def test_orphan_tool_message_is_dropped() -> None:
-    """另一半非法形态：回执还在、配对的 AIMessage 被摘要/裁剪切掉了 → 丢弃该回执。"""
+    """另一种非法形态：回执仍在，配对的 AIMessage 被摘要或裁剪切掉，该回执需要丢弃。"""
     messages: List[Any] = [HumanMessage("x", id="h1"),
                            ToolMessage("旧回执", tool_call_id="gone", id="t1"),
                            AIMessage("结论", id="a2")]
@@ -161,7 +161,7 @@ def test_empty_and_plain_histories_pass_through() -> None:
 
 
 def test_middleware_is_built_for_every_role() -> None:
-    """协调 Agent 与子 Agent 都必须带上它（子 Agent 的固定角色线程正是重灾区）。"""
+    """协调 Agent 与子 Agent 都挂载该中间件（子 Agent 的固定角色线程是悬空调用的主要来源）。"""
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
     from docking_agent.agents.middleware import build_agent_middleware
@@ -176,11 +176,11 @@ def test_middleware_is_built_for_every_role() -> None:
 
 
 def test_real_agent_graph_heals_before_the_model_call() -> None:
-    """端到端：真实 `create_agent` 图 + 悬空历史 → 模型**实际收到**的序列必须合法。
+    """端到端：实际 `create_agent` 图加悬空历史，模型收到的序列需要合法。
 
-    这是那个 400 的正面回归：修复必须发生在模型调用之前，且顺序正确
-    （第一版把占位回执追加到了末尾，模型收到的是 `[Human, AI(tool_calls), Human, ToolMessage]`，
-    依旧非法 —— 本用例会直接抓到）。
+    该用例覆盖 400 的正向回归：修复发生在模型调用之前，且消息顺序正确
+    （此前的实现把占位回执追加到末尾，模型收到的是 `[Human, AI(tool_calls), Human, ToolMessage]`，
+    依旧非法，本用例会直接抓到）。
     """
     from langchain.agents import create_agent
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -216,8 +216,8 @@ def test_real_agent_graph_heals_before_the_model_call() -> None:
         ]}, as_node="model")
         await graph.ainvoke({"messages": [HumanMessage("继续", id="h2")]}, config)
         after = list((await graph.aget_state(config)).values["messages"])
-        # 包裹式修复**不改落盘状态**（改了就要多一个节点、多占步数）；下一轮开始前的
-        # `repair_thread_state()` 仍会把它清干净 —— 两条路径互补，这里一起看护。
+        # 包裹式修复不改落盘状态（改写落盘状态会多一个节点、多占步数）；下一轮开始前的
+        # `repair_thread_state()` 仍会清掉它，两条路径互补，本用例一起看护。
         await repair_thread_state(graph, config)
         healed = list((await graph.aget_state(config)).values["messages"])
         return after + ["---"] + healed
@@ -227,7 +227,7 @@ def test_real_agent_graph_heals_before_the_model_call() -> None:
     after, healed = parts[:split], parts[split + 1:]
 
     assert seen, "模型没被调用"
-    # 悬空调用所属的 AIMessage 被原地改写 → 模型收到的历史里没有任何 ToolMessage 悬空配对
+    # 悬空调用所属的 AIMessage 被原地改写，模型收到的历史里没有悬空配对的 ToolMessage
     assert seen[0][:2] == ["HumanMessage", "AIMessage"], seen[0]
     assert seen[0].count("AIMessage") == 1 and "ToolMessage" not in seen[0], seen[0]
     # 落盘状态保留原始历史（不占步数），但新一轮开始前的自愈能清掉它

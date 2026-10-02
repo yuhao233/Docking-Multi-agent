@@ -1,14 +1,14 @@
 """标准 Agent Protocol 服务面（P1 后端标准化）回归测试。
 
-覆盖（全部**离线**：内部链路用假 SSE 生成器替换，不调 LLM、不做对接）：
+覆盖范围（全部离线：内部链路用假 SSE 生成器替换，不调 LLM、不做对接）：
 1. `_map_legacy_event` / `parse_frame` / `_wait_payload` 的映射语义（含 run_id 不被覆盖）；
 2. `_agent_request` 把标准 `input.messages` 转成内部 `AgentRequest`（消息文本 + 表单字段）；
 3. System / Assistants 端点（清单、单取、schema、404）；
 4. Threads 端点（创建/取/删/state/history + 404）；
 5. Thread Runs / Stateless Runs：`wait` 的返回值、`runs` 列表、`cancel`；
-6. **标准 SSE 帧**：`metadata → updates → messages/partial → messages/complete → custom → values → end`，
+6. 标准 SSE 帧的顺序：`metadata`、`updates`、`messages/partial`、`messages/complete`、`custom`、`values`、`end`，
    以及错误路径的 `error` 帧；
-7. 既有端点不受影响（`/api/agent/stream` 仍挂在 app 上，标准面是纯增量）。
+7. 既有端点不受影响（`/api/agent/stream` 仍挂在 app 上，标准面为增量接口）。
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _frame_events(text: str) -> List[Dict[str, Any]]:
 
 
 def _fake_sse(events: Iterable[Dict[str, Any]]) -> Any:
-    """伪造一个 `StreamingResponse`：`body_iterator` 必须是**属性**（真实实现就是异步生成器对象）。"""
+    """伪造一个 `StreamingResponse`：`body_iterator` 须为属性（真实实现中它是异步生成器对象）。"""
 
     class _Resp:
         def __init__(self) -> None:
@@ -76,39 +76,39 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
 # --------------------------------------------------------------------------- #
 def test_map_legacy_event_covers_standard_frames() -> None:
     state: Dict[str, Any] = {"seq": 0}
-    # 注意：`sse_event` 会给 data 补一个 ts 字段（前端据此算真实起止时间），断言只看关心的键
+    # `sse_event` 会给 data 补一个 ts 字段（前端据此算真实起止时间），断言只看关心的键
     event, data = AS.parse_frame(AS.frame("metadata", {"run_id": "run_x"}))
     assert event == "metadata" and data["run_id"] == "run_x" and "ts" in data
 
-    # token → messages/partial（且累加文本）
+    # token 转成 messages/partial（并累加文本）
     frames = AS._map_legacy_event({"type": "token", "content": "你好", "node": "model"}, state=state)
     assert AS.parse_frame(frames[0])[0] == "messages/partial"
     assert AS.parse_frame(frames[0])[1][0]["content"] == "你好"
     assert state["text"] == "你好"
 
-    # update → updates（节点名作 key）
+    # update 转成 updates（节点名作 key）
     frames = AS._map_legacy_event({"type": "update", "node": "tools", "keys": ["messages"]}, state=state)
     event, data = AS.parse_frame(frames[0])
     assert event == "updates" and data["tools"] == {"keys": ["messages"]}
 
-    # 领域事件 → custom
+    # 领域事件转成 custom
     frames = AS._map_legacy_event({"type": "molecules", "rows": [{"name": "乙醇"}]}, state=state)
     assert AS.parse_frame(frames[0])[0] == "custom"
 
-    # final → messages/complete（内容优先用 final 文本）
+    # final 转成 messages/complete（内容优先用 final 文本）
     frames = AS._map_legacy_event({"type": "final", "content": "最终回答", "run_id": "2026-x"}, state=state)
     event, data = AS.parse_frame(frames[0])
     assert event == "messages/complete" and data[0]["content"] == "最终回答"
     assert state["run_id"] == "2026-x"
 
-    # error → error 帧
+    # error 转成 error 帧
     frames = AS._map_legacy_event({"type": "error", "error_code": "X", "error_message": "炸了"}, state=state)
     event, data = AS.parse_frame(frames[0])
     assert event == "error" and data["message"] == "炸了" and state["failed"] is True
 
 
 def test_wait_payload_never_clobbers_business_run_id() -> None:
-    """缺陷回归：`{"run_id": platform_id, **values}` 会把业务 run id 覆盖掉。"""
+    """回归：`{"run_id": platform_id, **values}` 的合并顺序会覆盖业务 run id。"""
     values = {"run_id": "20260918-120000-0001", "summary": {"status": "ok"}}
     out = AS._wait_payload(values, "run_abc", "tid-1", {"business_run_id": "20260918-120000-0001"})
     assert out["run_id"] == "20260918-120000-0001", "values 里的业务 run id 必须保留"
@@ -287,8 +287,8 @@ def test_wait_list_and_cancel(client: TestClient, monkeypatch: pytest.MonkeyPatc
 
 
 def test_legacy_endpoints_still_registered(client: TestClient) -> None:
-    """标准面是**纯增量**：既有端点一个都不能少（前端与外部调用者不受影响）。"""
-    # 第 2 波把 app.routes 拆成懒加载的 _IncludedRouter（没有 .path 属性），
+    """标准面为增量接口：既有端点全部保留（前端与外部调用者不受影响）。"""
+    # app.routes 由懒加载的 _IncludedRouter 组成（没有 .path 属性），
     # 因此按 OpenAPI 的实际路径断言「端点仍然注册」。
     paths = set(client.get("/openapi.json").json()["paths"])
     for legacy in ("/api/agent/stream", "/api/runs", "/api/settings",
@@ -299,7 +299,7 @@ def test_legacy_endpoints_still_registered(client: TestClient) -> None:
 
 
 def test_legacy_endpoints_are_marked_deprecated(client: TestClient) -> None:
-    """规范收敛：老端点保留可用，但必须在 OpenAPI 里显式标成 deprecated（不再演进）。"""
+    """规范收敛：旧端点保留可用，但在 OpenAPI 里显式标成 deprecated（不再演进）。"""
     schema = client.get("/openapi.json").json()
     legacy = {
         ("/api/agent/stream", "post"),
@@ -335,9 +335,9 @@ def test_standard_surface_is_tagged_and_documented(client: TestClient) -> None:
 
 
 def test_offline_intake_run_drops_its_store_blackboard_view(client: TestClient) -> None:
-    """运行结束后必须丢弃该 run 的 store 黑板视图（审计 §2.1：长驻服务里 `_store_boards` 会泄漏）。
+    """运行结束后丢弃该 run 的 store 黑板视图（长驻服务中 `_store_boards` 会持续增长）。
 
-    走**离线** intake（`use_llm: False`）：不调模型、不做对接，因此 CI 的快跑也能看护这条不变量。
+    走离线 intake（`use_llm: False`）：不调模型、不做对接，CI 快跑即可覆盖这条不变量。
     """
     from docking_agent.runtime.blackboard import _store_boards
 

@@ -1,13 +1,13 @@
-"""对接姿态 × 结合口袋的**几何相互作用分析**（真实坐标计算，不含任何预测模型）。
+"""对接姿态与结合口袋的几何相互作用分析，坐标取自 PDBQT，不含预测模型。
 
-## 为什么需要
+## 用途
 
-对接分数只说"结合得多紧"，不说"**为什么**紧、结合在哪里"。用户要看的是：
-这个分子落在哪个口袋、贴着哪些残基、形成了几个氢键/盐桥/疏水接触、有没有 π 堆积，
-以及这些相互作用是否与推荐理由一致。因此这里直接从**真实位姿**（`poses/pose_*.pdbqt`）
-与**真实受体**（PDBQT）坐标算，逐残基、逐原子对留痕。
+对接分数只说明结合强度，不说明结合位置与成键方式。分析结果给出：
+分子落在哪个口袋、贴着哪些残基、形成几个氢键/盐桥/疏水接触、有无 π 堆积，
+以及这些相互作用是否与推荐理由一致。计算直接从实际位姿（`poses/pose_*.pdbqt`）
+与实际受体（PDBQT）坐标出发，逐残基、逐原子对留痕。
 
-## 判定口径（全部是几何启发式，报告中会标注"近似"）
+## 判定口径（全部为几何启发式，报告中会标注近似）
 
 | 相互作用 | 判定 |
 | --- | --- |
@@ -18,8 +18,8 @@
 | π–阳离子 | 芳香碳与带正电的 N（|q| ≥ 0.3）距离 ≤ `pi` (5.5 Å) |
 | 金属配位 | 受体金属离子（`ZN/FE/MG/MN/CA/CU/NI/CO/NA/K`）与配体 N/O 距离 ≤ 3.0 Å |
 
-**局限（报告里也会写）**：只做距离/电荷判据，没有做氢键角度、质子化方向与 ring-normal 角度的精确判定，
-也没有做能量分解；它回答"贴到哪里、以什么方式接触"，不替代 MD/MM-GBSA。
+局限（报告里也会写）：只做距离与电荷判据，未做氢键角度、质子化方向与 ring-normal 角度的判定，
+也没有做能量分解；它回答贴到哪里、以什么方式接触，不替代 MD/MM-GBSA。
 """
 from __future__ import annotations
 
@@ -38,9 +38,9 @@ PI_MAX = 5.5
 METAL_MAX = 3.0
 #: 电荷阈值（部分电荷，e）
 CHARGE_MIN = 0.3
-#: 芳香碳对数达到该值才算 π–π 堆叠（单原子偶然靠近不算）
+#: 芳香碳对数达到该值才算 π–π 堆叠；单原子偶然靠近不算
 PI_MIN_PAIRS = 3
-#: 口袋残基统计半径：以配体为参照（姿态周边），比"口袋中心"更贴近实际结合环境
+#: 口袋残基统计半径：以配体为参照取姿态周边，比口袋中心更贴近实际结合环境
 POCKET_RADIUS = 8.0
 
 POLAR = frozenset({"N", "NA", "OA", "O", "SA"})
@@ -64,7 +64,7 @@ def read_pdbqt(path: str, *, first_model_only: bool = True) -> List[Dict[str, An
 
     AutoDock PDBQT 的列约定：`1-6` 记录名、`7-11` 序号、`13-16` 原子名、`18-20` 残基名、
     `22` 链、`23-26` 残基号、`31-54` 坐标、`55-60` 占据、`61-66` B 因子、`67-76` 电荷、`77-79` AD4 类型。
-    配体位姿文件可能含多个 `MODEL`；默认只取第一个（= 最优位姿，与报告里展示的分数一致）。
+    配体位姿文件可能含多个 `MODEL`，默认只取第一个，即最优位姿，与报告展示的分数一致。
     """
     atoms: List[Dict[str, Any]] = []
     in_first_model = True
@@ -108,7 +108,7 @@ def read_pdbqt(path: str, *, first_model_only: bool = True) -> List[Dict[str, An
 
 
 def _element(line: str) -> str:
-    """元素：优先 AD4 类型，其次原子名首字母。"""
+    """元素判定：优先 AD4 类型，其次取原子名首字母。"""
     ad4 = line[77:79].strip().upper()
     if ad4 and ad4[0] in "CNOSHPFIMZKBRA":
         if ad4 in METALS:
@@ -122,10 +122,10 @@ def _element(line: str) -> str:
 
 
 def pose_smiles(pose_path: str) -> str:
-    """位姿文件里记录的配体 SMILES（meeko 的 `REMARK SMILES ...`）。
+    """位姿文件里记录的配体 SMILES，取自 meeko 的 `REMARK SMILES ...`。
 
-    为什么用它而不是原始输入 SMILES：位姿是**对接实际用的化学形式**（可能已按目标 pH 中和/重分配），
-    2D 图必须画与位姿一致的分子。
+    使用位姿而不是原始输入 SMILES 的原因：位姿是对接实际使用的化学形式，
+    可能已按目标 pH 中和或重新分配质子，2D 图需要与位姿保持一致。
     """
     try:
         with open(pose_path, encoding="utf-8", errors="ignore") as fh:
@@ -140,9 +140,9 @@ def pose_smiles(pose_path: str) -> str:
 
 
 def pose_smiles_index_map(pose_path: str) -> Dict[int, int]:
-    """`REMARK SMILES IDX` → {PDBQT 原子序号: SMILES 原子序号(1-based)}。
+    """解析 `REMARK SMILES IDX`，返回 {PDBQT 原子序号: SMILES 原子序号(1-based)}。
 
-    用于把相互作用里的原子名对应到 2D 结构图上的原子（不靠猜、也不靠名字匹配）。
+    该映射把相互作用里的原子名对应到 2D 结构图上的原子，不使用名字匹配。
     """
     mapping: Dict[int, int] = {}
     try:
@@ -152,7 +152,7 @@ def pose_smiles_index_map(pose_path: str) -> Dict[int, int]:
                     break
                 if not line.startswith("REMARK SMILES IDX"):
                     continue
-                # meeko 会把较长的映射**折成多行** REMARK —— 必须逐行累加，只看第一行会漏原子
+                # meeko 会把较长的映射折成多行 REMARK，需要逐行累加，只读第一行会漏原子
                 values = [int(v) for v in re.findall(r"-?\d+", line[len("REMARK SMILES IDX"):])]
                 for i in range(0, len(values) - 1, 2):
                     mapping[values[i]] = values[i + 1]
@@ -175,7 +175,7 @@ def analyze_pose_pocket(receptor_pdbqt: str, pose_pdbqt: str, *,
                         contact: float = CONTACT_MAX, pi: float = PI_MAX,
                         metal: float = METAL_MAX,
                         pocket_radius: float = POCKET_RADIUS) -> Dict[str, Any]:
-    """分析单个位姿与受体的相互作用，返回逐残基明细 + 汇总（全部来自真实坐标）。"""
+    """分析单个位姿与受体的相互作用，返回逐残基明细与汇总，坐标取自 PDBQT。"""
     receptor = read_pdbqt(receptor_pdbqt)
     ligand = read_pdbqt(pose_pdbqt)
     out: Dict[str, Any] = {
@@ -196,7 +196,7 @@ def analyze_pose_pocket(receptor_pdbqt: str, pose_pdbqt: str, *,
         return out
 
     heavy_lig = [a for a in ligand if a["element"] != "H"]
-    # 只保留配体附近的受体原子：3000 残基的全蛋白两两比较没有必要（也慢）
+    # 只保留配体附近的受体原子：3000 残基的全蛋白两两比较没有必要，且耗时
     nearby = [a for a in receptor
               if a["element"] != "H" and any(distance(a["xyz"], b["xyz"]) <= pocket_radius
                                              for b in heavy_lig)]
@@ -252,7 +252,7 @@ def analyze_pose_pocket(receptor_pdbqt: str, pose_pdbqt: str, *,
                            "receptor_atom": rec["name"], "receptor_serial": rec.get("serial"),
                            "distance": round(d, 2)})
 
-    # π–π 用"芳香碳对数"代理判据（单对靠近不算堆叠）
+    # π–π 采用芳香碳对数作为代理判据，单对靠近不算堆叠
     for key, pairs in aromatic_pairs.items():
         if pairs < PI_MIN_PAIRS:
             continue
@@ -318,7 +318,7 @@ def analyze_pose_pocket(receptor_pdbqt: str, pose_pdbqt: str, *,
 
 
 def describe(analysis: Dict[str, Any], *, max_residues: int = 8) -> str:
-    """一句话总结（用于报告与运行笔记；全部数字来自几何分析）。"""
+    """一句话总结，用于报告与运行笔记，数字全部来自几何分析。"""
     if not analysis or analysis.get("status") != "ok":
         return str((analysis or {}).get("message") or "无姿态–口袋分析数据")
     summary = analysis.get("summary") or {}
@@ -343,10 +343,10 @@ def describe(analysis: Dict[str, Any], *, max_residues: int = 8) -> str:
 
 def pocket_residues(receptor_pdbqt: str, center: Sequence[float], size: Sequence[float], *,
                     limit: int = 24, min_atoms: int = 1) -> List[Dict[str, Any]]:
-    """对接盒内的受体残基清单（按盒内原子数排序）——用于「结合口袋说明」。
+    """对接盒内的受体残基清单，按盒内原子数排序，用于「结合口袋说明」。
 
-    这是**不依赖口袋预测引擎**的口袋描述：即使位点来自共晶配体或用户手填坐标，
-    也能说清"这个盒子里有哪些残基"。
+    该描述不依赖口袋预测引擎：位点来自共晶配体或手工填写的坐标时，
+    同样可以给出盒内的残基构成。
     """
     atoms = read_pdbqt(receptor_pdbqt)
     if not atoms or not center or not size:

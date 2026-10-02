@@ -1,14 +1,13 @@
-"""质子化态策略（运行级）+ 推荐化合物排行（综合分 + Agent 理由）的回归护栏。
+"""质子化态策略（运行级）与推荐化合物排行的回归护栏。
 
-对应的需求与已修复缺陷：
-  1. **质子化**：库里大量盐/羧酸根/多质子化碱，同一分子的离子态与中性态对接行为差别很大；
-     系统过去只在结果里告警「请确认质子化态」，却不提供任何统一口径 → 同一批筛选里混着两种化学形式。
-     现在策略是**运行级**的（`neutralize` 默认 / `keep`），只中和带净电荷的分子，
+覆盖的行为契约：
+  1. 质子化：库中盐、羧酸根与多质子化碱的离子态与中性态对接行为差别较大；
+     策略为运行级（`neutralize` 默认 / `keep`），只中和带净电荷的分子，
      逐分子记录 `{policy, applied, charge_before, charge_after, method}`，原始 SMILES 始终保留，
-     且**理化性质与对接用同一种形式**。
-  2. **推荐排行**：只看对接分数会把"大而黏"的分子排到最前；综合分把亲和力、配体效率、
-     类药性与理化窗口按透明权重合成，Agent 通过 `submit_recommendations` 只补"为什么"。
-  3. **报告不重复**：协调 Agent 的整段报告只摘录「结论/建议」类小节。
+     理化性质与对接使用同一种化学形式。
+  2. 推荐排行：仅按对接分数排序会把大而黏的分子排到最前；综合分按透明权重合成亲和力、
+     配体效率、类药性与理化窗口，Agent 通过 `submit_recommendations` 只补充自然语言理由。
+  3. 报告去重：协调 Agent 的整段报告只摘录「结论/建议」类小节。
 """
 from __future__ import annotations
 
@@ -46,7 +45,7 @@ def test_apply_protonation_only_touches_charged_species() -> None:
     double, info = apply_protonation("O=C([O-])CCCCC(=O)[O-]", "neutralize")
     assert double == "O=C(O)CCCCC(=O)O" and info["charge_before"] == -2
 
-    # 季铵是永久正电荷：中和不了就**如实说**，不假装处理过
+    # 季铵为永久正电荷：无法中和时如实标注，不记为已处理
     quat, info = apply_protonation("C[N+](C)(C)C", "neutralize")
     assert quat == "C[N+](C)(C)C" and info["applied"] is False and "无法中和" in info["note"]
 
@@ -97,7 +96,7 @@ def test_policy_layers_explicit_then_run_request_then_env(monkeypatch: pytest.Mo
         assert _protonation_policy("neutralize") == "neutralize"  # 显式参数优先于运行请求
     finally:
         current_run.reset(token)
-    assert _protonation_policy() == "neutralize"        # 没有运行上下文 → 环境变量
+    assert _protonation_policy() == "neutralize"        # 无运行上下文时读环境变量
 
 
 # --------------------------------------------------------------------------- #
@@ -134,7 +133,7 @@ def test_recommendations_gate_reasons_and_exclusions() -> None:
 
     rows = [
         _row("强且类药", -10.0, smiles="AAA", heavy_atoms=30),          # A 级候选
-        _row("弱但类药", -3.0, smiles="BBB", heavy_atoms=5),            # 亲和力门槛 → 封顶 C
+        _row("弱但类药", -3.0, smiles="BBB", heavy_atoms=5),            # 亲和力弱于门槛，等级封顶 C
         _row("大而黏", -11.5, smiles="CCC", heavy_atoms=90, mw=1269.0, tpsa=300.0,
              rot=22, viol=3, logp=2.0, drug_likeness_pass=False),
         {"name": "对接失败", "smiles": "DDD", "error": "docking 失败"},
@@ -148,8 +147,8 @@ def test_recommendations_gate_reasons_and_exclusions() -> None:
     assert rec["rows"][0]["agent_reason"].startswith("亲和力")
     assert rec["rows"][0]["grade"] == "A"
     assert [u["name"] for u in rec["unmatched_reasons"]] == ["不存在的分子"]
-    # 弱亲和力的分子：top_n=2 之外不占位；一旦进入排行，必须被亲和力门槛封顶为 C
-    # （原先写的是在 `[rec["rows"][0]]` 里筛「弱但类药」→ 恒为空列表，断言恒真）
+    # 弱亲和力的分子：top_n=2 之外不占位；进入排行后由亲和力门槛封顶为 C
+    # （若只在 `[rec["rows"][0]]` 里筛「弱但类药」，结果恒为空列表，断言恒真）
     assert "弱但类药" not in [r["name"] for r in rec["rows"]]
     ranked = build_recommendations(rows, top_n=5)["rows"]
     weak = next((r for r in ranked if r["name"] == "弱但类药"), None)
@@ -164,7 +163,7 @@ def test_recommendations_gate_reasons_and_exclusions() -> None:
 
 
 def test_recommend_tools_roundtrip(tmp_path: Path) -> None:
-    """工具链：recommend_compounds 算排行 → submit_recommendations 只接受在榜分子。"""
+    """工具链：`recommend_compounds` 生成排行，`submit_recommendations` 只接受在榜分子。"""
     from docking_agent.runtime import tool_io
     from docking_agent.runtime.blackboard import Blackboard, current_blackboard
     from docking_agent.runs import current_run
@@ -272,7 +271,7 @@ def test_report_has_ranking_section_with_reasons_and_no_duplicate_dump() -> None
     assert "charts/recommend_card_01.png" in md, "结构卡文件名必须与产物名一致（charts/<name>.png）"
     # 质子化策略与逐分子溯源进入参数节
     assert "质子化态策略" in md and "charge_input" in md
-    # 去重：数据复读小节不得出现在报告里，结论类小节保留
+    # 去重：数据复读小节不写进报告，结论类小节保留
     assert "系统与参数配置摘要" not in md
     assert "筛选后分子列表及排序" not in md
     assert "优化建议" in md and "补做阳性对照" in md
@@ -302,7 +301,7 @@ def test_extract_agent_conclusions_keeps_one_line_summary() -> None:
 
 
 def test_property_chart_top_only_and_recommend_grid(monkeypatch: pytest.MonkeyPatch) -> None:
-    """理化性质空间图只画 top（与排序同集合）；推荐 2D 结构图能真实生成 PNG。"""
+    """理化性质空间图只画 top（与排序同集合）；推荐 2D 结构图可生成 PNG。"""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -328,8 +327,8 @@ def test_property_chart_top_only_and_recommend_grid(monkeypatch: pytest.MonkeyPa
 
 
 def test_protonated_molecules_still_join_with_docking_rows() -> None:
-    """注意：性质按中和后的形式返回时主键漂移，
-    带电分子的分子量/logP/Lipinski 在排序表与推荐评分里**整列为空**。
+    """性质按中和后的形式返回时主键会漂移：
+    带电分子的分子量/logP/Lipinski 在排序表与推荐评分里整列为空。
 
     主键纪律：`smiles` = 原始输入（对接行也用它），中和后的形式放 `protonated_smiles`。
     """
@@ -361,10 +360,10 @@ def test_protonated_molecules_still_join_with_docking_rows() -> None:
 # 4. 目标 pH 质子化（ph 策略）
 # --------------------------------------------------------------------------- #
 def test_ph_policy_assigns_states_by_target_ph(monkeypatch: pytest.MonkeyPatch) -> None:
-    """按目标 pH 分配质子化态：酸在 pH>pKa 去质子、碱在 pH<pKa 加质子，方向绝不能反。
+    """按目标 pH 分配质子化态：酸在 pH>pKa 去质子，碱在 pH<pKa 加质子，方向不可反转。
 
-    这里**显式固定用内置规则表**（`LIGAND_PKA_ENGINE=rules`）：本用例断言的是规则表的
-    逐官能团行为（`info["rules"]`），专业引擎路径见 `tests/test_ligand_pka.py`。
+    本用例显式固定内置规则表（`LIGAND_PKA_ENGINE=rules`），断言规则表的
+    逐官能团行为（`info["rules"]`）；pKa 引擎路径见 `tests/test_ligand_pka.py`。
     """
     monkeypatch.setenv("LIGAND_PKA_ENGINE", "rules")
     from docking_agent.core.protonation import apply_protonation
@@ -379,7 +378,7 @@ def test_ph_policy_assigns_states_by_target_ph(monkeypatch: pytest.MonkeyPatch) 
     assert apply_protonation("CC[NH3+]", "ph", 10.0)[0] == "CCN"
     assert apply_protonation("CC(=O)[O-]", "ph", 1.5)[0] == "CC(=O)O"
 
-    # 甘氨酸 pKa 2.3/9.6 → 生理 pH 下是两性离子：净电荷仍是 0，但**化学形式变了**
+    # 甘氨酸 pKa 2.3/9.6：生理 pH 下为两性离子，净电荷仍是 0，化学形式已改变
     zwit, info = apply_protonation("NCC(=O)O", "ph", 7.4)
     assert zwit == "[NH3+]CC(=O)[O-]"
     assert info["applied"] is True and info["charge_before"] == 0 and info["charge_after"] == 0
@@ -400,7 +399,7 @@ def test_ph_policy_assigns_states_by_target_ph(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_ph_policy_provenance_and_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """内置规则表的溯源与回退口径（强制 rules 引擎；专业引擎路径见 test_ligand_pka.py）。"""
+    """内置规则表的溯源与回退口径（强制 rules 引擎；pKa 引擎路径见 test_ligand_pka.py）。"""
     monkeypatch.setenv("LIGAND_PKA_ENGINE", "rules")
     from docking_agent.core.protonation import DEFAULT_PH, PKA_TABLE_VERSION, apply_protonation
 
@@ -410,8 +409,8 @@ def test_ph_policy_provenance_and_fallbacks(monkeypatch: pytest.MonkeyPatch) -> 
     assert info["rules"] and {"name", "pka", "action", "rule"} <= set(info["rules"][0])
     assert "pKa 4.5" in info["rules"][0]["rule"]
 
-    # 非法 pH（非数字 / 0 哨兵 / 越界）回退默认，绝不改口径。
-    # 注意：接口用 0 表示"未设置"，却与"pH 0"撞车 → 一次运行全部按极端强酸处理。
+    # 非法 pH（非数字 / 0 哨兵 / 越界）回退默认值，不改变既有口径。
+    # 接口用 0 表示"未设置"，与"pH 0"取值冲突，会把整次运行按极端强酸处理。
     for bad in ("abc", 99, 0, 0.0, "0", 0.4):
         assert apply_protonation("CC(=O)O", "ph", bad)[1]["ph"] == DEFAULT_PH, bad
     from docking_agent.core.protonation import PH_MIN

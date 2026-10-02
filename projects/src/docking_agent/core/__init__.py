@@ -1,19 +1,19 @@
-"""真实计算核心：分子库、理化性质、受体（已知位点）、对接引擎、排序。
+"""计算核心：分子库、理化性质、受体（已知位点）、对接引擎、排序。
 
-本包只做「真实计算」，不含任何 LLM 或平台依赖；上层（Agent / API / 流水线）统一从此导入。
+本包只做计算，不含任何 LLM 或平台依赖；上层（Agent / API / 流水线）统一从此导入。
 
-**惰性 facade（PEP 562）**：这里不再急切 import 各子模块，而是按名按需导入。
-原因（审计 SCC-2）：`core/` 子模块之间存在函数级懒导入（`pockets⇄docking`、
-`normalize⇄ligands/inchikey`、`receptors⇄pockets`），而急切 `__init__` 会把
-「子模块 → `docking_agent.core` → 其它子模块」变成一条真实的环；改成按需导出后，
-这些边消失，`core/` 内部只剩纯下行导入。副作用是导入更快（不再拉起 rdkit 全量）。
+惰性 facade（PEP 562）：各子模块按名按需导入，不再急切 import。
+`core/` 子模块之间存在函数级懒导入（`pockets` 与 `docking`、
+`normalize` 与 `ligands/inchikey`、`receptors` 与 `pockets`），急切 `__init__` 会使
+「子模块到 `docking_agent.core` 再到其它子模块」构成一条环；改为按需导出后，
+这些边消失，`core/` 内部只剩下行导入。副作用是导入更快（不再拉起 rdkit 全量）。
 """
 from __future__ import annotations
 
 import importlib
 from typing import Any, Dict, List
 
-#: 公开名 → 定义它的模块（全名或 `core.` 下的子模块短名）
+#: 公开名与定义它的模块的对应关系（全名或 `core.` 下的子模块短名）
 _EXPORTS: Dict[str, str] = {
     # chemistry
     "compute_properties": "chemistry", "compute_tanimoto": "chemistry",

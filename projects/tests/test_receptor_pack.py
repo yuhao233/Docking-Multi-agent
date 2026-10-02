@@ -1,14 +1,13 @@
 """受体结构入包：整包下载（download.zip）必须能独立复现本次对接。
 
-注意：「你提供的打包文件里，有用于对接的受体结构文件吗？」
-—— 答案当时是**没有**：运行目录里只有配体位姿与 JSON，受体只以绝对路径记在
-`docking.json`（`assets/receptors/...` 或 `assets/cache/...`），换台机器就取不到。
+运行目录只含配体位姿与 JSON 时，受体仅以绝对路径记在 `docking.json`
+（`assets/receptors/...` 或 `assets/cache/...`），换台机器就取不到。
 
-约定：运行目录新增 `receptor/`：
-  - `receptor/<受体>.pdbqt`        —— 对接实际使用的受体（权威）
-  - `receptor/<受体>_prepared.pdb` —— 准备阶段去水/去杂原子后的蛋白
-  - `receptor/<受体>_source.<ext>` —— 原始结构（上传的原文件 / URL 下载的原文件）
-三者都登记为可下载产物，因此会出现在「中间数据」页签、报告第 9 节产物清单与整包 ZIP 里。
+约定：运行目录包含 `receptor/`：
+  - `receptor/<受体>.pdbqt`        对接实际使用的受体（权威）
+  - `receptor/<受体>_prepared.pdb` 准备阶段去水/去杂原子后的蛋白
+  - `receptor/<受体>_source.<ext>` 原始结构（上传的原文件 / URL 下载的原文件）
+三者都登记为可下载产物，因此会进入「中间数据」页签、报告第 9 节产物清单与整包 ZIP 里。
 """
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ def _tool_msg(name: str, payload: Dict[str, Any]) -> Any:
 
 
 def _fake_receptor(cache: Path, *, key: str = "thrombin") -> Dict[str, str]:
-    """造一组真实的受体准备产物：<stem>.pdbqt + <stem>_prot.pdb。"""
+    """构造一组受体准备产物：<stem>.pdbqt 与 <stem>_prot.pdb。"""
     cache.mkdir(parents=True, exist_ok=True)
     stem = cache / f"{key}_abc123"
     pdbqt = stem.with_suffix(".pdbqt")
@@ -83,7 +82,7 @@ def test_prepared_pdb_found_for_ph_variant(tmp_path: Any) -> None:
 
 
 def test_copy_receptor_files_is_best_effort(tmp_path: Any) -> None:
-    """文件缺失 / 路径是 URL / 没有受体块：只记 warning，绝不抛异常打断运行。"""
+    """文件缺失、路径是 URL、没有受体块：只记 warning，不抛异常打断运行。"""
     run = Run(tmp_path / "runs", "R-MISS", "agent", {"mode": "chat"})
     assert copy_receptor_files(run, []) == []
     assert copy_receptor_files(run, [{"receptor_key": "x", "pdbqt": "/no/such/file.pdbqt"}]) == []
@@ -151,7 +150,7 @@ def test_agent_persistence_packs_receptor(tmp_path: Any) -> None:
 
 
 def test_report_lists_receptor_artifacts(tmp_path: Any) -> None:
-    """报告第 9 节产物清单要能看到受体文件（用户翻报告就知道包里有什么）。"""
+    """报告第 9 节产物清单要列出受体文件，查看报告即可知道包里包含哪些内容。"""
     cache = tmp_path / "cache"
     made = _fake_receptor(cache)
     block = {"receptor_key": "thrombin", "receptor": "thrombin(1DWC)",

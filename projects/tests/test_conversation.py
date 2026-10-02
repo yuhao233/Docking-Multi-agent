@@ -1,18 +1,15 @@
-"""多轮会话（conversation_id）回归测试。
+"""多轮会话（`conversation_id`）回归测试。
 
-背景（缺陷）：
-    提交任务后系统向用户提问，用户回答了，系统却**又开了一段新对话**，没有延续上一轮。
+覆盖的行为契约分三层：
+  1. API 层：`conversation_id` 贯穿为 `thread_id`，同一 id 命中同一 thread 的既有消息；
+  2. 受理层：`prior_turns` 提供上一轮上下文，确定性继承分子与受体且不重复判 ask；
+  3. 兼容性：不传 `conversation_id` 时行为与既有实现一致（`thread_id = run.id`）。
 
-根因：`api/app.py` 三处都用 `thread_id = run.id`，而 `run.id` 每次提交都是新的
-（`runs.new_run_id()`），LangGraph checkpointer 的记忆永远命中不到上一轮；
-前端也没有任何「会话 id」概念，服务端无从知道「这是同一个对话」。
+`run.id` 由 `runs.new_run_id()` 生成，每次提交都是新值；若 `thread_id` 取 `run.id`，
+LangGraph checkpointer 无法命中上一轮。前端也没有「会话 id」概念，服务端无从判断
+两次请求属于同一段对话，因此 `conversation_id` 需要贯穿到 `thread_id`。
 
-修复分三层，本文件逐一验证：
-  1. API 层：`conversation_id` 贯穿为 `thread_id`（同一 id → 同一 thread → 命中历史）；
-  2. 受理层：`prior_turns` 让受理层看见上一轮，确定性继承分子/受体且不再重复判 ask；
-  3. 兼容性：不传 `conversation_id` 时行为与修复前一致（`thread_id = run.id`）。
-
-全部离线：用 FakeGraph 顶掉真实图（不建模型、不联网），stub 掉结果落盘。
+全部离线：图调用由 FakeGraph 接管（不建模型、不联网），并 stub 结果落盘。
 """
 from __future__ import annotations
 
@@ -46,9 +43,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 class _FakeGraph:
     """最小可用的「带 checkpointer 的图」替身。
 
-    - `astream` 记录每次调用的 (thread_id, 入参消息)，把消息写进该 thread 的历史，
-      并回一条 AI 消息（模拟真实 agent 的一轮）；
-    - `aget_state` 返回该 thread 的历史消息 —— 与真实 LangGraph + MemorySaver 的
+    - `astream` 记录每次调用的 (thread_id, 入参消息)，把消息按 thread 累积到 `history`，
+      并回一条 AI 消息（模拟 agent 的一轮）；
+    - `aget_state` 返回该 thread 已累积的消息，与 LangGraph + MemorySaver 的
       「同一 thread 累积、不同 thread 隔离」语义一致，足以验证 API 层的会话串联。
     """
 
@@ -146,7 +143,7 @@ def _run_detail(client, run_id: str) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# 1) API 级连续性：同一 conversation_id → 同一 thread → 第二轮看得见第一轮
+# 1) API 级连续性：同一 conversation_id 对应同一 thread，第二轮可见第一轮
 # --------------------------------------------------------------------------- #
 def test_same_conversation_id_continues_previous_turn(client, offline_graph) -> None:
     first = _post_agent(client, conversation_id="conv-continue", message="帮我筛这两个分子 CCO")
@@ -161,18 +158,18 @@ def test_same_conversation_id_continues_previous_turn(client, offline_graph) -> 
     assert d2["conversation_id"] == "conv-continue"
     assert d1["thread_id"] == d2["thread_id"] == "conv-continue"
 
-    # 两次用的是同一个 thread（根因就是这里曾经用 run.id）
+    # 两次使用的是同一个 thread（`run.id` 每次提交都会变化，不能用作 thread_id）
     calls = offline_graph.graph.calls
     assert calls[0]["thread_id"] == calls[1]["thread_id"] == "conv-continue"
     assert d1["run_id"] != d2["run_id"], "运行记录仍然每次独立（只有会话是共享的）"
 
-    # checkpointer 状态里确实累积了第一轮（agent 下一轮能读到的历史）
+    # checkpointer 状态里累积了第一轮消息（agent 下一轮可读到）
     history = offline_graph.graph.history["conv-continue"]
     contents = [getattr(m, "content", "") for m in history]
     assert any("帮我筛这两个分子 CCO" in c for c in contents), "第二轮执行时历史里必须含第一轮用户消息"
     assert any(c.startswith("已收到：") for c in contents), "第一轮的助手回复也应在历史里"
 
-    # 受理层在第二轮**确实收到了**第一轮的历史（第一轮没有历史）
+    # 受理层在第二轮收到第一轮的消息（第一轮无上一轮上下文）
     assert not offline_graph.seen[0], "第一轮不应有 prior_turns"
     prior2 = offline_graph.seen[1]
     assert prior2, "第二轮必须把上一轮历史传给受理层"
@@ -182,7 +179,7 @@ def test_same_conversation_id_continues_previous_turn(client, offline_graph) -> 
 
 
 def test_prior_history_ignores_tool_messages(client, offline_graph, monkeypatch) -> None:
-    """历史里只取 human/ai，tool 消息不得进入受理上下文。"""
+    """上一轮消息只取 human/ai，tool 消息不进入受理上下文。"""
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
     thread = "conv-tools"
@@ -213,7 +210,7 @@ def test_different_conversation_ids_are_isolated(client, offline_graph) -> None:
     assert any("会话 A" in getattr(m, "content", "") for m in a)
     assert not any("会话 A" in getattr(m, "content", "") for m in b)
 
-    # 回到 A 时又能看到 A 的历史（隔离而非覆盖）
+    # 回到 A 时可以读到 A 的上一轮消息（隔离而非覆盖）
     _post_agent(client, conversation_id="conv-A", message="回到 A")
     assert any("会话 A 的分子 CCO" in json.dumps(t, ensure_ascii=False)
                for t in offline_graph.seen[-1])
@@ -221,7 +218,7 @@ def test_different_conversation_ids_are_isolated(client, offline_graph) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3) 兼容性：不传 conversation_id → thread_id = run.id（与修复前一致）
+# 3) 兼容性：不传 conversation_id 时 thread_id = run.id（与既有实现一致）
 # --------------------------------------------------------------------------- #
 def test_absent_conversation_id_keeps_legacy_behavior(client, offline_graph) -> None:
     first = _post_agent(client, message="第一次")
@@ -233,7 +230,7 @@ def test_absent_conversation_id_keeps_legacy_behavior(client, offline_graph) -> 
     assert d1["thread_id"] == d1["run_id"], "缺省时 thread_id 必须回落到 run.id（兼容）"
     assert d2["thread_id"] == d2["run_id"]
     assert d1["thread_id"] != d2["thread_id"]
-    # 两次都是新 thread → 都拿不到上一轮
+    # 两次都是新 thread，均拿不到上一轮
     assert not offline_graph.seen[0]
     assert not offline_graph.seen[1]
 
@@ -246,7 +243,7 @@ def test_blank_conversation_id_is_treated_as_absent(client, offline_graph) -> No
 
 
 # --------------------------------------------------------------------------- #
-# 4) 受理层守卫：看见上一轮 → 继承分子/受体，且不再重复判 ask
+# 4) 受理层守卫：有上一轮时继承分子与受体，且不再重复判 ask
 # --------------------------------------------------------------------------- #
 def _req(**kwargs) -> AgentRequest:
     base = {"mode": "chat", "advanced": True, "message": "", "receptor": "thrombin",
@@ -262,9 +259,9 @@ _PRIOR_WITH_MOLECULES = [
 
 
 def test_answer_to_previous_question_is_run_and_receptor_is_recognized() -> None:
-    """用户回答「用 trypsin」→ 受体命中 trypsin、计入上一轮（不再当成新对话）。
+    """使用者回答「用 trypsin」：受体命中 trypsin 并计入上一轮，不再当成新对话。
 
-    分子还缺（上一轮只问了受体）→ 受理层继续问分子：必需信息不齐就只提问、零工具调用。
+    分子仍缺失（上一轮只问了受体）时受理层继续问分子：必需信息不齐就只提问、零工具调用。
     """
     prior = [{"role": "assistant", "content": "请问您想用哪个受体？"}]
     spec = intake.build_task_spec(_req(message="用 trypsin"), prior_turns=prior)
@@ -283,7 +280,7 @@ def test_answer_to_previous_question_is_run_and_receptor_is_recognized() -> None
 
 
 def test_prior_molecules_are_inherited_and_suppress_repeated_ask() -> None:
-    """上一轮给了 SMILES、这一轮只回答受体：分子继承下来 → 不得再判 ask。"""
+    """上一轮给了 SMILES、这一轮只回答受体：分子继承下来，不再判 ask。"""
     spec = intake.build_task_spec(_req(message="用 trypsin 筛一下"), prior_turns=_PRIOR_WITH_MOLECULES)
     assert spec["ligands"]["source"] == "message"
     assert spec["ligands"].get("inherited") == "prior_turns"
@@ -294,7 +291,7 @@ def test_prior_molecules_are_inherited_and_suppress_repeated_ask() -> None:
     forced = intake._finalize({**spec, "needs_user_input": True})
     assert forced["decision"] == "run", "已从上一轮继承到分子，不能重复追问"
 
-    # 无 prior_turns：同样的 message 缺分子来源 → 既有语义仍是 ask
+    # 无 prior_turns：同样的 message 缺分子来源时，既有语义仍是 ask
     bare = intake._finalize({**intake.build_task_spec(_req(message="用 trypsin 筛一下")),
                              "needs_user_input": True})
     assert bare["decision"] == "ask"

@@ -1,7 +1,7 @@
 """路由：多 Agent 流式执行（SSE）与取消。
 
 `api_agent_stream` 同时被标准 Agent Protocol 面复用（`app.state.legacy_agent_stream`），
-因此它必须是模块级函数（原先定义在 `create_app()` 闭包内）。
+因此它需要是模块级函数，不能定义在 `create_app()` 闭包内。
 """
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ router = APIRouter()
 async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
     payload = dict(req.model_dump())
     store = get_run_store()
-    # 点选候选 = **续跑同一个运行**（用户 2026-09-24 拍板）：不新建 run、不重新受理，
-    # 把答案注入线程并从 checkpoint 继续；这样运行的参数/产物/报告都留在同一条记录里。
+    # 点选候选表示续跑同一个运行：不新建 run、不重新受理，
+    # 把答案注入线程并从 checkpoint 继续，运行的参数、产物与报告都留在同一条记录里。
     resumed = False
     resume_id = str(getattr(req, "resume_run_id", "") or "").strip()
     if resume_id:
@@ -54,16 +54,16 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
             run, resumed = existing, True
     if not resumed:
         run = store.new("agent", payload)
-        # 本次运行的调用计数从零开始（否则 calls 会累计上一次运行，无法判断本次调用量）
+        # 本次运行的调用计数从零开始；否则 calls 会累计上一次运行，无法判断本次调用量
         from docking_agent.runtime.llm import reset_registry_counters
 
         reset_registry_counters()
-    # 会话 id：同一 id = 同一段对话。LangGraph checkpointer 按 thread_id 记忆，
-    # 因此**不能**再用每次都会变的 run.id 当 thread_id，否则永远命中不到上一轮。
+    # 会话 id：同一 id 对应同一段对话。LangGraph checkpointer 按 thread_id 记忆，
+    # 因此不能用每次都会变的 run.id 作 thread_id，否则命中不到上一轮。
     conversation_id = (req.conversation_id or "").strip()
     if conversation_id:
         # 会话 id 会被用作 checkpointer 的 thread_id，并透传到标准面的线程文件路径，
-        # 因此与 run_id 用同一套校验（防路径穿越 / 防控制字符）。
+        # 因此与 run_id 使用同一套校验（防路径穿越与控制字符）。
         try:
             conversation_id = safe_run_component(conversation_id, field="conversation_id")
         except ValueError as e:
@@ -80,12 +80,12 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
         "configurable": {"thread_id": thread_id},
         "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT),
     }
-    # 受理层要「看见上一轮」：从 checkpointer 读该 thread 的历史消息（只读，用于继承分子/受体）
+    # 受理层需要看到上一轮：从 checkpointer 读取该 thread 的既有消息（只读，用于继承分子与受体）
     prior_turns: List[Dict[str, str]] = []
     try:
         graph = state.get_graph()
-        # 先自愈：上一轮被取消/失败时可能留下「模型发了 tool_calls 但工具没回执」的历史，
-        # 直接续聊会被 OpenAI 以 400 拒绝（insufficient tool messages）——补占位回执后再读历史。
+        # 先自愈：上一轮被取消或失败时可能留下「模型发了 tool_calls 但工具没有回执」的记录，
+        # 直接续聊会被 OpenAI 以 400 拒绝（insufficient tool messages），需补占位回执后再读取。
         await _heal_thread(graph, run_config, run)
         prior_turns = await _recent_prior_turns(graph, run_config)
     except Exception as e:  # noqa: BLE001
@@ -93,10 +93,10 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
     if prior_turns:
         run.data["conversation_turns"] = len(prior_turns)
     if resumed:
-        # 续跑：答案本身就是本轮指令；**不重新受理**（task_spec / param_plan 沿用第一次受理的），
-        # 但用户这次带上的字段要并入 —— 且**只覆盖真正给了值的字段**：
-        # 续跑请求里没出现的字段在 AgentRequest 里是 None/""（表单参数在对话模式本就不下发），
-        # 直接 `**payload` 会把用户第一次设置的参数（搜索强度/盒子/引擎…）清成 None。
+        # 续跑：答案本身就是本轮指令，不重新受理（task_spec / param_plan 沿用第一次受理的），
+        # 但本次带上的字段要并入，且只覆盖确实给了值的字段：
+        # 续跑请求里未出现的字段在 AgentRequest 里是 None/""（表单参数在对话模式本就不下发），
+        # 直接 `**payload` 会把第一次设置的参数（搜索强度/盒子/引擎…）清成 None。
         message = str(req.message or "").strip()
         merged = dict(run.data.get("request") or {})
         for key, value in payload.items():
@@ -106,14 +106,14 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
         merged["message"] = message
         run.data["request"] = merged
     else:
-        # 受理层（intake）：理解用户要什么 → 任务规约（确定性优先，只在对话模式下才调模型）。
+        # 受理层（intake）：解析请求意图并生成任务规约，确定性逻辑优先，只在对话模式下调用模型。
         # 结构化字段（分子库/受体/位点/参数）始终随指令一起下发，避免表单与自然语言互相覆盖。
         from docking_agent import intake
 
         message, task_spec = await asyncio.to_thread(
             intake.build_message, req, run=run, prior_turns=prior_turns or None)
         run.data["request"] = {**payload, "message": message}
-        run.data["task_spec"] = task_spec      # 可观测：本次任务到底被理解成了什么
+        run.data["task_spec"] = task_spec      # 可观测：记录本次任务被理解成的结构
     if not resumed:
         run.log(f"任务受理：task_type={task_spec.get('task_type')} "
                 f"authority={task_spec.get('authority')} decision={task_spec.get('decision')} "
@@ -138,13 +138,13 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
         board_token = current_blackboard.set(board)
         cancel_event = cancel_flag(run.id)
         if resumed:
-            # 用户已作答：清掉这一问（及其阻断标记），否则工具护栏会继续拒绝开跑
+            # 使用者已作答：清掉这一问及其阻断标记，否则工具护栏会继续拒绝开跑
             from docking_agent.tools.choices import clear_choices  # noqa: PLC0415
 
             clear_choices(str(getattr(req, "resume_choice_kind", "") or ""))
         try:
             graph = state.get_graph()
-            # 记录各 Agent 角色实际使用的模型（每个角色独立实例）
+            # 记录各 Agent 角色实际使用的模型，每个角色为独立实例
             run.data["agent_models"] = _agent_model_map()
             run.save()
             config = run_config
@@ -152,9 +152,9 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
             last_progress: Dict[str, Any] = {}
 
             def _choices_event() -> Any:
-                """结构化「候选选择项」事件（受体/分子解析不确定时下发，供前端点选）。
+                """结构化「候选选择项」事件，受体或分子解析不确定时下发，供界面点选。
 
-                去重：同一份 choices 只发一次（心跳 `_tick` 与 final 前各有一条触发路径）。
+                同一份 choices 只发送一次；心跳 `_tick` 与 final 之前各有一条触发路径。
                 """
                 choices = run.data.get("choices")
                 if not choices or last_progress.get("choices_sent") == list(choices):
@@ -172,7 +172,7 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                 if choice_event:
                     out.append(choice_event)
                     if run.data.get("choices_blocking"):
-                        # 如实记录"本轮会等用户决定"（不打断流：见下方 async for 的说明）
+                        # 记录本轮会等待使用者决定；不打断流，原因见下方 async for 处的说明
                         run.log("已就阻断式问题征询用户：本轮不再开始对接，等界面点选后续跑同一运行")
                 info = run.data.get("live_progress")
                 if info and info != last_progress.get("info"):
@@ -181,19 +181,19 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                                           "elapsed_sec": round(time.time() - started, 1)}))
                 return out
 
-            # 续跑与首次执行**同一条入参形态**：把（用户的）消息作为图输入跑一轮。
-            # 注意：暂停是"本轮自然结束"，图的 next 已空 ——
-            # 此时 `aupdate_state(答案) + astream(None)` 不会触发任何节点，运行 1 秒就"完成"，
-            # 对接根本没跑。同一 thread 的输入会追加到历史之后，等于续聊同一段对话。
+            # 续跑与首次执行使用同一种入参形态：把消息作为图输入跑一轮。
+            # 暂停指本轮自然结束，图的 next 已空；
+            # 此时 `aupdate_state(答案) + astream(None)` 不会触发任何节点，运行 1 秒即结束，
+            # 对接并未执行。同一 thread 的输入追加到既有消息之后，相当于续聊同一段对话。
             stream = stream_agent_sse(graph, {"messages": [{"role": "user", "content": message}]},
                                       config, run.id, context=current_agent_context())
             async for chunk in _interleave(stream, 1.0, _tick):
-                # 阻断式候选**不在这里中断流**：注意——
-                # 同一模型步里还并行跑着 `run_property_assessment`，流被中途掐断后它的 ToolMessage
-                # 永远没进 checkpoint，续跑时只能补"该调用被中断、没有结果"的占位回执，
-                # 模型据此认为两个工具都没结果、直接收尾，对接一次都没跑。
-                # 正确做法：让当前步自然结束（对接工具本身会拒绝开跑，见 blocking_choice_pending），
-                # 由持久化按"有待回答的阻断式问题"把运行标成 needs_user_input 并落盘。
+                # 阻断式候选不在此处中断流：
+                # 同一模型步里还并行执行 `run_property_assessment`，流被中途掐断后它的 ToolMessage
+                # 不会进 checkpoint，续跑时只能补「该调用被中断、没有结果」的占位回执，
+                # 模型据此认为两个工具都没有结果并直接收尾，对接一次都未执行。
+                # 处理方式是当前步自然结束（对接工具本身会拒绝开跑，见 blocking_choice_pending），
+                # 再由持久化按「有待回答的阻断式问题」把运行标成 needs_user_input 并落盘。
                 if cancel_event.is_set():
                     run.log("已被用户取消")
                     run.finish("cancelled", error="用户取消")
@@ -203,21 +203,21 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                     yield sse_event({"type": "done", "run_id": run.id, "summary": run.to_dict()})
                     return
                 data = parse_sse_data(chunk)
-                # start/done 由本函数统一发送（done 需带 summary）
+                # start 与 done 由本函数统一发送；done 需要携带 summary
                 if data and data.get("type") in ("start", "done"):
                     continue
-                # 步数预算：跑满上限自动放宽/收尾时，如实写进运行日志（用户可见但不打扰）
+                # 步数预算：跑满上限而放宽或收尾时，写入运行日志（使用者可见，不打断流程）
                 if data and data.get("type") == "limit":
                     run.log(str(data.get("message") or "已达步数上限"))
-                # final 之前补发一次 choices（若心跳还没发过），确保前端一定拿得到可选项
+                # final 之前补发一次 choices（若心跳尚未发送），确保界面能拿到可选项
                 if data and data.get("type") == "final":
                     choice_event = _choices_event()
                     if choice_event:
                         yield choice_event
                 yield chunk
 
-            # 图执行完毕：把最后一个心跳窗口内产生的逐分子结果补齐再做持久化，
-            # 否则对接最后一秒的分子只出现在结果里、不出现「实时」流。
+            # 图执行完毕：先补齐最后一个心跳窗口内产生的逐分子结果，再做持久化；
+            # 否则对接最后一秒的分子只写入结果，不进入实时流。
             for extra in _drain_live_molecules(run):
                 yield extra
             run.data.pop("live_molecules", None)
@@ -226,19 +226,19 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
             final_text, messages = await _final_state(graph, config)
             from docking_agent.agents.persistence import persist_agent_run
 
-            # 图执行完毕：此刻各角色已真实调用过模型，
-            # 刷新为「服务端确认的实际模型 + 调用次数」，报告与运行记录都用这份
+            # 各角色已调用过模型，此处刷新为服务端确认的实际模型与调用次数，
+            # 报告与运行记录都使用这份数据
             run.data["agent_models"] = _agent_model_map()
             run.save()
 
             result = await asyncio.to_thread(persist_agent_run, run, messages, final_text)
 
-            # 流程控制权完全在主管 Agent 手里：服务端**不再**接管补齐或复核，
-            # 只把「实际完成了什么」记录成 completeness 供查看（信息，不是控制）。
+            # 流程控制由主管 Agent 掌握：服务端不接管补齐或复核，
+            # 只把实际完成的内容记录成 completeness 供查看，属信息而非控制。
             run.set(completeness=_completeness(run, result, False))
-            # 没算任何东西（例如用户只说了句「你好」，受理层 reject）→ 状态 no_op，
-            # 历史列表显示 [ SKIP ]，页面也不会把用户甩到空的结果总览；
-            # 「停下来等用户点选」则是 needs_user_input（工具跑过、问题已下发），两者不能混。
+            # 未执行任何计算（例如只说了句问候语，受理层 reject）时状态为 no_op，
+            # 运行列表显示 [ SKIP ]，页面也不会跳到空的结果总览；
+            # 「停下来等使用者点选」则是 needs_user_input（工具已跑、问题已下发），两者不能混。
             if result.get("no_op"):
                 run.finish("no_op")
             elif result.get("needs_user_input"):
@@ -254,22 +254,22 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
                              "type": "error"}, event="error")
             yield sse_event({"type": "done", "run_id": run.id, "summary": run.to_dict()})
         finally:
-            # 共享黑板快照落盘：可以看到各 Agent 在协作区里留下了什么
+            # 共享黑板快照落盘：记录各 Agent 在协作区留下的事件
             try:
                 run.write_json("blackboard", board.snapshot(), label="共享黑板快照")
                 run.set(blackboard_stats=board.stats())
             except Exception:  # noqa: BLE001
                 logger.debug("黑板快照落盘失败", exc_info=True)
-            # 逐分子实时缓冲只在运行期存在：异常/取消路径也不能把它写进运行元数据
+            # 逐分子实时缓冲只在运行期存在，异常与取消路径也不写入运行元数据
             run.data.pop("live_molecules", None)
             run.data.pop("live_molecules_seen", None)
-            # 收尾刷新：此刻协调/子 Agent 都已真实调用过模型，
-            # 把各角色「服务端确认的模型 + 调用次数」写入运行记录（与报告口径一致）
+            # 收尾刷新：此时协调与子 Agent 都已调用过模型，
+            # 把各角色服务端确认的模型与调用次数写入运行记录（与报告口径一致）
             run.data["agent_models"] = _agent_model_map()
-            run.save()   # 黑板快照与统计在上一步写入内存，这里必须落盘
+            run.save()   # 黑板快照与统计在上一步写入内存，此处需要落盘
             current_blackboard.reset(board_token)
             current_run.reset(token)
-            forget_store_blackboard(run.id)   # 运行结束即丢弃该 run 的黑板视图（防进程内泄漏）
+            forget_store_blackboard(run.id)   # 运行结束即丢弃该 run 的黑板视图，防进程内泄漏
             clear_cancel(run.id)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
@@ -280,8 +280,8 @@ async def api_agent_stream(req: AgentRequest, request: Request) -> Any:
 async def api_run_cancel(run_id: str) -> Dict[str, Any]:
     """请求取消运行。
 
-    对接跑在工作线程 + 子进程里，`asyncio.Task.cancel()` 无法让它停下，
-    因此真正的机制是**协作式取消标志**：置位后对接会在收集结果时终止进程池并停止。
+    对接运行在工作线程与子进程中，`asyncio.Task.cancel()` 无法使其停止，
+    因此采用协作式取消标志：置位后对接会在收集结果时终止进程池并停止。
     """
     store = get_run_store()
     meta = store.meta(run_id)
@@ -306,7 +306,7 @@ async def api_run_cancel(run_id: str) -> Dict[str, Any]:
 @router.post("/cancel/{run_id}", deprecated=True,
              summary="[已废弃] 请改用 /threads/{tid}/runs/{rid}/cancel 或 /api/runs/{run_id}/cancel")
 async def api_cancel(run_id: str) -> Dict[str, Any]:
-    """兼容旧接口。"""
+    """兼容既有接口。"""
     try:
         return await api_run_cancel(run_id)
     except HTTPException:

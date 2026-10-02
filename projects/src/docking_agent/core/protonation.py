@@ -1,27 +1,25 @@
-"""配体质子化态：运行级策略（保持 / 中和 / **按目标 pH 规则化**）。
+"""配体质子化态：运行级策略（保持、中和、按目标 pH 规则化）。
 
-## 为什么需要这一层
+同一分子的离子态与中性态对接行为差别很大（羧酸根与羧酸、铵与胺、脒与胍的阳离子），
+而库里常见盐与离子形式。此前的实现只在结果里给出"请确认质子化态"的告警，不提供统一口径，
+于是同一批筛选里混着两种化学形式，排序失去可比性。本模块统一这一口径。
 
-同一分子的离子态与中性态对接行为差别很大（羧酸根 vs 羧酸、铵 vs 胺、脒/胍的阳离子），
-而库里常见盐/离子形式。系统过去只在结果里"告警请确认质子化态"，不提供统一口径，
-于是同一批筛选里混着两种化学形式 —— 排序失去可比性。
-
-三种策略（**运行级**，同一次运行所有分子同口径）：
+三种策略（运行级，同一次运行所有分子同口径）：
 
 | 策略 | 含义 | 适用 |
 | --- | --- | --- |
-| `ph` | 先中和到中性形式，再按**目标 pH** 用内置 pKa 规则表重新分配质子化态 | **默认**（目标 pH 7.4，对接的通行假设） |
-| `neutralize` | 只把**带净电荷**的分子中和（RDKit `Uncharger`），中性分子一字不改 | 不关心生理 pH 的快速筛选 / 只要"不带净电荷" |
-| `keep` | 完全保持输入形式，仅告警（净电荷、无法中和的永久电荷） | 输入已是专业工具（如 Dimorphite-DL）生成的目标态 |
+| `ph` | 先中和到中性形式，再按目标 pH 用内置 pKa 规则表重新分配质子化态 | 默认（目标 pH 7.4，对接的通行假设） |
+| `neutralize` | 只把带净电荷的分子中和（RDKit `Uncharger`），中性分子保持原样 | 不关心生理 pH 的快速筛选 / 只要"不带净电荷" |
+| `keep` | 保持输入形式不变，仅告警（净电荷、无法中和的永久电荷） | 输入已是 Dimorphite-DL 等工具生成的目标态 |
 
-## pH 规则表的定位（必须如实说明）
+## pH 规则表的定位
 
-这是**基于官能团 pKa 的规则近似**，不是 pKa 预测：命中哪个官能团、用哪个 pKa、
+规则表是基于官能团 pKa 的近似，不是 pKa 预测：命中哪个官能团、用哪个 pKa、
 做了加/减质子都在返回的 `rules` 里逐条列出，可人工核对。
-若要更精细的微观态分布，请用专业工具生成目标 pH 下的质子化态并以 SDF 提供，
-再用策略 `keep` 对接 —— 系统不会假装自己是 pKa 计算器。
+需要更精细的微观态分布时，可用 Dimorphite-DL 等工具生成目标 pH 下的质子化态并以 SDF 提供，
+再用策略 `keep` 对接；本模块不承担 pKa 计算器的职责。
 
-**主键纪律**：只处理"用什么化学形式对接"，**原始 SMILES 始终保留**（对接行主键不变）。
+主键纪律：本模块只处理"用什么化学形式对接"，原始 SMILES 始终保留（对接行主键不变）。
 """
 from __future__ import annotations
 
@@ -36,12 +34,12 @@ logger = logging.getLogger(__name__)
 PROTONATION_POLICIES: Tuple[str, ...] = ("keep", "neutralize", "ph")
 #: 默认目标 pH（生理 pH）
 DEFAULT_PH = 7.4
-#: 合法 pH 区间。**下界不能是 0**：0 是"未设置"哨兵（界面/接口用 0 表示"用设置页的值"），
-#: 真实运行里踩到过 `protonation_ph=0` → pH 0 → 全部按极端强酸处理的事故。
+#: 合法 pH 区间。下界不能是 0：0 是"未设置"哨兵（界面与接口用 0 表示"用设置页的值"），
+#: 取 0 会使全部分子按极端强酸处理（`protonation_ph=0` 曾按 pH 0 跑完一次运行）。
 PH_MIN = 0.5
 PH_MAX = 14.0
-#: 默认策略：按目标生理 pH 分配质子化态（对接的通行假设；比"一律中性"更接近真实条件）。
-#: 仍然只是运行级的一个默认值，用户可在界面一键改为 neutralize / keep。
+#: 默认策略：按目标生理 pH 分配质子化态（对接的通行假设，比"一律中性"更接近真实条件）。
+#: 该值只是运行级的一个默认值，可在界面一键改为 neutralize 或 keep。
 DEFAULT_POLICY = "ph"
 #: 界面上的常用 pH 预设（仅作为 datalist 提示，不限制取值）
 PH_PRESETS: Tuple[Tuple[str, float], ...] = (
@@ -51,7 +49,7 @@ PH_PRESETS: Tuple[Tuple[str, float], ...] = (
 
 #: 内置 pKa 规则表：`site` 是 SMARTS 匹配元组里要加/减质子的原子下标。
 #: `kind="acid"`：pH > pKa 时去质子化（阴离子）；`kind="base"`：pH < pKa 时质子化（阳离子）。
-#: 顺序 = 处理顺序（先特殊、后常见；已处理过的原子不再重复处理）。
+#: 顺序即处理顺序（先特殊、后常见；已处理过的原子不再重复处理）。
 PKA_RULES: Tuple[Dict[str, Any], ...] = (
     # ---- 酸性基团 ----
     {"name": "磺酸", "smarts": "[SX4](=O)(=O)[OX2H1]", "site": 3, "pka": -1.0, "kind": "acid"},
@@ -69,10 +67,10 @@ PKA_RULES: Tuple[Dict[str, Any], ...] = (
      "site": 0, "pka": 10.0, "kind": "base"},
     # 咪唑类：五元环里另一个 N 必须带 H（排除咖啡因/嘌呤这类 N-取代咪唑，其 pKa 远低于 7）
     {"name": "咪唑类 N", "smarts": "[nX2;H0]1cc[nH]c1", "site": 0, "pka": 7.0, "kind": "base"},
-    # 吡啶类：**六元**芳环上的 N（r6 排除四氮唑/吡唑等酸性五元唑，避免把酸环当碱处理）
+    # 吡啶类：六元芳环上的 N（r6 排除四氮唑、吡唑等酸性五元唑，避免把酸环当碱处理）
     {"name": "吡啶类 N", "smarts": "[nX2;H0;r6]", "site": 0, "pka": 5.2, "kind": "base"},
 )
-#: 规则表版本（写进溯源，便于审计"当时的判定依据是哪一版"）
+#: 规则表版本（写进溯源，用于回答"当时的判定依据是哪一版"）
 PKA_TABLE_VERSION = "v1-2026.09"
 #: 写进溯源与报告的免责说明
 PKA_DISCLAIMER = ("内置官能团 pKa 规则表的近似处理，不是 pKa 预测；"
@@ -86,17 +84,17 @@ def _env_policy() -> str:
 
 
 def _run_request() -> Dict[str, Any]:
-    """本次运行请求里的参数（没有运行上下文时返回空）。"""
+    """本次运行请求里的参数（没有运行上下文时返回空字典）。"""
     from docking_agent import run_context
 
     return run_context.run_request_or_empty()
 
 
 def protonation_policy(explicit: Optional[str] = None) -> str:
-    """质子化策略的**分层解析**：显式参数 → 本次运行请求 → 环境变量（设置页）→ 默认 ph（pH 7.4）。
+    """质子化策略的分层解析：显式参数、本次运行请求、环境变量（设置页），最后取默认 ph（pH 7.4）。
 
-    运行请求优先于环境变量：同一次运行里的所有分子必须用同一条规则（口径一致），
-    而环境变量是全局的，多会话并发时不能代表"这一次"。
+    运行请求优先于环境变量：同一次运行里的所有分子用同一条规则（口径一致），
+    而环境变量是全局的，多会话并发时无法代表"这一次"。
     """
     from docking_agent.config import env
 
@@ -109,23 +107,23 @@ def protonation_policy(explicit: Optional[str] = None) -> str:
 
 
 def _coerce_ph(value: Any) -> Optional[float]:
-    """把输入收敛成合法 pH；0 / 空 / 非数字 / 越界都返回 None（= 用下一层来源或默认）。"""
+    """把输入收敛成合法 pH；0、空值、非数字与越界值都返回 None（即改用下一层来源或默认）。"""
     if value is None or value == "" or value is False:
         return None
     try:
         ph = float(value)
     except (TypeError, ValueError):
         return None
-    if ph == 0:            # 哨兵：界面/接口用 0 表示"用设置页的值"
+    if ph == 0:            # 哨兵：界面与接口用 0 表示"用设置页的值"
         return None
     return ph if PH_MIN <= ph <= PH_MAX else None
 
 
 def protonation_ph(explicit: Any = None) -> float:
-    """目标 pH 的分层解析：显式参数 → 本次运行请求 → 环境变量 → 默认 7.4。
+    """目标 pH 的分层解析：显式参数、本次运行请求、环境变量，最后取默认 7.4。
 
-    非法值（非数字、0 哨兵、超出 {PH_MIN}–{PH_MAX}）一律回退下一层/默认 ——
-    绝不因为一个设置写错就改变化学口径（注意：`protonation_ph=0` 被当成 pH 0 跑完一次运行）。
+    非法值（非数字、0 哨兵、超出 {PH_MIN}–{PH_MAX}）回退到下一层或默认值，
+    单个设置写错不改变化学口径（`protonation_ph=0` 曾按 pH 0 跑完一次运行）。
     """
     from docking_agent.config import env
 
@@ -180,20 +178,20 @@ def apply_ph_rules(mol: Any, ph: float) -> Tuple[Optional[Any], List[Dict[str, A
         if rule["kind"] == "acid":
             if float(ph) <= pka:
                 continue          # pH 低于 pKa：酸保持中性（输入已先中和过，无需再动）
-            protonate = False     # pH 高于 pKa：去质子化 → 阴离子
+            protonate = False     # pH 高于 pKa：去质子化，生成阴离子
         else:
             if float(ph) >= pka:
                 continue          # pH 高于 pKa：碱保持中性
-            protonate = True      # pH 低于 pKa：加质子 → 阳离子
+            protonate = True      # pH 低于 pKa：加质子，生成阳离子
         for match in work.GetSubstructMatches(pattern):
             if len(match) <= site_offset:
                 continue
             site = int(match[site_offset])
             if any(int(i) in touched for i in match):
-                continue          # 同一官能团（或其中任一原子）已处理过 → 不重复加/减质子
+                continue          # 同一官能团（或其中任一原子）已处理过，不重复加/减质子
             if not _set_site(work, site, protonate):
                 continue
-            # 整组原子都标记：胍/脒被质子化后，其余 N 不应再被"脂肪胺"规则二次质子化
+            # 整组原子都标记：胍/脒被质子化后，其余 N 不再被"脂肪胺"规则二次质子化
             touched.update(int(i) for i in match)
             hits.append({"name": rule["name"], "pka": rule["pka"], "kind": rule["kind"],
                          "site_atom": site,
@@ -208,19 +206,19 @@ def apply_ph_rules(mol: Any, ph: float) -> Tuple[Optional[Any], List[Dict[str, A
         return None, [], f"按 pH 分配后的结构不合法（{type(e).__name__}: {e}）"
 
 
-#: 逐分子质子化溯源里**聚合口径**需要的字段（报告 §1.3/§4 的统计只读这些）。
+#: 逐分子质子化溯源里聚合口径需要的字段（报告 §1.3/§4 的统计只读这些）。
 #:
 #: 其余字段（`method`/`note`/`variants`/`variant_rule`/`engine_window`/`engine_precision`/`rules`）
-#: 是**审计明细**：完整记录留在工具产物里，给 Agent 的视图只带聚合字段 ——
-#: 一个 `method` 字符串（"dimorphite-dl 2.0.2（专业 pKa 引擎；pH 7.4 ± 0.5）"）就占 60+ 字符，
-#: 而它完全等价于 `engine`+`engine_version`+`ph`+`engine_window` 四个数据字段；
-#: 逐分子重复一遍会让大库的属性/对接载荷白白膨胀（实测属性行 82% 的字节是这段溯源）。
+#: 属于明细留档：全量记录留在工具产物里，给 Agent 的视图只带聚合字段。
+#: 一个 `method` 字符串（引擎名、版本、引擎类别与 pH 窗口）长度可达 60 字符以上，
+#: 而它等价于 `engine`、`engine_version`、`ph`、`engine_window` 四个数据字段；
+#: 逐分子重复一遍会使大库的属性与对接载荷膨胀（属性行 82% 的字节是这段溯源）。
 PROTONATION_AGGREGATE_FIELDS = ("policy", "applied", "engine", "engine_version", "engine_fallback_reason",
                                 "ph", "charge_before", "charge_after")
 
 
 def compact_protonation(info: Any) -> Dict[str, Any]:
-    """把逐分子质子化溯源压成**聚合口径**字段（数据保留，散文细节交给产物）。"""
+    """把逐分子质子化溯源压成聚合口径字段，散文细节交给产物保留。"""
     if not isinstance(info, dict):
         return {}
     out = {k: info[k] for k in PROTONATION_AGGREGATE_FIELDS if info.get(k) not in (None, "")}
@@ -233,8 +231,8 @@ def apply_protonation(smiles: str, policy: Optional[str] = None,
                       ph: Any = None) -> Tuple[str, Dict[str, Any]]:
     """按运行级策略处理配体质子化态，返回 `(处理后的 SMILES, 溯源)`。
 
-    `applied` 以**规范 SMILES 是否变化**判定（不是净电荷是否变化）：
-    像甘氨酸这种在 pH 7.4 变成两性离子（净电荷仍为 0）的情况，形式确实变了，必须如实记录。
+    `applied` 以规范 SMILES 是否变化判定，而不是净电荷是否变化：
+    甘氨酸在 pH 7.4 变成两性离子时净电荷仍为 0，但形式确实变了，需要如实记录。
     """
     raw = str(smiles or "").strip()
     chosen = protonation_policy(policy)
@@ -256,7 +254,7 @@ def apply_protonation(smiles: str, policy: Optional[str] = None,
 
     if chosen == "ph":
         target_ph = protonation_ph(ph)
-        # ---- 优先用**专业 pKa 引擎**（Dimorphite-DL）；不可用/异常时回退内置规则表 ----
+        # ---- 优先用 Dimorphite-DL 等 pKa 引擎；不可用或异常时回退内置规则表 ----
         from docking_agent.core import ligand_pka
 
         engine_result = ligand_pka.protonate(raw, target_ph)
@@ -287,7 +285,7 @@ def apply_protonation(smiles: str, policy: Optional[str] = None,
                             f"{engine_result.get('version')}{extra}")
             return out_smiles, info
 
-        # 引擎不可用 / 配置强制 rules → 内置规则表（近似），并把回退原因如实记录
+        # 引擎不可用或配置强制 rules 时改用内置规则表（近似），并如实记录回退原因
         info["engine_fallback_reason"] = str(engine_result.get("reason") or "专业 pKa 引擎不可用")
         if engine_result.get("install"):
             info["engine_install"] = str(engine_result["install"])
@@ -301,7 +299,7 @@ def apply_protonation(smiles: str, policy: Optional[str] = None,
             return raw, info
         new_mol, hits, err = apply_ph_rules(neutral, target_ph)
         if err or new_mol is None:
-            # 规则命中但结构不合法 / 无规则命中：**退回中性形式**并说明（不静默保持离子态）
+            # 规则命中但结构不合法、或无规则命中：退回中性形式并说明，不静默保持离子态
             fallback = Chem.MolToSmiles(neutral)
             info["charge_after"] = int(Chem.GetFormalCharge(neutral))
             info["rules"] = hits

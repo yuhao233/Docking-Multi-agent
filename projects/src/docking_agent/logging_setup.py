@@ -15,7 +15,7 @@ _CONFIGURED = False
 
 
 class _RunIdFilter(logging.Filter):
-    """把当前 run_id 注入日志，便于串联一次多 Agent 运行。"""
+    """将当前 run_id 注入日志记录，用于串联同一次多 Agent 运行的日志。"""
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
         ctx = request_context.get()
@@ -28,7 +28,7 @@ def setup_logging(
     max_bytes: int = 100 * 1024 * 1024,
     backup_count: int = 5,
     log_level: str | None = None,
-    use_json_format: bool = False,  # 兼容原签名；本地统一用文本格式
+    use_json_format: bool = False,  # 保留原签名以兼容调用方；本地输出统一为文本格式
     console_output: bool = True,
 ) -> logging.Logger:
     global _CONFIGURED
@@ -36,7 +36,7 @@ def setup_logging(
     if _CONFIGURED:
         return root
 
-    # 日志级别必须在**调用时**读取：模块导入期求值时 .env / 界面设置可能尚未加载
+    # 日志级别在调用时读取：模块导入期求值时 .env 与界面设置可能尚未加载
     configured_level = (log_level or env("LOG_LEVEL", "INFO") or "INFO").upper()
     level = getattr(logging, configured_level, logging.INFO)
     root.setLevel(level)
@@ -63,7 +63,7 @@ def setup_logging(
         fh.addFilter(run_filter)
         root.addHandler(fh)
     except OSError as e:
-        # 此处 logging 尚未配置完成，直接写 stderr（不能再用 print，规范禁止 src/ 非 CLI 用 print）
+        # logging 尚未配置完成，此处直接写 stderr；规范禁止 src/ 下的非 CLI 代码使用 print
         sys.stderr.write(f"[logging] 文件日志不可写（{e}），仅输出到控制台\n")
 
     logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -1,9 +1,9 @@
-"""坐标字段的入参类型：数组为主，**文档承诺的字符串形态必须在进函数体前就被接受**。
+"""坐标字段的入参类型：以数组为主，文档承诺的字符串形态在进入函数体前即被接受。
 
-注意：`coord_description` 与工具 docstring 都写着「也接受 "22,22,22"」，
-但字段类型是 `List[float]` —— 字符串在 pydantic 校验阶段就被拒，函数体里的 `floats_to_text()`
-永远没机会处理。表现：仓库自带的 `scripts/verify_docking.py`（按文档传
-`site_center="31.5,13.74,24.36"`）直接抛 `ValidationError`；模型照描述传字符串同样会被拒。
+`coord_description` 与工具 docstring 都写明也接受 `"22,22,22"`，字段类型却是 `List[float]`：
+字符串在 pydantic 校验阶段即被拒，函数体中的 `floats_to_text()` 没有机会处理。
+调用方按文档传 `site_center="31.5,13.74,24.36"`（如仓库自带的 `scripts/verify_docking.py`）会直接抛
+`ValidationError`，模型按描述传字符串同样被拒；用例要求字符串与数组在进入函数体前归一化为同一组数字。
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def test_unparsable_string_is_left_for_pydantic_to_report() -> None:
 
 
 def test_docking_tool_schema_accepts_both_forms() -> None:
-    """工具 schema 层：字符串与数组都必须通过校验，且解析成同一组数字。"""
+    """工具 schema 层：字符串与数组均通过校验，并解析为同一组数字。"""
     from docking_agent.tools.docking import molecular_docking
 
     schema = molecular_docking.args_schema
@@ -43,7 +43,7 @@ def test_docking_tool_schema_accepts_both_forms() -> None:
 
 
 def test_docking_tool_schema_rejects_garbage() -> None:
-    """真正非法的输入仍要报错（不能因为放宽字符串而放过垃圾）。"""
+    """非法输入仍应报错：接受字符串形态不等于放宽取值范围。"""
     from docking_agent.tools.docking import molecular_docking
 
     schema = molecular_docking.args_schema

@@ -1,21 +1,21 @@
-"""本地设置（界面可编辑）—— `config/local_settings.json`。
+"""本地设置（界面可编辑）：`config/local_settings.json`。
 
-设置页面的后端支撑。设计目标：
-  1. **单一事实来源**：所有可配置项集中在本模块的字段表（SPECS）里，
+本模块为设置页面提供后端支撑，设计目标有三项：
+  1. 单一事实来源：所有可配置项集中在本模块的字段表（SPECS）里，
      接口、校验、前端渲染都由它驱动，避免前后端字段走样；
-  2. **每个字段都能回答「当前值是多少、来自哪里」**（sources），
-     避免出现「改了没生效却不知道为什么」的情况；
-  3. **不破坏既有部署方式**：没有本文件时行为与之前完全一致。
+  2. 每个字段都能给出「当前值是多少、来自哪里」（sources），
+     避免出现「改了没生效却无法定位来源」的情况；
+  3. 不改变既有部署方式：缺少该文件时行为与之前一致。
 
 优先级（越具体越优先）：
 
     LLM 字段：
         LLM_<字段>_<角色> 环境变量
-      > local_settings.json → roles.<角色>
-      > 内置角色默认 agent_llm_config.json → roles.<角色>
-      > local_settings.json → llm
+      > local_settings.json 的 roles.<角色>
+      > 内置角色默认 agent_llm_config.json 的 roles.<角色>
+      > local_settings.json 的 llm
       > LLM_<字段> 环境变量（.env）
-      > agent_llm_config.json → config
+      > agent_llm_config.json 的 config
 
     运行类字段：
         界面设置(local_settings.json) > .env > 内置默认
@@ -42,7 +42,7 @@ SETTINGS_REL = "config/local_settings.json"
 # 允许用环境变量指定设置文件位置（测试与多实例部署使用）
 ENV_OVERRIDE = "LOCAL_SETTINGS_PATH"
 
-# 部署保护项：由 Spec.env_priority 派生（**唯一事实源**是字段规格，避免两处清单漂移）
+# 部署保护项：由 Spec.env_priority 派生（字段规格是唯一事实源，避免两处清单漂移）
 # 这些键由 .env 决定（部署方策略），界面只读展示。
 
 ROLES: Tuple[str, ...] = ("intake", "coordinator", "property", "pocket", "docking", "binding")
@@ -61,7 +61,7 @@ ROLE_LABEL = {
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class Spec:
-    """一个可配置字段的完整描述（接口 / 校验 / 前端渲染共用）。"""
+    """一个可配置字段的规格描述（接口 / 校验 / 前端渲染共用）。"""
 
     path: str                     # 点分路径（local_settings.json 内的位置）
     label: str
@@ -128,7 +128,7 @@ LLM_SPECS: Tuple[Spec, ...] = (
 )
 
 # ---- 各 Agent 角色字段（path = roles.<role>.<field>）----
-# 注意：第三个位置参数是 group，第四个才是 kind，写全避免退化成 str。
+# 第三个位置参数是 group，第四个才是 kind，写全以免退化成 str。
 ROLE_FIELD_SPECS: Tuple[Spec, ...] = (
     Spec("model", "模型", "roles", "str", placeholder="继承全局"),
     Spec("temperature", "温度", "roles", "float", minimum=0, maximum=2, step=0.05),
@@ -201,7 +201,7 @@ DOCKING_SPECS: Tuple[Spec, ...] = (
 )
 
 # ---- 运行与性能（映射环境变量，保存后立即生效）----
-# ---- 外部工具（用户自行安装；env 映射后 core/ 侧照旧用 env() 读取）----
+# ---- 外部工具（使用者自行安装；env 映射后 core/ 侧照旧用 env() 读取）----
 EXTERNAL_SPECS: Tuple[Spec, ...] = (
     Spec("external.autogrid4_bin", "AutoGrid4 可执行文件", "external", "str",
          env="AUTOGRID4_BIN", placeholder="/path/to/autogrid4",
@@ -280,7 +280,7 @@ RUNTIME_SPECS: Tuple[Spec, ...] = (
          env="AGENT_COARSE_EXHAUSTIVENESS", minimum=1, maximum=32, default=1),
     Spec("runtime.agent_fine_exhaustiveness", "精算搜索强度", "runtime", "int",
          env="AGENT_FINE_EXHAUSTIVENESS", minimum=1, maximum=64, default=16),
-    # ---- 参数自动规划（core/params.py）：运行级/阶段级参数，绝不逐分子 ----
+    # ---- 参数自动规划（core/params.py）：运行级/阶段级参数，不逐分子 ----
     Spec("runtime.auto_param_enabled", "对接参数自动规划", "runtime", "bool",
          env="AUTO_PARAM_ENABLED", default=True,
          help="on=按任务类型/库柔性/盒体积自动规划 exhaustiveness 与 n_poses 并写进报告；"
@@ -381,7 +381,7 @@ RUNTIME_SPECS: Tuple[Spec, ...] = (
     Spec("runtime.run_timeout_seconds", "单次运行超时（秒）", "runtime", "int",
          env="RUN_TIMEOUT_SECONDS", minimum=30, default=900),
     # 默认值必须与 `config.DEFAULT_RECURSION_LIMIT` 一致（settings 只依赖 envs.py，
-    # 不反向导入 config → 这里写字面量，由 tests/test_recursion_limit.py 看护两者不发散）
+    # 不反向导入 config，这里写字面量，由 tests/test_recursion_limit.py 看护两者不发散）
     Spec("runtime.recursion_limit", "图递归上限", "runtime", "int",
          env="RECURSION_LIMIT", minimum=10, maximum=500, default=120),
     Spec("runtime.log_level", "日志级别", "runtime", "enum",
@@ -428,8 +428,8 @@ def local_settings_path() -> Path:
 def load_local_settings() -> Dict[str, Any]:
     """读取本地设置。
 
-    文件不存在、JSON 损坏、或**结构不符合预期**（例如手改成 `{"llm": 123}`）时
-    都退化为 {}，绝不因为一个坏掉的设置文件让服务起不来。
+    文件不存在、JSON 损坏、或结构不符合预期（例如手改成 `{"llm": 123}`）时
+    都退化为 {}，使一个损坏的设置文件不会导致服务无法启动。
     """
     path = local_settings_path()
     if not path.is_file():
@@ -629,13 +629,13 @@ def _looks_secret(key: str) -> bool:
 
 
 def mask_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
-    """额外请求头里的敏感值（*key* / *token* / *auth* …）只回显 ***。"""
+    """额外请求头里的敏感值（*key* / *token* / *auth* …）只回显三个星号组成的掩码。"""
     return {str(k): ("***" if _looks_secret(k) and v not in (None, "") else v)
             for k, v in (headers or {}).items()}
 
 
 def unmask_headers(submitted: Any, current: Any) -> Dict[str, Any]:
-    """提交里值为 *** 的头保持原值（前端看到的掩码不是真值）。"""
+    """提交里值为掩码的头保持原值（前端看到的掩码不是真值）。"""
     out = dict(submitted) if isinstance(submitted, dict) else {}
     stored = current if isinstance(current, dict) else {}
     for key, value in list(out.items()):
@@ -691,7 +691,7 @@ def flatten_paths(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# 生效：运行类字段 → 环境变量
+# 生效：运行类字段写入环境变量
 # --------------------------------------------------------------------------- #
 def _serialize(value: Any) -> str:
     if isinstance(value, bool):
@@ -702,7 +702,7 @@ def _serialize(value: Any) -> str:
 
 
 # 本进程「由设置页面注入」的环境变量基线：{键: 注入前的值（None = 之前不存在）}。
-# 用于正确撤销：用户清空某项时恢复到基线，而不是让上一轮注入的值残留；
+# 用于正确撤销：调用方清空某项时恢复到基线，避免上一轮注入的值残留；
 # 同时保证 reset 不会误删 shell / CI 外部注入的环境变量。
 _INJECTED: Dict[str, Optional[str]] = {}
 
@@ -710,7 +710,7 @@ _INJECTED: Dict[str, Optional[str]] = {}
 def apply_runtime_env() -> List[str]:
     """把界面设置里的运行类字段写入进程环境变量，返回被应用的键。
 
-    - 一般项：界面设置覆盖 .env（用户刚在界面改的值应当生效）；
+    - 一般项：界面设置覆盖 .env（界面上刚改的值应当生效）；
     - 部署保护项：环境变量已显式设置时保持环境变量优先；
     - 被清除的项：恢复到注入前的基线值（而不是残留旧值）。
     """
@@ -725,7 +725,7 @@ def apply_runtime_env() -> List[str]:
         value = get_dotted(data, spec.path)
         protect = spec.env_priority and os.getenv(name) not in (None, "")
         if value is None or protect:
-            # 不再由界面提供该值：若为此前注入的，恢复基线
+            # 不再由界面提供该值：若为界面注入的，恢复基线
             if name in _INJECTED:
                 baseline = _INJECTED.pop(name)
                 if baseline is None:

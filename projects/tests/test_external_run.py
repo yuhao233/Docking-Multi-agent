@@ -1,14 +1,14 @@
-"""外部引擎的**执行适配**（`core/external_run.py`）：真实调用形状、输出解析、格点图。
+"""外部引擎的执行适配（`core/external_run.py`）：调用形状、输出解析、格点图。
 
-与 `tests/test_external_engine.py` 的分工：那边测"登记与探测"，这边测"真的跑起来之后"。
-外部二进制一律用临时目录里的假脚本替代 —— 断言的是本实现下发的参数与解析结果，不是 GPU 本身；
-真正的 GPU 端到端由本文件末尾的 `test_real_autodock_gpu_end_to_end`（本机登记且就绪时才跑）
+与 `tests/test_external_engine.py` 的分工：该文件测「登记与探测」，此处测「执行阶段」。
+外部二进制一律用临时目录里的假脚本替代：断言的是本实现下发的参数与解析结果，不是 GPU 本身；
+GPU 端到端由末尾的 `test_real_autodock_gpu_end_to_end`（本机登记且就绪时才跑）
 与 `scripts/verify_docking.py` 覆盖。
 
-历史上的注意（都已固定成回归）：
+以下情形已固定成回归用例：
 
-* `--devnum 0` 被 AutoDock-GPU 拒绝（它要求 1 基），登记了 GPU 却 0.15 s 失败、结果行报错；
-* 配体带极性氢（meeko 的 `HD` 类型）而格点图只有 A/C/N/NA/OA/S/SA → 引擎"任务未成功"；
+* `--devnum 0` 被 AutoDock-GPU 拒绝（该引擎要求 1 基设备号），登记了 GPU 但 0.15 s 失败、结果行报错；
+* 配体带极性氢（meeko 的 `HD` 类型）而格点图只有 A/C/N/NA/OA/S/SA 时，引擎报"任务未成功"；
 * `--nrun N` 时 DLG 里有多组能量，取第一组会拿到非最优的结合能。
 """
 from __future__ import annotations
@@ -130,7 +130,7 @@ def _fake_vina(tmp_path: Path) -> Path:
 # 1) 输出解析
 # --------------------------------------------------------------------------- #
 def test_parse_dlg_takes_the_best_run_not_the_first() -> None:
-    """真实 AutoDock-GPU 产物（thrombin × benzamidine，`--nrun 3`，集群直方图 1 个簇）。"""
+    """AutoDock-GPU 实际产物（thrombin × benzamidine，`--nrun 3`，集群直方图 1 个簇）。"""
     energies = ER.parse_dlg_energies(MULTI_RUN_DLG)
     assert energies["affinity_kcal_mol"] == pytest.approx(-5.59)
     assert energies["intermolecular_kcal_mol"] == pytest.approx(-5.88)
@@ -160,7 +160,7 @@ def test_parse_vina_pose_energy(tmp_path: Path) -> None:
 # 2) 格点图：GPF 内容与配体类型覆盖
 # --------------------------------------------------------------------------- #
 def test_standard_ligand_types_cover_polar_hydrogens() -> None:
-    """meeko 准备的配体一律带 `HD`：缺这张图时 AutoDock-GPU 直接判"任务未成功"（实测 0.15 s）。"""
+    """meeko 准备的配体一律带 `HD`：缺这张图时 AutoDock-GPU 直接判"任务未成功"（0.15 s 内失败）。"""
     assert "HD" in ER.STANDARD_LIGAND_TYPES
     for element_type in ("A", "C", "N", "NA", "OA", "S", "SA", "F", "Cl", "Br", "I", "P"):
         assert element_type in ER.STANDARD_LIGAND_TYPES
@@ -256,7 +256,7 @@ def test_dock_ligand_external_vina_cpu(tmp_path: Path) -> None:
 
 
 def test_unadapted_flavors_refuse_to_guess_argv(tmp_path: Path) -> None:
-    """Uni-Dock / Vina-GPU 只登记不执行：本机没有可验证的输出格式，不能拿猜的参数去算。"""
+    """Uni-Dock / Vina-GPU 只登记不执行：本机没有可验证的输出格式，不按推测的参数计算。"""
     for flavor in ("unidock", "vina-gpu"):
         with pytest.raises(ExternalEngineError) as excinfo:
             ER.dock_ligand_external(flavor=flavor, binary="/opt/x", ligand_pdbqt="l.pdbqt",
@@ -269,7 +269,7 @@ def test_unadapted_flavors_refuse_to_guess_argv(tmp_path: Path) -> None:
 # 4) 会话：按需扩图 + 拒绝静默回退
 # --------------------------------------------------------------------------- #
 def _bare_session(tmp_path: Path) -> object:
-    """只测格点图缓存逻辑：不走 `__init__`，避免依赖真实 Vina / 已登记引擎。"""
+    """只测格点图缓存逻辑：不走 `__init__`，避免依赖 Vina 与已登记引擎。"""
     from docking_agent.core.docking import DockingSession
 
     session = DockingSession.__new__(DockingSession)
@@ -304,7 +304,7 @@ def test_session_builds_maps_once_per_session(tmp_path: Path,
 
 def test_session_reports_ligand_types_autogrid_cannot_map(tmp_path: Path,
                                                          monkeypatch: pytest.MonkeyPatch) -> None:
-    """配体含 autogrid4 参数库没有的类型（Cu/Hg/Se/Na/K）时明确报错，不假装算过。"""
+    """配体含 autogrid4 参数库没有的类型（Cu/Hg/Se/Na/K）时明确报错，不按已计算上报。"""
     def _must_not_build(*args, **kwargs):  # pragma: no cover - 调用即失败
         raise AssertionError("不支持的类型不该走到建图步骤")
 
@@ -317,7 +317,7 @@ def test_session_reports_ligand_types_autogrid_cannot_map(tmp_path: Path,
 
 def test_external_engine_without_registration_refuses_to_fall_back(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """`engine=external` 未登记时直接报错 —— 不静默改用内置 CPU（否则用户以为在用 GPU）。"""
+    """`engine=external` 未登记时直接报错，不静默改用内置 CPU（否则使用者会以为在用 GPU）。"""
     monkeypatch.delenv("EXTERNAL_DOCKING_BIN", raising=False)
     from docking_agent.core.docking import DockingSession
 
@@ -328,7 +328,7 @@ def test_external_engine_without_registration_refuses_to_fall_back(
 
 
 # --------------------------------------------------------------------------- #
-# 5) 真实 GPU 端到端（本机登记且探测就绪时才跑）
+# 5) GPU 端到端（本机登记且探测就绪时才跑）
 # --------------------------------------------------------------------------- #
 def _real_engine_report() -> dict:
     from docking_agent.core.external_tools import collect
@@ -360,7 +360,7 @@ def test_real_autodock_gpu_end_to_end() -> None:
 
 
 def test_external_engine_note_tells_the_truth_about_who_runs() -> None:
-    """登记了外部引擎但本次不用它时必须说出来（否则用户以为跑在 GPU 上）。"""
+    """登记了外部引擎但本次不用它时需要如实说明（否则使用者会以为跑在 GPU 上）。"""
     from docking_agent.core.docking import external_engine_note
 
     report = {"flavor": "autodock-gpu", "flavor_label": "AutoDock-GPU",
@@ -373,11 +373,11 @@ def test_external_engine_note_tells_the_truth_about_who_runs() -> None:
 
 
 def test_macrocycle_ligands_have_no_glue_pseudo_atoms(tmp_path: Path) -> None:
-    """大环配体必须**不切环**：meeko 默认会插两个伪原子（元素 G，类型 CG0/G0），
-    autogrid4 参数库没有这些类型（实测 unknown ligand atom type），AutoDock4/-GPU 必然失败。
+    """大环配体按不切环方式准备：meeko 默认会插两个伪原子（元素 G，类型 CG0/G0），
+    autogrid4 参数库没有这些类型（报 unknown ligand atom type），AutoDock4/-GPU 失败。
 
-    注意：2961 条库里有 113 条栽在这里；改 `rigid_macrocycles=True` 后
-    113/116 立即可用（其余 3 条是真化学限制：meeko 无法给 Se/Mn/Pt 类原子定类型、3D 构象生成失败）。
+    2961 条库里有 113 条属于这种情形；改用 `rigid_macrocycles=True` 后
+    113/116 立即可用（其余 3 条为化学限制：meeko 无法给 Se/Mn/Pt 类原子定类型、3D 构象生成失败）。
     """
     from docking_agent.core.docking import _pdbqt_atom_types
     from docking_agent.core.ligands import describe_ligand, smiles_to_pdbqt
@@ -395,10 +395,10 @@ def test_macrocycle_ligands_have_no_glue_pseudo_atoms(tmp_path: Path) -> None:
 
 
 def test_extract_best_pose_pdbqt_from_real_dlg(tmp_path: Path) -> None:
-    """真实 AutoDock-GPU DLG（thrombin × 苯甲脒，--nrun 3）→ PDBQT 位姿。
+    """AutoDock-GPU 实际 DLG（thrombin × 苯甲脒，--nrun 3）转 PDBQT 位姿。
 
-    损失（2961 条库）：外部引擎把位姿留成 `.dlg`，而位姿分析按 PDBQT 读，
-    2845 个位姿全部读不出 → 报告写"未产生可读取的位姿文件"、结合模式分析整段缺失。
+    影响面（2961 条库）：外部引擎把位姿留成 `.dlg`，而位姿分析按 PDBQT 读，
+    2845 个位姿全部读不出，报告写"未产生可读取的位姿文件"、结合模式分析整段缺失。
     """
     from docking_agent.core.interactions import read_pdbqt
 

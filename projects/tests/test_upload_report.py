@@ -1,6 +1,6 @@
 """上传、上传后对接、固定报告格式与报告内嵌图片的测试。
 
-包含真实对接（每个用例 1-3 个分子，exhaustiveness=1），耗时可控。
+包含真实对接（每个用例 1 到 3 个分子，`exhaustiveness=1`），耗时可控。
 """
 from __future__ import annotations
 
@@ -37,14 +37,14 @@ def client():
 
 
 def _upload(client, path: Path, kind: str = "auto"):
-    """上传（v0.22 起**只保存文件**，不解析、不准备）。"""
+    """上传（自 `v0.22` 起只保存文件，不解析、不准备）。"""
     with open(path, "rb") as fh:
         return client.post("/api/uploads", files={"file": (path.name, fh, "application/octet-stream")},
                            data={"kind": kind})
 
 
 def _upload_ready(client, path: Path, kind: str = "auto"):
-    """上传 + 用户主动「校验文件」→ 得到解析/准备结果（等价于旧的 /api/uploads 返回）。"""
+    """上传后由使用者触发「校验文件」，取得解析与准备结果（等价于旧的 `/api/uploads` 返回）。"""
     up = _upload(client, path, kind=kind)
     assert up.status_code == 200, up.text[:300]
     payload = up.json()
@@ -54,7 +54,7 @@ def _upload_ready(client, path: Path, kind: str = "auto"):
 
 
 def _run_agent(client, body: dict, monkeypatch) -> str:
-    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 run_id。"""
+    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 `run_id`。"""
     return run_agent(client, coordinator_script_for_form(body), body, monkeypatch)
 
 
@@ -62,10 +62,10 @@ def _run_agent(client, body: dict, monkeypatch) -> str:
 # 上传
 # --------------------------------------------------------------------------- #
 def test_upload_ligand_file_only_stores_until_user_starts(client) -> None:
-    """用户要求：**不要一上传就开始处理文件**。
+    """上传阶段不开始处理文件。
 
-    上传只落盘并回 `path`（`pending=True`，不含 count/molecules）；
-    解析发生在用户点「校验文件」（inspect）或真正开始运行时。
+    上传只落盘并返回 `path`（`pending=True`，不含 `count` 与 `molecules`）；
+    解析发生在调用方触发「校验文件」（`inspect`）或真正开始运行时。
     """
     assert LIGAND_FILE.is_file(), f"缺少测试用分子文件：{LIGAND_FILE}"
     r = _upload(client, LIGAND_FILE)
@@ -86,10 +86,10 @@ def test_upload_receptor_file_prepares_site_on_inspect(client) -> None:
     body = r.json()
     assert body["kind"] == "receptor"
     assert Path(body["receptor_file"]).is_file(), "应生成 PDBQT"
-    # 凝血酶 1DWC 的已知位点盒（来自共晶配体质心）
+    # 凝血酶 1DWC 的已知位点盒（取自共晶配体质心）
     assert abs(body["box_center"][0] - 31.5) < 1.0
     assert len(body["box_size"]) == 3
-    # 受体质子化必须与配体同一目标 pH（v0.22）
+    # 受体质子化与配体使用同一目标 pH（`v0.22`）
     prot = body.get("receptor_protonation") or {}
     assert prot.get("policy") == "ph" and prot.get("ph") == 7.4, prot
     assert prot.get("applied") is True, prot
@@ -113,7 +113,7 @@ def test_upload_rejects_unparsable_file(client):
 def test_docking_with_uploaded_files(client, monkeypatch):
     lig = _upload(client, LIGAND_FILE).json()
     rec = _upload(client, RECEPTOR_FILE).json()
-    # 运行时才准备：这里提交的是**原始上传路径**
+    # 运行时才准备：此处提交的是原始上传路径
     assert "receptor_file" not in rec and rec["pending"] is True
 
     run_id = _run_agent(client, {
@@ -127,11 +127,11 @@ def test_docking_with_uploaded_files(client, monkeypatch):
 
     blocks = (detail["result"].get("docking") or {}).get("receptors") or []
     assert blocks, "应有对接结果"
-    # 关键：上传受体后必须仍用活性位点盒，而不是退化成全蛋白质心
+    # 上传受体后仍需使用活性位点盒，不退化为全蛋白质心
     assert abs(blocks[0]["box_center"][0] - 31.5) < 1.0, \
         f"位点盒被错误地替换成蛋白质心：{blocks[0]['box_center']}"
-    # 位点来源：仍以实验位点（共晶配体质心）为准，但会附带口袋工具的独立验证结论。
-    # 括号里必须写清是哪个共晶配体（如「共晶配体(MIT)质心」），否则用户无法核对盒子依据。
+    # 位点来源以实验位点（共晶配体质心）为准，并附带口袋工具的独立验证结论。
+    # 括号内写明所用共晶配体（如「共晶配体(MIT)质心」），调用方据此核对盒子依据。
     site_source = (blocks[0].get("site") or {}).get("source") or ""
     assert site_source.startswith("实验位点（共晶配体"), site_source
     assert "质心" in site_source, site_source
@@ -153,7 +153,7 @@ def test_report_has_fixed_sections_and_embedded_images(client, monkeypatch):
     detail = client.get(f"/api/runs/{run_id}").json()
     md = detail["report_markdown"]
 
-    # 章节顺序固定（表 1 抬头 + 9 个二级章节）
+    # 章节顺序固定（表 1 抬头与 9 个二级章节）
     expected = ["# 分子对接筛选报告", "## 1. 任务与参数", "## 2. 结果排序", "## 3. 推荐分子",
                 "## 4. 理化性质", "## 5. 结合模式与阳性对照比较", "## 6. 方法与局限",
                 "## 7. 失败与跳过", "## 8. 结论与建议", "## 9. 数据与产物"]
@@ -161,7 +161,7 @@ def test_report_has_fixed_sections_and_embedded_images(client, monkeypatch):
     assert all(p >= 0 for p in positions), f"缺少章节：{[h for h, p in zip(expected, positions) if p < 0]}"
     assert positions == sorted(positions), "章节顺序必须固定"
 
-    # 图/表带编号与题注；图片用相对路径内嵌，正文不得出现裸 URL
+    # 图、表带编号与题注；图片以相对路径内嵌，正文不出现裸 URL
     assert "**表 1 " in md and "**图 1 " in md
     assert "http://" not in md and "https://" not in md and "/files/" not in md
     images = re.findall(r"!\[([^\]]*)\]\((charts/[^)]+\.png)\)", md)
@@ -186,16 +186,16 @@ def test_report_without_positive_control_skips_control_sections(client, monkeypa
     md = client.get(f"/api/runs/{run_id}").json()["report_markdown"]
     assert "## 5. 结合模式与阳性对照比较" in md
     assert "未提供阳性对照" in md
-    # 无对照时不应出现结合模式对照图
+    # 无对照时不出现结合模式对照图
     assert "binding_scatter" not in md
 
 
 def test_report_takes_only_agent_conclusions_not_the_whole_narrative() -> None:
-    """第 8 节只摘录协调 Agent 的**结论/建议**类小节，且标题降级、代码块不被改动。
+    """第 8 节只摘录协调 Agent 的结论与建议类小节，标题降级，代码块不改动。
 
-    契约（v0.20）：过去把整份 Agent 报告贴进第 8 节 → 同一批数字在报告里出现两遍
-    （用户明确要求"报告中不要重复内容"）。数据复读小节（参数摘要/分子列表/属性评估/
-    可视化/对照数据/数据可用性）必须丢弃；结论类小节保留。
+    契约（`v0.20`）：此前的实现把整份 Agent 报告贴入第 8 节，同一批数字在报告中出现两遍。
+    数据复读小节（参数摘要、分子列表、属性评估、可视化、对照数据、数据可用性）被丢弃，
+    结论类小节保留。
     """
     from docking_agent.reporting import build_markdown_report
 
@@ -211,11 +211,11 @@ def test_report_takes_only_agent_conclusions_not_the_whole_narrative() -> None:
     # 固定章节仍为二级标题且顺序正确
     assert "## 1. 任务与参数" in md
     assert "## 8. 结论与建议" in md
-    # 数据复读小节被丢弃（否则就是"报告里出现两遍"）
+    # 数据复读小节被丢弃，避免同一批数字在报告中出现两遍
     assert "系统与参数配置摘要" not in md
     assert "筛选后分子列表及排序" not in md
-    # 结论类小节保留，且模型标题被整体降一级（不与固定章节冲突）
+    # 结论类小节保留，模型标题整体降一级，不与固定章节同级
     assert re.search(r"^###+ .*优化建议", md, re.M) and "建议提高搜索强度复算" in md
     assert not re.search(r"^## 优化建议", md, re.M), "模型标题必须降级，不能与固定章节同级"
-    # 代码块内容不被改动、围栏不被切坏
+    # 代码块内容不改动，围栏保持成对
     assert "## 代码里的井号" in md and md.count("```") % 2 == 0

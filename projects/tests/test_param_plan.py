@@ -1,14 +1,14 @@
-"""对接参数自动规划回归：规则 / 漏斗 / 预算降级 / **阶段一致性不变量**。
+"""对接参数自动规划回归：规则、漏斗、预算降级与阶段一致性不变量。
 
-为什么值得一组测试：对接参数（尤其是 `exhaustiveness`）对分数的影响比盒子更大，
-一旦"逐分子调参"，参数效应就会混进排序。本文件守护三条底线：
+对接参数（尤其是 `exhaustiveness`）对分数的影响大于盒子；一旦按分子逐个调参，
+参数效应就会混进排序。该文件守护三条底线：
 
-1. 同一 `pass`（coarse/fine）内所有行的 `exhaustiveness`、`box_size`、`box_center` 完全一致；
-2. 用户显式指定的参数一律不自动改（`source="user"`）；
-3. 预算护栏只降"精算头部"、且降强度绝不低于基准的一半（精度优先）。
+1. 同一 `pass`（`coarse` / `fine`）内所有行的 `exhaustiveness`、`box_size`、`box_center` 取值一致；
+2. 调用方显式指定的参数不参与自动修改（`source="user"`）；
+3. 预算护栏只降精算头部，降强度不低于基准的一半（精度优先）。
 
-全部用例离线可跑：规则/漏斗/预算用纯函数 + 注入的 pilot 回调；只有一致性用例跑一次
-小规模**真实** Vina（4 个分子，`exhaustiveness=1`），与 `tests/test_box_sizing.py` 口径一致。
+全部用例离线可跑：规则、漏斗与预算用纯函数加注入的 `pilot` 回调；一致性用例实跑一次
+小规模 Vina（4 个分子，`exhaustiveness=1`），与 `tests/test_box_sizing.py` 口径一致。
 """
 from __future__ import annotations
 
@@ -38,13 +38,13 @@ SMALL: List[Dict[str, str]] = [
 
 @pytest.fixture(autouse=True)
 def _isolate_param_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """库统计缓存指向临时目录，避免污染仓库缓存、也保证用例之间互不串扰。"""
+    """库统计缓存指向临时目录，避免污染仓库缓存并保证用例之间互不串扰。"""
     from docking_agent.core import params as P
 
     cache = tmp_path / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(P, "cache_dir", lambda: cache)
-    # 每个用例都从显式默认出发，避免本机 .env / 界面设置影响断言
+    # 每个用例都从显式默认出发，避免本机 `.env` 与界面设置影响断言
     for name in ("AUTO_PARAM_ENABLED", "AUTO_PARAM_PILOT", "AUTO_PARAM_PILOT_N",
                  "AUTO_PARAM_PILOT_MIN", "AUTO_PARAM_BUDGET_RATIO", "AUTO_PARAM_EXH_MIN",
                  "AUTO_PARAM_EXH_MAX", "AUTO_PARAM_BASE_SCREENING", "AUTO_PARAM_BASE_BINDING",
@@ -63,7 +63,7 @@ def _molecules(n: int) -> List[Dict[str, str]]:
 
 def _patch_stats(monkeypatch: pytest.MonkeyPatch, p90: float,
                  heaviest_n: int = 3) -> None:
-    """把 2D 描述符统计替换为固定值，让规则断言与 RDKit 解耦。"""
+    """把 2D 描述符统计替换为固定值，使规则断言与 RDKit 解耦。"""
     from docking_agent.core import params as P
 
     def fake(molecules: Any, *, use_cache: bool = True) -> Dict[str, Any]:
@@ -93,7 +93,7 @@ def test_exhaustiveness_rules_are_deterministic_and_capped(monkeypatch: pytest.M
     assert binding["exhaustiveness"] == 16, "binding_only 基准应为 16"
     assert binding["n_poses"] == 3, "姿态分析需要 3 个位姿"
 
-    # 柔性 9/5 = 1.8；盒 26³ → (26/22) ≈ 1.18 → 16 × 1.8 × 1.18 ≈ 34 → 上限 32
+    # 柔性 9/5 = 1.8；盒 26³ 得 (26/22) ≈ 1.18，16 × 1.8 × 1.18 ≈ 34，取上限 32
     _patch_stats(monkeypatch, p90=9.0)
     big = plan_docking_params(task_type="screening", molecules=_molecules(20),
                               box_size=[26.0, 26.0, 26.0], pilot=None)
@@ -102,7 +102,7 @@ def test_exhaustiveness_rules_are_deterministic_and_capped(monkeypatch: pytest.M
     assert big["flex_factor"] == pytest.approx(1.8, abs=0.01)
     assert big["box_factor"] == pytest.approx(1.18, abs=0.02)
 
-    # 上限 32 生效（柔性 2.5 × 盒系数 2.0 × base 12 = 60 → 夹到 32）
+    # 上限 32 生效（柔性 2.5 × 盒系数 2.0 × base 12 = 60，被夹到 32）
     _patch_stats(monkeypatch, p90=100.0)
     capped = plan_docking_params(task_type="screening", molecules=_molecules(20),
                                  box_size=[60.0, 60.0, 60.0], pilot=None)
@@ -110,19 +110,19 @@ def test_exhaustiveness_rules_are_deterministic_and_capped(monkeypatch: pytest.M
     assert capped["flex_factor"] == pytest.approx(2.5)
     assert capped["box_factor"] == pytest.approx(2.0)
 
-    # properties_only：不规划对接参数
+    # `properties_only`：不规划对接参数
     skipped = plan_docking_params(task_type="properties_only", molecules=_molecules(20),
                                   box_size=[22.0, 22.0, 22.0], pilot=None)
     assert skipped["exhaustiveness"] is None and skipped["n_poses"] is None
 
 
 # --------------------------------------------------------------------------- #
-# 2. 用户显式参数：冻结，不改
+# 2. 调用方显式参数：冻结，不做修改
 # --------------------------------------------------------------------------- #
 def test_user_params_are_never_changed(monkeypatch: pytest.MonkeyPatch) -> None:
     from docking_agent.core.params import plan_docking_params
 
-    _patch_stats(monkeypatch, p90=100.0)          # 静态规则本会算出 32
+    _patch_stats(monkeypatch, p90=100.0)          # 静态规则在此本会算出 32
     called = {"n": 0}
 
     def pilot(_candidates: Any) -> float:
@@ -161,15 +161,15 @@ def test_funnel_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 4. 预算降级顺序：先降头部、再降强度且不低于 base/2
+# 4. 预算降级顺序：先降头部，再降强度且不低于 `base/2`
 # --------------------------------------------------------------------------- #
 def test_budget_degradation_prefers_head_then_strength(monkeypatch: pytest.MonkeyPatch) -> None:
     from docking_agent.core.params import plan_docking_params
 
-    _patch_stats(monkeypatch, p90=5.0)            # base 16 → exh 16，粗筛 ceil(16/4)
+    _patch_stats(monkeypatch, p90=5.0)            # base 16 得 exh 16，粗筛取 ceil(16/4)
     mols, box = _molecules(1000), [22.0, 22.0, 22.0]
 
-    # ① 预估超预算：先把精算头部压到下限 100，再看是否还需要降强度（精度优先）
+    # ① 预估超预算：先把精算头部压到下限 100，再判断是否需要降强度（精度优先）
     mild = plan_docking_params(task_type="screening", molecules=mols, box_size=box,
                                pilot=lambda _c: 0.11)
     assert mild["refine_top_n"] == 100, "应先降精算头部到下限 100"
@@ -177,7 +177,7 @@ def test_budget_degradation_prefers_head_then_strength(monkeypatch: pytest.Monke
     assert mild["eta_sec"] <= mild["budget_sec"]
     assert any("精算头部" in d for d in mild["decisions"]), mild["decisions"][-3:]
 
-    # ② 更贵的试跑（0.30 s/分子）→ 降完头部仍超预算 → 继续降强度，且不低于 base/2 = 8
+    # ② 试跑更贵（0.30 s/分子）：降完头部仍超预算，继续降强度且不低于 base/2 = 8
     harsh = plan_docking_params(task_type="screening", molecules=mols, box_size=box,
                                 pilot=lambda _c: 0.30)
     assert harsh["refine_top_n"] == 100
@@ -191,7 +191,7 @@ def test_budget_degradation_prefers_head_then_strength(monkeypatch: pytest.Monke
 
 
 # --------------------------------------------------------------------------- #
-# 5. 一致性不变量：真实 dock_library 的同一 pass 参数完全一致
+# 5. 一致性不变量：真实 dock_library 的同一 pass 参数取值一致
 # --------------------------------------------------------------------------- #
 def test_real_dock_rows_share_parameters_within_pass() -> None:
     from docking_agent.core import dock_library
@@ -216,8 +216,8 @@ def test_real_dock_rows_share_parameters_within_pass() -> None:
 
 
 def test_merge_funnel_tags_pass_and_keeps_precision() -> None:
-    """漏斗合并（Agent 侧 `_merge_docking_payloads`）：精算行替换粗筛行并保留 affinity_coarse；
-    同 pass 参数一致。`pass`/`affinity_coarse` 由 `molecular_docking` 工具在精算轮次写入。"""
+    """漏斗合并（Agent 侧 `_merge_docking_payloads`）：精算行替换粗筛行并保留 `affinity_coarse`，
+    同一 `pass` 内参数一致。`pass` 与 `affinity_coarse` 由 `molecular_docking` 工具在精算轮次写入。"""
     from docking_agent.agents.persistence import _merge_docking_payloads
 
     def row(name: str, smiles: str, aff: float, exh: int, pass_name: str,
@@ -249,7 +249,7 @@ def test_merge_funnel_tags_pass_and_keeps_precision() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 6. pilot 失败：退回静态规划、不抛异常、有 warning
+# 6. pilot 失败：退回静态规划、不抛异常、产生 warning
 # --------------------------------------------------------------------------- #
 def test_pilot_failure_falls_back_to_static_plan(monkeypatch: pytest.MonkeyPatch,
                                                  caplog: pytest.LogCaptureFixture) -> None:

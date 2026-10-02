@@ -1,13 +1,13 @@
-"""报告渲染的**只读上下文**与共用小工具。
+"""报告渲染的只读上下文与共用小工具。
 
-`build_markdown_report()` 原本是一个 900+ 行的巨型函数：表格/图片编号、盒子溯源、
-口袋章节、逐节排版全挤在同一个函数体里。这里把「算一次、多处复用」的数据集中到
-`ReportContext`，各章节函数（见 `report_sections_setup.py` / `report_sections_results.py`）
-只负责把该节的行拼出来，于是：
+表格与图片编号、盒子溯源、口袋章节、逐节排版不再挤在 `build_markdown_report()`
+的单个函数体里，而是把「算一次、多处复用」的数据集中到 `ReportContext`；
+各章节函数（见 `report_sections_setup.py` / `report_sections_results.py`）
+只负责拼出该节的行。由此得到三项约定：
 
-* 章节顺序仍是**固定**的，由 `report.py:build_markdown_report()` 显式列出；
-* 图/表编号计数器（`fig` / `tbl`）挂在上下文上，跨章节仍然连续且缺图不占号；
-* 每个章节函数都是纯函数式（输入上下文 → `List[str]`），可单独测试与复用。
+* 章节顺序由 `report.py:build_markdown_report()` 显式列出，保持固定；
+* 图/表编号计数器（`fig` / `tbl`）挂在上下文上，跨章节连续且缺图不占号；
+* 每个章节函数都是纯函数式（输入上下文得到 `List[str]`），可单独测试与复用。
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from docking_agent.reporting.tables import rank_molecules
 
 logger = logging.getLogger(__name__)
 
-# 图表产物名 → 本次运行目录内的相对路径（报告内嵌用相对路径；PDF 依此找回 PNG）。
+# 图表产物名到本次运行目录内相对路径的映射（报告内嵌用相对路径；PDF 依此找回 PNG）。
 # 这份映射是唯一事实源：`reporting/artifacts.py` 的 CHART_SPECS 直接复用它。
 # 文件名与产物名一致（`charts/<name>.png`），网页报告页据此把相对路径解析成图片接口。
 CHART_FILES: Dict[str, str] = {
@@ -49,17 +49,17 @@ CHART_FILES: Dict[str, str] = {
     "recommend_chart": "charts/recommend_chart.png",
 }
 
-#: Agent 角色 → 中文名（抬头「各 Agent 模型」与第 0 节调度记录共用）
+#: Agent 角色到中文名的映射（抬头「各 Agent 模型」与第 0 节调度记录共用）
 _ROLE_ZH: Dict[str, str] = {"coordinator": "协调", "property": "属性评估",
                             "docking": "对接执行", "binding": "结合模式",
                             "pocket": "口袋分析", "intake": "任务受理"}
 
 
 def _brief(text: Any, limit: int = 110) -> str:
-    """把「运行笔记 / 推荐理由」这类长文本压成一句话（报告要整洁，PDF 尤其不能整页备注）。
+    """把「运行笔记 / 推荐理由」这类长文本压成一句话（报告版面有限，PDF 尤其不能整页备注）。
 
-    规则：去掉行内加粗标记 → 只取第一个分句（；/。 分句）→ 超长再截断加省略号。
-    完整原文始终保留在 run.json / 结果 JSON 与产物里，报告只呈现核心。
+    规则：去掉行内加粗标记，只取第一个分句（按；/。 分句），超长再截断并加省略号。
+    原文保留在 run.json / 结果 JSON 与产物里，报告只呈现核心。
     """
     import re as _re
 
@@ -79,7 +79,7 @@ def _brief(text: Any, limit: int = 110) -> str:
 
 def _receptor_protonation_lines(result: Dict[str, Any],
                                 ligand_prot: Dict[str, Any]) -> List[str]:
-    """「1.2 受体」里的受体质子化说明（做到了/没做到都要写清，并给出可执行建议）。"""
+    """「1.2 受体」里的受体质子化说明（是否做到都写清，并给出可执行建议）。"""
     from docking_agent.core import receptor_ph
 
     blocks = [b for b in (result.get("receptors") or []) if isinstance(b, dict)]
@@ -89,14 +89,14 @@ def _receptor_protonation_lines(result: Dict[str, Any],
     infos = []
     for b in blocks:
         info = dict(b.get("receptor_protonation") or {})
-        # 标准（模板态）准备也会丢残基：spec 顶层记录，这里合并进来一起呈现
+        # 标准（模板态）准备也会丢残基：spec 顶层记录，这里合并进来一并呈现
         if b.get("dropped_bad_residues") and not info.get("dropped_bad_residues"):
             info["dropped_bad_residues"] = b.get("dropped_bad_residues")
         infos.append((b.get("receptor") or b.get("receptor_key") or "受体", info))
     applied = [(name, info) for name, info in infos if (info or {}).get("applied")]
     for name, info in applied:
         out.append(f"- 受体质子化（{name}）：{receptor_ph.describe(info)}")
-    # 模板不匹配而被丢弃的残基（pH 路径与标准路径都会记录）：必须单列，不能只藏在 detail 里
+    # 模板不匹配而被丢弃的残基（pH 路径与标准路径都会记录）：单列一节，不只留在 detail 里
     for name, info in infos:
         dropped_bad = (info or {}).get("dropped_bad_residues") or []
         if dropped_bad:
@@ -191,7 +191,7 @@ def _pocket_section_lines(result: Dict[str, Any], table_block: Any, figure_block
         receptor_key = str(block.get("receptor_key") or "")
         pocket_rows = [p for p in pockets
                        if not receptor_key or str(p.get("receptor_key") or receptor_key) == receptor_key]
-        # 同一套口袋在多受体块里会完全重复（同结构的不同准备）→ 只印一次
+        # 同一套口袋在多受体块里会重复出现（同结构的不同准备），签名相同则只印一次
         pocket_sig = tuple((p.get("rank"), p.get("name"), p.get("score")) for p in pocket_rows)
         if pocket_rows and pocket_sig not in _printed_pocket_sigs:
             _printed_pocket_sigs.add(pocket_sig)
@@ -233,8 +233,8 @@ def _pocket_section_lines(result: Dict[str, Any], table_block: Any, figure_block
 def _receptor_provenance_text(result: Dict[str, Any]) -> str:
     """「受体来源」一行：哪个数据库、accession/物种、哪个结构、什么方法/精度。
 
-    为什么单独一行：报告要能脱离对话独立交付。早期这份溯源只出现在协调 Agent 的
-    「实际执行」小节里，而结论节按「只留结论/风险」精简后 —— 溯源就丢了。
+    单独成行的理由：报告需要脱离对话独立交付。早期实现只在协调 Agent 的
+    「实际执行」小节里给出溯源，结论节按「只留结论/风险」精简后该信息即丢失。
     """
     prov = result.get("receptor_provenance") or {}
     if not isinstance(prov, dict) or not prov:
@@ -266,7 +266,7 @@ def _receptor_provenance_text(result: Dict[str, Any]) -> str:
 
 
 def _ph_policy_text(prot: Dict[str, Any], suffix: str = "重新分配质子化态") -> str:
-    """ph 策略的中文说明（pH 可能缺失 —— 例如旧运行产物里没有该字段）。"""
+    """ph 策略的中文说明（pH 可能缺失，例如旧运行产物里没有该字段）。"""
     ph = prot.get("ph")
     if isinstance(ph, (int, float)):
         return f"按目标 pH {ph:g} {suffix}"
@@ -274,10 +274,10 @@ def _ph_policy_text(prot: Dict[str, Any], suffix: str = "重新分配质子化�
 
 
 def _cocrystal_control_line(result: Dict[str, Any]) -> str:
-    """报告正文中的一行：受体是否自带共晶配体、是否询问、用户最终怎么选。
+    """报告正文中的一行：受体是否自带共晶配体、是否询问、最终怎么选。
 
-    用户要求：该决定要能**单独追溯**（不必回看对话）。因此这里把三件事写全：
-    检测到的配体（残基名/链:残基号/原子数）、是否询问过、用户的决定与据此采取的动作。
+    该决定要能单独追溯（不必回看对话），因此这里写全三件事：
+    检测到的配体（残基名/链:残基号/原子数）、是否询问过、决定与据此采取的动作。
     """
     offer = result.get("cocrystal_control_offer") or {}
     decision = str(result.get("positive_control_decision") or "").strip().lower()
@@ -299,7 +299,7 @@ class ReportContext:
     """一次报告渲染的只读上下文：所有「算一次」的派生数据与图/表编号都挂在这里。
 
     各章节函数只读本对象，不修改它；图/表编号计数器是唯一的可变状态
-    （`fig_caption` / `tbl_caption` 递增），因此章节必须**按固定顺序**渲染。
+    （`fig_caption` / `tbl_caption` 递增），因此章节须按固定顺序渲染。
     """
 
     def __init__(self, result: Dict[str, Any], *, kind: str = "agent", run_id: str = "",
@@ -327,7 +327,7 @@ class ReportContext:
         self.binding_rows = {r.get("smiles"): r
                              for r in (result.get("binding") or {}).get("rows", [])}
         # 推荐排行（`recommend_compounds` 写在运行数据里）：报告里"展示哪些分子"以它为准，
-        # 不再另按亲和力截取一批（用户要求：报告展示的部分也用推荐的分子）。
+        # 不另按亲和力截取一批，保证展示范围与推荐结果一致。
         rec = result.get("recommendations") or {}
         by_smiles = {m.get("smiles"): m for m in self.full_ranking}
         self.recommended = [
@@ -343,8 +343,8 @@ class ReportContext:
                      if isinstance(m.get("affinity_kcal_mol"), (int, float))
                      and isinstance(self.pc_aff, (int, float))
                      and m["affinity_kcal_mol"] < self.pc_aff]
-        # 运行模式文案：对接统一由 Agent 驱动（记录 60 移除流水线模式），
-        # 历史运行目录里可能仍是旧 kind，保留映射以便旧报告照原样复看。
+        # 运行模式文案：对接统一由 Agent 驱动（流水线模式已移除），
+        # 旧运行目录里可能仍是旧 kind，保留映射以便旧报告照原样复看。
         self.mode_zh = {"agent": "多 Agent 协作", "studio": "多 Agent 协作（Studio）",
                         "pipeline": "确定性流水线（历史记录）"}.get(
             str(kind or "agent"), "多 Agent 协作")
@@ -355,8 +355,8 @@ class ReportContext:
         self.custom = custom if isinstance(custom, dict) else {}
         self.requested_columns = [str(c) for c in (self.custom.get("extra_columns") or [])
                                   if str(c) in REPORT_FIELD_LABELS]
-        # 数据自带分子 ID（来自输入文件、且与名称不同）→ 默认也带上 ID 列：
-        # 报告应当跟着**本次数据**走，而不是永远只印固定的那几列。
+        # 数据自带分子 ID（来自输入文件、且与名称不同）时默认带上 ID 列：
+        # 报告跟随本次数据的字段，不固定输出同一组列。
         _id_rows = [r for r in self.full_ranking if str(r.get("id") or "").strip()]
         _id_distinct = any(str(r.get("id")) != str(r.get("name")) for r in _id_rows)
         self.extra_columns = list(self.requested_columns)
@@ -366,7 +366,7 @@ class ReportContext:
         # ---- 图/表编号：按出现顺序连续编号（缺图/缺表时不占号，编号始终连续）----
         self.counters: Dict[str, int] = {"fig": 0, "tbl": 0}
 
-        # ---- 章节里固定要用的派生量（原实现按出现顺序就地计算，这里集中算好）----
+        # ---- 章节里固定要用的派生量（集中计算，不再按章节出现顺序就地计算）----
         self.center_txt, self.size_txt = self._box_center_size()
         self.seed_value, self.seed_policy = _seed_info(result)
         self.prot = protonation_summary(self.full_ranking)
@@ -406,7 +406,7 @@ class ReportContext:
         return [f"**{self.tbl_caption(title)}**", "", _table(headers, rows, aligns), ""]
 
     def figure_block(self, name: str, title: str, note: str = "") -> List[str]:
-        """图：图片 + 图题（缺产物时不嵌图，也不占用图号）。"""
+        """图：图片与图题（缺产物时不嵌图，也不占用图号）。"""
         rel = CHART_FILES.get(name)
         if not rel or (self.available and name not in self.available):
             return []
@@ -418,10 +418,10 @@ class ReportContext:
         return out
 
     def figure_by_rel(self, rel: str, title: str) -> List[str]:
-        """按**相对路径**内嵌图片（用于按名次动态生成的 2D/3D 姿态图）。
+        """按相对路径内嵌图片（用于按名次动态生成的 2D/3D 姿态图）。
 
         与 `figure_block` 的区别：这些图的产物名在编译期未知（`interaction_2d_01` 等），
-        因此按「文件是否真的在产物清单里」判断，避免引用不存在的图。
+        因此按「文件是否在产物清单里」判断，避免引用不存在的图。
         """
         name = rel.rsplit("/", 1)[-1][:-4]
         if self.available and name not in self.available:
@@ -542,8 +542,8 @@ class ReportContext:
     def agent_section_lines(self) -> List[str]:
         """Agent 自定义小节（`customize_report` 的 `sections`）：结构固定、内容由 Agent 写。
 
-        用户要求"有格式的自由"：报告的骨架/表格由脚本保证口径与可复现，文字部分允许 Agent
-        按需追加小节（标题+正文，纯 Markdown 片段）。没写就不占章节。
+        报告的骨架与表格由脚本保证口径与可复现，文字部分允许 Agent
+        按需追加小节（标题与正文，纯 Markdown 片段）。没有内容时不占章节。
         """
         spec = self.result.get("report_customization") or {}
         lines: List[str] = []
@@ -556,7 +556,7 @@ class ReportContext:
         return lines
 
     def param_plan_lines(self) -> List[str]:
-        """「1.5 参数自动规划」：没有规划内容时返回空列表（不占章节）。"""
+        """「1.5 参数自动规划」：没有规划内容时返回空列表（该节不出现）。"""
         if not _param_plan(self.result):
             return []
         return _param_plan_lines(self.result, "### 1.5 参数自动规划",

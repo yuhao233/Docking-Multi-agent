@@ -1,22 +1,22 @@
 """大库（上万分子）在 Agent 模式下的上下文安全与数据完整性。
 
-背景（量化）：Agent 的上下文会被分子数线性撑大 ——
-  - 分子清单 ~50 B/分子 → 1 万条 ≈ 0.5 MB ≈ 13 万 tokens；
-  - 对接结果 ~491 B/分子 → 1 万条 ≈ **4.7 MB ≈ 130 万 tokens**；
-  - 子 Agent 还要把结果再输出一遍（输出上限更低）→ 必然截断 → JSON 不合法。
+背景（量化）：Agent 的上下文会被分子数线性撑大。
+  - 分子清单 ~50 B/分子，1 万条 ≈ 0.5 MB ≈ 13 万 tokens；
+  - 对接结果 ~491 B/分子，1 万条 ≈ 4.7 MB ≈ 130 万 tokens；
+  - 子 Agent 还要把结果再输出一遍（输出上限更低），会产生截断，JSON 随之不合法。
 任何上下文窗口都装不下，因此约定：
 
-  工具把**完整结果落盘**（运行目录 + 共享黑板），
+  工具把全量结果落盘（运行目录 + 共享黑板），
   小结果（≤ AGENT_TOOL_TOP_N 条）保持原有完整结构回传，
   大结果只回 `summary + top N + artifacts`（`detail_omitted: true`），
-  落盘层与报告工具**从产物/黑板读全量**。
+  落盘层与报告工具从产物与黑板读全量。
 
-本文件用合成数据（不跑真实 Vina）验证这条链路，包含：
+本测试文件用合成数据（不跑真实 Vina）验证这条链路，包含：
   1. 1 万条对接结果：回传给模型的载荷有界（≤ 64 KB），产物里有全部 1 万条；
   2. 落盘层能从产物恢复全部 1 万条（不依赖模型回显）；
   3. 1 万条分子清单同样有界，且子 Agent 工具能留空参数直接读黑板；
   4. 报告工具留空参数也能从黑板出图出表；
-  5. 小库行为完全不变（向后兼容：原有完整结构）。
+  5. 小库行为保持不变（向后兼容：原有完整结构）。
 """
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ MODEL_PAYLOAD_LIMIT = 64 * 1024      # 单次回传给模型的载荷上限（�
 def _smiles(i: int) -> str:
     """生成互不相同的 SMILES（两个取代基轴：1..100 × 0..99 = 1 万种组合）。
 
-    注意不能用「链长」当唯一轴：链长相同但支链不同的写法会被 RDKit 规范化成同一个分子，
-    在去重后数量会缩水，测不出「1 万条」。
+    不能只用「链长」当唯一轴：链长相同但支链不同的写法会被 RDKit 规范化成同一个分子，
+    去重后数量会缩水，测不出「1 万条」。
     """
     a = 1 + (i % 100)
     b = i // 100
@@ -74,7 +74,7 @@ def _docking_output(rows):
                            "results": rows}]}
 
 
-#: `run_ctx`（真实 Run + 黑板上下文）定义在 `tests/conftest.py` —— 非引擎用例也要用它。
+#: `run_ctx`（真实 Run + 黑板上下文）定义在 `tests/conftest.py`，非引擎用例也要用它。
 
 
 # --------------------------------------------------------------------------- #
@@ -101,14 +101,14 @@ def test_big_docking_payload_is_bounded_but_full_detail_is_saved(run_ctx, monkey
     assert len(out["top"]) == tool_io.summary_limit()
     assert out["top"][0]["affinity_kcal_mol"] == -11.9, "top 应按亲和力升序取最优"
 
-    # 完整明细必须落在运行产物里
+    # 全量明细必须落在运行产物里
     saved = json.loads((run.dir / "docking_tool.json").read_text(encoding="utf-8"))
     assert len(saved["receptors"][0]["results"]) == BIG
     assert saved["receptors"][0]["box_source"].startswith("实验位点")
 
 
 def test_persist_recovers_all_rows_from_tool_artifact(run_ctx, monkeypatch):
-    """落盘层必须能从产物恢复全部 1 万条 —— 即使模型一个字都没回显。"""
+    """落盘层必须能从产物恢复全部 1 万条，即使模型一个字都没回显。"""
     from docking_agent.agents import persistence
 
     run, board = run_ctx
@@ -117,7 +117,7 @@ def test_persist_recovers_all_rows_from_tool_artifact(run_ctx, monkeypatch):
     molecules = [{"name": r["name"], "smiles": r["smiles"]} for r in rows]
     tool_io.record("molecules", molecules)
 
-    # 消息历史里**没有**任何结果（模拟模型只回了摘要）
+    # 消息历史里没有任何结果（模拟模型只回了摘要）
     result = persistence.persist_agent_run(
         run, [], "已按摘要汇报，明细见产物")
 
@@ -203,7 +203,7 @@ def test_report_tool_reports_no_data_clearly(run_ctx):
 
 
 # --------------------------------------------------------------------------- #
-# 4) 向后兼容：小库行为完全不变
+# 4) 向后兼容：小库行为保持不变
 # --------------------------------------------------------------------------- #
 def test_small_library_keeps_legacy_payload(run_ctx, monkeypatch):
     from docking_agent.tools import docking as dock_tool
@@ -238,7 +238,7 @@ def test_view_limit_is_configurable_and_is_not_a_molecule_cap(monkeypatch):
 
 
 def test_ranking_works_for_docking_only_runs(run_ctx):
-    """只跑对接（没有理化性质）时也必须能出排序表 —— 否则报告会出现空档。"""
+    """只跑对接（没有理化性质）时也必须能出排序表，否则报告会出现空档。"""
     from docking_agent.agents import persistence
     from docking_agent.core import merge_and_rank
 
@@ -255,7 +255,7 @@ def test_ranking_works_for_docking_only_runs(run_ctx):
 
 
 def test_huge_inline_library_is_offloaded_to_a_file(tmp_path):
-    """用户直接粘贴上万条 SMILES 时，指令里不能内嵌全量清单（≈13 万 tokens）。"""
+    """调用方直接粘贴上万条 SMILES 时，指令里不能内嵌全量清单（≈13 万 tokens）。"""
     from docking_agent import intake
     from docking_agent.api.schemas import AgentRequest
 
@@ -299,9 +299,9 @@ def test_ligand_readers_accept_colon_format(tmp_path):
 def test_concurrency_plan_is_threads_first() -> None:
     """并发规划必须「线程优先」。
 
-    实测（32 逻辑核）：64 分子上 4 进程 × 8 线程 = 38.5s，比 24 进程 × 1 线程 = 70.4s 快 1.8×，
+    32 逻辑核上的测量结果：64 分子上 4 进程 × 8 线程 = 38.5s，比 24 进程 × 1 线程 = 70.4s 快 1.8×，
     且总 CPU 更少（716 vs 1003 CPU·s）。因此计划必须满足：
-      · 线程数取到实测饱和点（≥4，通常 8）；
+      · 线程数取到饱和点（≥4，通常 8）；
       · 进程数按「可用核 / 线程数」定（不超订），且不超过分子数与内存护栏；
       · 分子数少时进程数按分子数收缩（2 个分子不该起 4 个进程）。
     """
@@ -314,7 +314,7 @@ def test_concurrency_plan_is_threads_first() -> None:
     one = plan_concurrency(1)
     assert one["workers"] == 1, one
     assert one["threads"] == t_max, one              # 单分子把线程打满
-    # 计划里必须带上机器画像（部署后能看清"为什么是这个并发"）
+    # 计划里必须带上机器画像（部署后能看清该并发配置的依据）
     assert one["logical"] == profile["logical"] and one["source"] == profile["source"], one
 
     small = plan_concurrency(2)
@@ -341,7 +341,7 @@ def test_plan_concurrency_respects_explicit_workers(monkeypatch):
 
 
 def test_ligand_cost_ranks_flexible_molecules_higher():
-    """成本估计要能区分柔性长链与刚性小环 —— 决定谁先跑。"""
+    """成本估计要能区分柔性长链与刚性小环，据此决定谁先跑。"""
     from docking_agent.core.docking import _ligand_cost
 
     assert _ligand_cost("CCO") < _ligand_cost("CCCCCCCCCCCCCCCCCCCC(=O)O")
@@ -354,10 +354,10 @@ def _fake_worker(item):  # 模块级：只有模块级函数才能 pickle 进 wo
 
 
 def test_dock_batch_reports_concurrency(monkeypatch, caplog):
-    """结果里的顺序必须与输入一致，且**实际并发配置**要能观测到（日志播报）。
+    """结果里的顺序必须与输入一致，且实际并发配置要能观测到（日志播报）。
 
-    注意：所有对接都在 worker 进程里跑（这样任何分子数都能被「停止」杀掉），
-    因此这里必须用**模块级**假 worker（局部函数无法 pickle），不能再 monkeypatch 父进程的
+    所有对接都在 worker 进程里跑（这样任何分子数都能被「停止」杀掉），
+    因此这里必须用模块级假 worker（局部函数无法 pickle），不能再 monkeypatch 父进程的
     `DockingSession`。
     """
     import logging
@@ -381,10 +381,10 @@ def test_dock_batch_reports_concurrency(monkeypatch, caplog):
 def test_scores_are_independent_of_batch_and_workers():
     """同一分子的分数必须与「批次组成 / 提交顺序 / 进程数」无关（可复现性的硬要求）。
 
-    背景：审计时担心 Vina 的随机数流是会话级的 —— 那么同一分子在 8 进程并行批里
+    背景：曾担心 Vina 的随机数流是会话级的，那么同一分子在 8 进程并行批里
     与单独对接时分数会不同，增量筛选（后加分子重跑）就没法对比。
-    实测结论：Vina 每次 `dock()` 都按构造种子重新开始采样，分数只取决于
-    (受体, 盒子, 分子, 参数)。这条测试把该结论固定下来，防止将来换引擎/改封装后悄悄退化。
+    测量结论：Vina 每次 `dock()` 都按构造种子重新开始采样，分数只取决于
+    (受体, 盒子, 分子, 参数)。这条测试把该结论固定下来，防止将来换引擎或改封装后退化。
     """
     import pytest
 
@@ -403,7 +403,7 @@ def test_scores_are_independent_of_batch_and_workers():
         {"name": "M7", "smiles": "c1ccc2ccccc2c1"},
         {"name": "M8", "smiles": "CCCCCCCC(=O)O"},
     ]
-    # 8 个分子 → 多进程并行（plan_concurrency: 8 → 8 进程）
+    # 8 个分子即多进程并行（plan_concurrency: 8 对应 8 进程）
     batch = {r["name"]: r for r in dock_batch(spec, mols, exhaustiveness=8, n_poses=1)}
     solo = dock_batch(spec, [mols[4]], exhaustiveness=8, n_poses=1)[0]
     assert batch["M5"]["affinity_kcal_mol"] == solo["affinity_kcal_mol"], \
@@ -418,7 +418,7 @@ def test_scores_are_independent_of_batch_and_workers():
 
 
 # --------------------------------------------------------------------------- #
-# A 方案：两阶段漏斗（粗筛 → 精算）+ 精度优先合并 + 分片护栏
+# A 方案：两阶段漏斗（先粗筛后精算）+ 精度优先合并 + 分片护栏
 # --------------------------------------------------------------------------- #
 def test_funnel_settings_and_advice(monkeypatch):
     from docking_agent.runtime import tool_io
@@ -506,7 +506,7 @@ def test_refine_without_previous_result_says_so(run_ctx, monkeypatch):
 
 
 def test_plan_concurrency_adapts_to_deployed_machine(monkeypatch) -> None:
-    """并发规划必须**由部署机器的属性推导**，而不是写死某台机器的值。
+    """并发规划必须由部署机器的属性推导，而不是写死某台机器的值。
 
     三种真实部署形态都要给出合理配置（探针被替换成模拟值，走的是同一条真实代码路径）：
       · 容器 `--cpus=4`（宿主 32 核）：必须听 cgroup 配额，不能按宿主 32 核规划（否则超订 8 倍）；
@@ -526,7 +526,7 @@ def test_plan_concurrency_adapts_to_deployed_machine(monkeypatch) -> None:
 
     prof, plan = sim(cpu_count=32, quota=4.0)          # 容器限 4 核
     assert prof["logical"] == 4 and prof["source"] == "cgroup 配额", prof
-    assert plan["workers"] * plan["threads"] <= 5, plan      # 绝不按宿主的 32 核铺开
+    assert plan["workers"] * plan["threads"] <= 5, plan      # 不按宿主的 32 核铺开
 
     prof, plan = sim(cpu_count=32, affinity=6)          # cpuset 6 核
     assert prof["logical"] == 6 and prof["source"] == "CPU 亲和性", prof
@@ -541,8 +541,8 @@ def test_plan_concurrency_adapts_to_deployed_machine(monkeypatch) -> None:
 
 
 def test_persist_merges_every_docking_call_not_only_the_last(run_ctx) -> None:
-    """多次对接调用必须全部落盘：产物文件只保存**最后一次**调用的原文，
-    历史调用只在消息历史里 —— 两者必须合并，否则分批对接/蛋白质库的早先受体块会被静默丢掉。
+    """多次对接调用必须全部落盘：产物文件只保存最后一次调用的原文，
+    历史调用只在消息历史里，两者必须合并，否则分批对接或蛋白质库的早先受体块会被静默丢掉。
 
     真实场景：协调 Agent 先对受体 A 调一次 run_docking，再对受体 B 调一次；
     `docking_tool.json` 被第二次覆盖，若不合并，报告里就只剩 B。

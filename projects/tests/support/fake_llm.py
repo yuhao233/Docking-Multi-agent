@@ -1,12 +1,12 @@
-"""可复用的假 LLM 测试脚手架：脚本化假模型驱动**真实**多 Agent 编排。
+"""可复用的假 LLM 测试脚手架：脚本化假模型驱动多 Agent 编排，工具按生产路径执行。
 
-从 `scripts/smoke_test.py`（保持原样，不修改）里的 `ScriptedChat` / `fake_llm_factory`
-抽出并泛化，供各测试模块复用。特点：
+`ScriptedChat` 与 `fake_llm_factory` 从 `scripts/smoke_test.py`（保持原样，不修改）抽出并泛化，
+供各测试模块复用。特点：
 
-- 不访问网络、不需要真实 LLM；
-- 工具真实执行：真实 RDKit 计算、真实 Vina 对接、真实报告产物；
-- 既能驱动协调 Agent 的**多步工具链**（导入库 → 性质 → 对接 → 结合模式 → 报告），
-  也能让子 Agent 从分发指令里解析参数后调用自己的工具。
+- 不访问网络，不需要在线 LLM；
+- 工具实际执行：RDKit 计算、Vina 对接与报告产物均走生产实现；
+- 支持协调 Agent 的多步工具链（导入库、性质评估、对接、结合模式、报告），
+  子 Agent 可从分发指令里解析参数后调用自身工具。
 
 典型用法（配合标准 Agent Protocol 路径）::
 
@@ -15,9 +15,9 @@
     def _run_agent(client, body, monkeypatch):
         return run_agent(client, coordinator_script_for_form(body), body, monkeypatch)
 
-`run_agent` 会：装上假 LLM → `POST /threads` → `POST /threads/{tid}/runs/stream`
-（assistant_id=coordinator）→ 从 SSE 帧里取回业务 `run_id`，随后可用
-`GET /api/runs/{run_id}` 做原有断言。
+`run_agent` 的执行顺序为：安装假 LLM，`POST /threads` 建立线程，再调用
+`POST /threads/{tid}/runs/stream`（assistant_id=coordinator）；从 SSE 帧里取回业务
+`run_id` 后，可用 `GET /api/runs/{run_id}` 做原有断言。
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Tool
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-#: 各工具的最小合法入参（供假模型在无指令可解析时兜底构造 tool_call）
+#: 各工具的最小合法入参，供假模型在无指令可解析时兜底构造 tool_call
 TOOL_ARGS: Dict[str, Dict[str, Any]] = {
     "import_molecule_library": {"query_or_text": "CCO,CC(=O)Oc1ccccc1C(=O)O"},
     "run_property_assessment": {},
@@ -44,7 +44,7 @@ TOOL_ARGS: Dict[str, Dict[str, Any]] = {
     "generate_screening_report": {"aggregated_json": ""},
 }
 
-#: 子 Agent 优先调用的工具（避免误选辅助工具或结构化输出工具）
+#: 子 Agent 优先调用的工具，避免选中辅助工具或结构化输出工具
 _PREFERRED_TOOLS: Tuple[str, ...] = (
     "molecular_docking",
     "molecular_property_assessment",
@@ -54,15 +54,15 @@ _PREFERRED_TOOLS: Tuple[str, ...] = (
 
 
 def step(name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """构造一步脚本化的工具调用（供协调 Agent 假模型按序执行）。"""
+    """构造一步脚本化的工具调用，供协调 Agent 假模型按序执行。"""
     return {"name": name, "args": dict(args or {})}
 
 
 # --------------------------------------------------------------------------- #
-# 从分发指令里解析子 Agent 工具入参（模拟真实模型「照指令传参」）
+# 从分发指令里解析子 Agent 工具入参（模拟模型照指令传参的行为）
 # --------------------------------------------------------------------------- #
 def agent_params_marker() -> str:
-    """参数块标记 —— 直接取**生产代码里的常量**（契约单一来源，避免两处漂移）。"""
+    """参数块标记，直接取自生产代码里的常量，契约只有单一来源，避免两处漂移。"""
     from docking_agent.agents.dispatch import AGENT_PARAMS_MARKER  # noqa: PLC0415
 
     return AGENT_PARAMS_MARKER
@@ -71,10 +71,10 @@ def agent_params_marker() -> str:
 def parse_agent_params(text: str) -> Dict[str, Any]:
     r"""从分发指令末尾的 `任务参数(JSON)：{...}` 里取出子 Agent 的工具入参。
 
-    **这是唯一的参数契约**（`tools/dispatch.AGENT_PARAMS_MARKER`）：JSON 的键就是工具参数名。
-    旧实现用正则反解散文（`（molecules_json）：(.*?)；`、`exhaustiveness=(\d+), n_poses=(\d+)`、
-    `site_center=\[([^\]]+)\]` …）—— 协调层一旦改标点/措辞，测试就静默失配（或解析出空参数），
-    而真实模型"照指令传参"也会跟着错。现在两边读同一份结构化数据。
+    参数契约只有这一处（`tools/dispatch.AGENT_PARAMS_MARKER`）：JSON 的键就是工具参数名。
+    先前的实现用正则反解散文（`（molecules_json）：(.*?)；`、`exhaustiveness=(\d+), n_poses=(\d+)`、
+    `site_center=\[([^\]]+)\]` …），协调层改动标点或措辞后测试会静默失配（或解析出空参数），
+    模型照指令传参时同样出错。改为两边读同一份结构化数据。
     """
     raw_text = str(text or "")
     marker = agent_params_marker()
@@ -90,11 +90,11 @@ def parse_agent_params(text: str) -> Dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         return {}
-    # JSON 里没有的键 = 未指定（派发侧已经剔除了空值）
+    # JSON 中缺失的键视为未指定，派发侧已经剔除空值
     return {k: v for k, v in data.items() if v is not None}
 
 
-#: 兼容入口：两个解析器现在等价（参数只有 JSON 一种形态）
+#: 兼容入口：两个解析器行为一致，参数只有 JSON 一种形态
 def parse_docking_instruction(text: str) -> Dict[str, Any]:
     return parse_agent_params(text)
 
@@ -105,7 +105,7 @@ def parse_binding_instruction(text: str) -> Dict[str, Any]:
 
 _INSTRUCTION_PARSERS: Dict[str, Callable[[str], Dict[str, Any]]] = {
     "molecular_docking": parse_docking_instruction,
-    "molecular_property_assessment": parse_agent_params,   # 只吃 molecules_file
+    "molecular_property_assessment": parse_agent_params,   # 只读取 molecules_file
     "binding_mode_analysis": parse_binding_instruction,
     "predict_binding_pockets": parse_agent_params,
 }
@@ -117,10 +117,10 @@ _INSTRUCTION_PARSERS: Dict[str, Callable[[str], Dict[str, Any]]] = {
 class ScriptedChat(BaseChatModel):
     """脚本化假模型。
 
-    - 协调 Agent（role="coordinator"）：按 `script` 里的工具名**逐步**调用，每一步拿到
-      工具回执后再发下一步；脚本走完回一个最终回答（完整回显最后一个工具结果）。
-    - 子 Agent：优先调用 `_PREFERRED_TOOLS` 里它绑定的那个工具；可从最后一条人类指令里
-      解析参数（如 `molecular_docking` 的受体/分子/参数），拿不到就用兜底入参。
+    - 协调 Agent（role="coordinator"）：按 `script` 里的工具名逐步调用，每一步收到工具
+      回执后再发下一步；脚本走完后返回最终回答，回显最后一个工具结果的全文。
+    - 子 Agent：优先调用 `_PREFERRED_TOOLS` 中它绑定的工具；可从最后一条人类指令里
+      解析参数（如 `molecular_docking` 的受体、分子与参数），解析不到时使用兜底入参。
     """
 
     script: List[Dict[str, Any]] = Field(default_factory=list)
@@ -210,7 +210,7 @@ class ScriptedChat(BaseChatModel):
 
 def fake_llm_factory(*, script: Optional[List[Dict[str, Any]]] = None,
                      force_tool: Optional[str] = None) -> Callable[..., ScriptedChat]:
-    """返回 `build_chat_llm` 的替身工厂（签名与真实实现兼容：ctx/role 关键字）。"""
+    """返回 `build_chat_llm` 的替身工厂，签名与生产实现兼容，接受 ctx/role 关键字。"""
 
     def _factory(ctx: Any = None, role: str = "", **kwargs: Any) -> ScriptedChat:
         if role == "coordinator":
@@ -224,10 +224,10 @@ def fake_llm_factory(*, script: Optional[List[Dict[str, Any]]] = None,
 def install_fake_llm(monkeypatch: Any, *,
                      script: Optional[List[Dict[str, Any]]] = None,
                      force_tool: Optional[str] = None) -> None:
-    """把假 LLM 装到协调 Agent 与子 Agent 上，并让产物图在本次用例里重建。
+    """把假 LLM 安装到协调 Agent 与子 Agent 上，并在本次用例里重建产物图。
 
-    - 重置子 Agent（`reset_workers`）与 API 缓存的图，确保本次脚本生效；
-    - `monkeypatch` 会在用例结束后自动还原模块属性与图缓存。
+    - 重置子 Agent（`reset_workers`）与 API 缓存的图，使本次脚本生效；
+    - `monkeypatch` 在用例结束后还原模块属性与图缓存。
     """
     from docking_agent.agents import coordinator as coordinator_mod
     from docking_agent.agents import workers as workers_mod
@@ -242,10 +242,10 @@ def install_fake_llm(monkeypatch: Any, *,
 
 
 # --------------------------------------------------------------------------- #
-# 表单 → 假 LLM 脚本 / 标准面入参
+# 表单与假 LLM 脚本、标准面入参之间的转换
 # --------------------------------------------------------------------------- #
 def molecules_json_from_text(ligands_text: str) -> str:
-    """把「名称:SMILES,名称:SMILES」文本解析成分子 JSON（模拟模型照指令转 JSON）。"""
+    """把「名称:SMILES,名称:SMILES」文本解析成分子 JSON，模拟模型照指令转 JSON 的行为。"""
     from docking_agent.core import parse_smiles_text
 
     return json.dumps(parse_smiles_text(ligands_text), ensure_ascii=False)
@@ -254,9 +254,9 @@ def molecules_json_from_text(ligands_text: str) -> str:
 def coordinator_script_for_form(body: Dict[str, Any]) -> List[Dict[str, Any]]:
     """把「原流水线表单」翻译成协调 Agent 的多步工具脚本。
 
-    语义与原表单一致：分子来源（`ligands_text` / `molecule_file`）、受体来源
+    字段语义与原表单一致：分子来源（`ligands_text` / `molecule_file`）、受体来源
     （`receptor_file` 优先，其次 `receptor`）、`positive_control`、`exhaustiveness`、
-    `engine`、`n_poses`。有阳性对照时才跑结合模式对照分析。
+    `engine`、`n_poses`。仅在存在阳性对照时执行结合模式对照分析。
     """
     steps: List[Dict[str, Any]] = []
     molecule_file = str(body.get("molecule_file") or "")
@@ -264,8 +264,8 @@ def coordinator_script_for_form(body: Dict[str, Any]) -> List[Dict[str, Any]]:
     if molecule_file:
         steps.append(step("import_molecule_library", {"molecule_file": molecule_file}))
     elif ligands_text:
-        # `import_molecule_library` 的归一化层不认「名称:SMILES,名称:SMILES」这种混合文本，
-        # 真实模型会把指令里的清单转成 JSON 再传（这里用确定性解析器模拟）。
+        # `import_molecule_library` 的归一化层不识别「名称:SMILES,名称:SMILES」混合文本，
+        # 模型会把指令里的清单转成 JSON 再传，此处用确定性解析器模拟该行为。
         steps.append(step("import_molecule_library",
                           {"query_or_text": molecules_json_from_text(ligands_text)}))
     else:
@@ -294,7 +294,7 @@ def coordinator_script_for_form(body: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def agent_input_from_form(body: Dict[str, Any], *, message: str = "") -> Dict[str, Any]:
-    """把表单语义包成标准 `input`（`mode="manual"`，参数即权威）。"""
+    """把表单语义包装成标准 `input`；`mode="manual"` 表示参数为准。"""
     payload = dict(body)
     payload.setdefault("mode", "manual")
     payload.setdefault("message", message or "请按表单参数完成一次完整的分子筛选。")
@@ -303,7 +303,7 @@ def agent_input_from_form(body: Dict[str, Any], *, message: str = "") -> Dict[st
 
 
 def business_run_id_from_sse(text: str) -> str:
-    """从标准 SSE 报文里取业务 run id（`start` 事件的 `run_id` / `business_run_id`）。"""
+    """从标准 SSE 报文里取业务 run id，来源为 `start` 事件的 `run_id` / `business_run_id`。"""
     fallback = ""
     for line in (text or "").splitlines():
         if not line.startswith("data: "):
@@ -326,7 +326,7 @@ def business_run_id_from_sse(text: str) -> str:
 def run_agent(client: Any, script: List[Dict[str, Any]], body: Dict[str, Any],
               monkeypatch: Any, *, assistant_id: str = "coordinator",
               message: str = "") -> str:
-    """装上假 LLM → 建线程 → 标准面流式执行 → 返回业务 run_id。"""
+    """安装假 LLM，建立线程并走标准面流式执行，返回业务 run_id。"""
     install_fake_llm(monkeypatch, script=script)
     thread_id = client.post("/threads", json={}).json()["thread_id"]
     resp = client.post(

@@ -1,19 +1,19 @@
-"""外部对接引擎：用户自行安装，系统只负责登记、探测与调用。
+"""外部对接引擎：使用者自行安装，系统只负责登记、探测与调用。
 
 设计取舍
 --------
-GPU 版对接工具（Vina-GPU / Uni-Dock / AutoDock-GPU 等）编译与驱动依赖复杂，随项目分发不现实，
-因此约定：**二进制由用户在设置页提供路径**，本项目不新增引擎身份 —— 外部工具是 `vina` 引擎的
+GPU 版对接工具（Vina-GPU / Uni-Dock / AutoDock-GPU 等）的编译与驱动依赖复杂，随项目分发不现实，
+因此约定二进制路径由调用方在设置页提供，本项目不新增引擎身份：外部工具是 `vina` 引擎的
 另一种执行器（同一打分函数族、不同运行后端）。
 
-本模块是探测与适配的**唯一实现**：设置页的「检测」按钮、`scripts/doctor.sh`、引擎调度与
-报告标注都从这里取结果，避免出现"设置页说可用、实际不可用"。
+本模块是探测与适配的唯一实现：设置页的「检测」按钮、`scripts/doctor.sh`、引擎调度与
+报告标注都从这里取结果，避免设置页显示可用而实际不可用。
 
-三种边界行为（对应"不静默"原则）：
+三种边界行为（对应不静默原则）：
 
-* 未提供路径 → 使用内置 CPU Vina，行为与现在完全一致；
-* 提供路径但探测不通过 → **拒绝启动**并给出补齐方法，不静默回退；
-* 提供路径且探测通过 → 记录引擎类型、版本与设备状态，供执行适配与报告标注使用。
+* 未提供路径：使用内置 CPU Vina，行为与既有实现一致；
+* 提供路径但探测不通过：拒绝启动并给出补齐方法，不静默回退；
+* 提供路径且探测通过：记录引擎类型、版本与设备状态，供执行适配与报告标注使用。
 """
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ from docking_agent.config import env, env_int
 
 logger = logging.getLogger(__name__)
 
-#: 用户提供的对接可执行文件（Vina 兼容）—— 填了它 = **改用它执行对接**
+#: 调用方提供的对接可执行文件（Vina 兼容）；填写后对接由该文件执行
 ENV_DOCKING_BIN = "EXTERNAL_DOCKING_BIN"
-#: 仅**登记/探测**用的 CPU 版 Vina CLI 路径（不改执行路径；留空则自动看 PATH）
+#: 仅用于登记与探测的 CPU 版 Vina CLI 路径（不改执行路径；留空时在 PATH 上查找）
 ENV_VINA_BIN = "VINA_BIN"
 #: GPU 设备序号（多卡机器用）
 ENV_GPU_DEVICE = "GPU_DEVICE"
@@ -50,19 +50,19 @@ class ExternalEngineError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- #
-# 引擎类型识别：不新增引擎身份，只识别"这是哪一类 Vina 兼容 CLI"
+# 引擎类型识别：不新增引擎身份，只识别该 CLI 属于哪一类 Vina 兼容实现
 # --------------------------------------------------------------------------- #
 #: (flavor, 显示名, 版本输出中出现的特征串)
 FLAVORS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
-    # CPU 版官方 CLI（`vina --version` → "AutoDock Vina 1.2.7" / "AutoDock Vina <git-hash>"）：
-    # 与内置绑定同一打分函数，不要求 GPU —— 用于「只登记路径、不改默认执行」的场景。
+    # CPU 版官方 CLI 的版本输出形如 "AutoDock Vina 1.2.7" / "AutoDock Vina <git-hash>"：
+    # 与内置绑定同一打分函数且不要求 GPU，用于只登记路径、不改默认执行的场景。
     ("vina-cpu", "AutoDock Vina（CPU CLI）", ("autodock vina",)),
     ("unidock", "Uni-Dock", ("unidock", "uni-dock")),
     ("vina-gpu", "Vina-GPU", ("vina-gpu", "vinagpu", "quickvina2-gpu", "quickvina-w-gpu")),
     ("autodock-gpu", "AutoDock-GPU", ("autodock-gpu", "autodock_gpu", "autodockgpu")),
 )
 
-#: 需要 GPU 的类型：只有这些才在探测时校验设备可见性（CPU CLI 不该因为“没有 GPU”被判不可用）
+#: 需要 GPU 的类型：只有这些在探测时校验设备可见性（CPU CLI 不因缺少 GPU 被判为不可用）
 GPU_FLAVORS = frozenset({"unidock", "vina-gpu", "autodock-gpu"})
 
 #: 各类型的调用形状（P1 执行适配用；P0 只生成并校验 argv）
@@ -102,7 +102,7 @@ def _first_version_line(text: str) -> str:
 # 探测
 # --------------------------------------------------------------------------- #
 def configured_bin() -> str:
-    """用户在设置页填写的对接可执行文件路径；未填写返回空串。"""
+    """设置页填写的对接可执行文件路径；未填写时返回空串。"""
     return str(env(ENV_DOCKING_BIN, "") or "").strip()
 
 
@@ -115,12 +115,12 @@ def gpu_batch_size() -> int:
 
 
 def vina_cli_bin() -> str:
-    """定位 CPU 版 AutoDock Vina CLI：`VINA_BIN` → PATH。找不到返回空串。
+    """定位 CPU 版 AutoDock Vina CLI：先取 `VINA_BIN`，其次在 PATH 上查找。找不到返回空串。
 
-    与 `external.docking_bin` 的区别（重要）：
-      * 本函数只用于**登记与探测**（设置页「检测」/ `doctor.sh` / 报告标注）；
-      * 真正「改用它执行对接」要填 `EXTERNAL_DOCKING_BIN`（见 `configured_bin()`）。
-    这样「本机装了哪个 Vina」与「对接由谁执行」是两件事，不会因为登记一个路径就换掉执行后端。
+    与 `external.docking_bin` 的区别：
+      * 本函数只用于登记与探测（设置页「检测」/ `doctor.sh` / 报告标注）；
+      * 改用某个可执行文件执行对接要填 `EXTERNAL_DOCKING_BIN`（见 `configured_bin()`）。
+    本机安装的 Vina 与对接的执行者由此成为两项独立配置，登记路径不会换掉执行后端。
     """
     explicit = str(env(ENV_VINA_BIN, "") or "").strip()
     if explicit:
@@ -164,11 +164,11 @@ def probe_path(path: str) -> Dict[str, Any]:
 def run_version(path: str, *, timeout: int = PROBE_TIMEOUT) -> Dict[str, Any]:
     """执行 `--version`（失败再试 `--help`），拿到识别所需的输出。
 
-    固定 argv、`shell=False`、带超时：用户提供的是可执行文件，不是 shell 片段。
+    argv 固定、`shell=False` 且带超时：这里接收的是可执行文件，不是 shell 片段。
     """
     for flag in ("--version", "--help"):
         try:
-            proc = subprocess.run(  # noqa: S603 - 用户在本机提供的工具，argv 固定
+            proc = subprocess.run(  # noqa: S603 - 调用方在本机提供的工具，argv 固定
                 [str(path), flag], capture_output=True, text=True, timeout=timeout,
                 cwd=str(Path(path).parent), check=False,
             )
@@ -189,7 +189,7 @@ def run_version(path: str, *, timeout: int = PROBE_TIMEOUT) -> Dict[str, Any]:
 def gpu_visibility() -> Dict[str, Any]:
     """检查 GPU 是否可见：`nvidia-smi` 优先，其次 `clinfo`。
 
-    容器/受限命名空间里看不到 `/dev/nvidia*` 时这里会如实报失败 —— 这是事实，不是异常。
+    容器或受限命名空间里看不到 `/dev/nvidia*` 时，这里如实报告失败，不属于异常路径。
     """
     smi = shutil.which("nvidia-smi")
     if smi:
@@ -224,8 +224,8 @@ def collect(*, check_gpu: bool = True) -> Dict[str, Any]:
     path = configured_bin()
     report: Dict[str, Any] = {"configured": bool(path), "bin": path}
     if not path:
-        # 「只登记、不改默认执行」：把 PATH 上发现的 Vina CLI 如实报出来供查看/复制路径，
-        # 但 configured=False、执行仍走内置绑定（同版本、支持每分子盒子/分批/取消）。
+        # 只登记、不改默认执行：把 PATH 上找到的 Vina CLI 如实报出，供查看与复制路径，
+        # 此时 configured=False，执行仍走内置绑定（同版本，支持每分子盒子、分批与取消）。
         detected = detect_available_vina()
         report.update({
             "ok": True, "state": "not_configured",
@@ -292,7 +292,7 @@ def require_engine() -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# 调用形状（P1 执行适配使用；这里先固定并测试，避免执行期再猜参数）
+# 调用形状：P1 执行适配使用，在此固定并测试，避免执行期再推断参数
 # --------------------------------------------------------------------------- #
 def build_argv(flavor: str, *, binary: str, receptor: str, ligands: Sequence[str],
                out_dir: str, center: Sequence[float], size: Sequence[float],
@@ -301,13 +301,13 @@ def build_argv(flavor: str, *, binary: str, receptor: str, ligands: Sequence[str
                out_pose: str = "", device: Optional[int] = None) -> List[str]:
     """按引擎类型生成调用参数。
 
-    `autodock-gpu` 与 `vina-cpu` 的参数形状按各自官方 CLI 实测固定（本机验证过）；
-    `unidock` / `vina-gpu` 仍按官方文档固定，但**执行适配未接入**（`external_run.py` 会直接报错，
-    不拿未验证的参数去跑真实计算）。
+    `autodock-gpu` 与 `vina-cpu` 的参数形状按各自官方 CLI 固定并已在本机验证；
+    `unidock` / `vina-gpu` 按官方文档固定，但执行适配未接入（`external_run.py` 会直接报错，
+    不用未验证的参数执行真实计算）。
 
-    `device`：项目内部一律用 **0 基** GPU 序号（`GPU_DEVICE=0` 表示第一块卡）；AutoDock-GPU 的
-    `--devnum` 是 **1 基**（实测传 0 会被拒："must be an integer between 1 and 65536"），
-    因此这里 `+1` 后再下发。
+    `device`：项目内部统一使用 0 基 GPU 序号（`GPU_DEVICE=0` 表示第一块卡）；AutoDock-GPU 的
+    `--devnum` 是 1 基（传 0 会被拒："must be an integer between 1 and 65536"），
+    因此这里加 1 后再下发。
     """
     if flavor not in FLAVOR_ARGV_STYLE:
         raise ExternalEngineError(f"未识别的外部引擎类型：{flavor or '(空)'}")
@@ -315,7 +315,7 @@ def build_argv(flavor: str, *, binary: str, receptor: str, ligands: Sequence[str
     sx, sy, sz = (float(v) for v in size)
     base = [binary]
     if flavor == "vina-cpu":
-        # 官方 CLI：一次一个配体文件 + 显式盒子（无格点图）；`--out` 写位姿
+        # 官方 CLI：一次处理一个配体文件并使用显式盒子（无格点图）；`--out` 写位姿
         argv = [
             "--receptor", receptor,
             "--ligand", ligands[0] if ligands else "",
@@ -362,7 +362,7 @@ def build_argv(flavor: str, *, binary: str, receptor: str, ligands: Sequence[str
             "--seed", str(int(seed)),
             "--resnam", resnam or (Path(out_dir) / "adgpu_out").as_posix(),
             "--xmloutput", "0",
-            # 0 基 → 1 基（见 docstring 实测说明）
+            # 0 基序号在此换算为 1 基（见 docstring 中的序号说明）
             "--devnum", str(int(device if device is not None else 0) + 1),
         ]
     # 其余（AutoDock-GPU 之外的 GPU 工具）：按官方文档固定，执行适配未接入

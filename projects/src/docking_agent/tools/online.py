@@ -1,14 +1,14 @@
 """在线数据库工具：从 RCSB / UniProt / PubChem 获取蛋白质与小分子。
 
-提供两个 @tool 供协调 Agent 使用：
-  - ``fetch_protein_structure``：按 **PDB 结构号** 或 **UniProt accession / 基因名 / 蛋白名（含中文）**
-    获取蛋白质结构，下载并现场准备为可对接受体；实验结构优先 RCSB，缺失时回退 AlphaFold DB。
+对外提供两个 @tool 供协调 Agent 调用：
+  - ``fetch_protein_structure``：按 PDB 结构号，或 UniProt accession / 基因名 / 蛋白名（含中文）
+    获取蛋白质结构，下载并准备为可对接受体；实验结构取自 RCSB，缺失时回退 AlphaFold DB。
   - ``fetch_molecule_record``：按名称/CID/SMILES/InChIKey/InChI 从 PubChem 获取小分子 SMILES
-    （名称支持中文别名映射，如 代森猛锌 → Mancozeb）。
+    （名称支持中文别名映射，如 代森猛锌 映射为 Mancozeb）。
 
-设计要点：名称归一化（中英映射 + 物种推断）→ UniProt 多策略检索打分 → 实验结构(RCSB) 优先、
-缺失/不可用时回退 AlphaFold → 结果带完整溯源（accession/物种/结构来源/URL/打分理由）；
-解析不确定时经 ``tools/choices.py`` 下发结构化 ``choices`` 并在真失败时阻断对接（产品底线）。
+处理链路：名称归一化（中英映射与物种推断）、UniProt 多策略检索打分、RCSB 实验结构优先，
+缺失或不可用时回退 AlphaFold，结果带溯源字段（accession/物种/结构来源/URL/打分理由）；
+解析不确定时经 ``tools/choices.py`` 下发结构化 ``choices``，真失败时阻断对接。
 """
 from __future__ import annotations
 
@@ -211,9 +211,9 @@ def _pdbs_from_entry(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _uniprot_queries(text: str) -> List[str]:
     """构造检索式候选（按精度从高到低）。
 
-    注意：`accession:` 过滤器会校验格式，把蛋白名拼进去会被 UniProt 直接 400，
-    因此只在输入确实像 accession 时才使用；基因符号优先用 `gene_exact`（裸词全文检索
-    常常先命中未表征条目）。
+    `accession:` 过滤器会校验格式，蛋白名拼进去会被 UniProt 返回 400，
+    因此仅在输入形如 accession 时使用；基因符号优先用 `gene_exact`，
+    裸词全文检索会先命中未表征条目。
     """
     raw = text.strip().strip('"')
     queries: List[str] = []
@@ -268,8 +268,8 @@ def _rcsb_entry_info(pdb_id: str) -> Dict[str, Any]:
 def _alphafold_prediction(accession: str) -> Optional[Dict[str, Any]]:
     """按 UniProt accession 查 AlphaFold DB 预测模型；无模型返回 None。
 
-    注意：AlphaFold 的模型版本号会随时间更新（v4 → v6 …），因此**不写死文件名**，
-    一律使用接口返回的 ``pdbUrl``，并把模型版本写进溯源字段。
+    AlphaFold 的模型版本号随接口更新（如 v4、v6），因此文件名取自接口返回的
+    ``pdbUrl``，模型版本写入溯源字段。
     """
     if not accession:
         return None
@@ -326,17 +326,17 @@ def _download_and_prepare(url: str, dest: str) -> Dict[str, Any]:
 def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = None) -> str:
     """从在线数据库获取蛋白质结构，并现场准备为可直接对接的受体。
 
-    source 支持四种写法（**点名受体时先调本工具，不要先问用户**）：PDB 号（3ZBF）、
+    source 支持四种写法（点名受体时先调本工具，不先向调用方追问）：PDB 号（3ZBF）、
     UniProt accession（Q9SJQ6）、英文基因/蛋白名（ROS1）、中文名（「植物去甲基化酶ROS1」，
     自动中英映射 + 物种推断）。结构优先取 RCSB 实验结构，缺失时回退 AlphaFold DB 预测结构
-    （版本随接口返回，不写死）。
+    （版本由接口返回，不写死）。
 
     返回（受体 spec）：
-      ok → {"status":"ok","receptor_file":传给 run_docking 的文件,"box_center":[…],"box_size":[…],
+      ok 时返回 {"status":"ok","receptor_file":传给 run_docking 的文件,"box_center":[…],"box_size":[…],
             "structure_source":"rcsb|alphafold","pdb_id","accession","organism","protein",
             "score","score_reasons","structure_url","provenance":{数据库/物种/方法与分辨率…}}
-      ambiguous（多个同样合理的候选）→ 给出候选并写成可点选 `choices`，此时**不做任何计算**；
-      error/not_found → 给出已尝试的检索；这两种情况都会把本次受体标为 unresolved，
+      ambiguous（多个同样合理的候选）时给出候选并写成可点选 `choices`，此时不执行计算；
+      error/not_found 时给出检索过的来源与失败原因；这两种情况都会把本次受体标为 unresolved，
       `run_docking` 护栏拒绝计算。
     """
     src = (source or "").strip()
@@ -372,8 +372,8 @@ def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = No
                     publish_choices("receptor", receptor_choices(resolution["candidates"]),
                                      note="检索到多个/低置信候选：请选择要使用的受体，系统不替用户决定",
                                      runtime=runtime)
-                # 检索不到候选时**不下发任何选项**：系统没有默认受体，预置受体也不是用户可选来源
-                # （历史缺陷：这里曾追加「改用系统默认受体 凝血酶」选项，与产品规则/代码守卫冲突）。
+                # 检索不到候选时不设置任何选项：系统没有默认受体，预置受体也不是可选来源
+                # （早期实现曾在此处追加「改用系统默认受体 凝血酶」选项，与产品规则和代码守卫冲突）。
                 return resolution_failure_json(src, resolution)
             named_candidate = resolution["selected"]
             accession = str(named_candidate.get("accession") or "")
@@ -402,7 +402,7 @@ def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = No
             logger.info("受体名称 %r 解析为 %s（%s），实验结构候选 %s 个",
                         src, accession, named_candidate.get("organism"), len(candidates))
 
-        # ---- 2. 下载并现场准备为受体（候选逐个尝试：部分结构缺原子/含异常残基会准备失败）----
+        # ---- 2. 下载并现场准备为受体（按顺序逐个处理候选：部分结构缺原子或含异常残基会导致准备失败）----
         tried: List[str] = []
         failures: List[str] = []
         spec: Optional[Dict[str, Any]] = None
@@ -432,7 +432,7 @@ def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = No
                 failures.append(f"{pid}: {str(e)[:160]}")
                 spec = None
 
-        # ---- 3. 无实验结构（或实验结构都不可用）→ AlphaFold 预测结构回退 ----
+        # ---- 3. 无实验结构（或实验结构均不可用）时回退 AlphaFold 预测结构 ----
         accession = str(resolved.get("accession") or "")
         if spec is None and named and accession:
             af = _alphafold_prediction(accession)
@@ -467,7 +467,7 @@ def fetch_protein_structure(source: str, runtime: ToolRuntime[AgentContext] = No
                            + "。可改用其他 PDB 结构号/accession，或直接提供本地 .pdb/.ent/.cif/.pdbqt 文件。",
             }, ensure_ascii=False)
 
-        # ---- 4. 组装结果（含完整溯源）----
+        # ---- 4. 组装结果（含全部溯源字段）----
         resolved.update({
             "pdb_id": pdb_id,
             "structure_source": structure_source,
@@ -534,8 +534,8 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
 
     参数：
       - query：查询值（化合物名 / CID / SMILES / InChIKey / InChI）；中文名会自动映射英文
-        （如「代森猛锌 / 代森锰锌」→ Mancozeb，「华法林」→ Warfarin）；PubChem 的 name 检索
-        本身不认中文，直接查中文会 404，所以先翻译再查；
+        （如「代森猛锌 / 代森锰锌」映射为 Mancozeb，「华法林」映射为 Warfarin）；PubChem 的
+        name 检索不认中文，直接查中文返回 404，因此先翻译再查；
       - id_type：name(默认) / cid / smiles / inchikey / inchi。
 
     返回 JSON：{"status":"ok","resolved_query":实际检索名,"alias_used":命中的中文别名,
@@ -543,10 +543,10 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
                   "is_mixture","representative_smiles","components","warnings","facts"}]}。
     `smiles` 即 PubChem 原始 SMILES，可直接用于分子库导入与后续对接。
 
-    **混合物/配位聚合物如实报告**：若命中的是多组分结构（如 Mancozeb = Mn/Zn 与 EBDC 的
+    混合物与配位聚合物按原记录报告：命中的是多组分结构时（如 Mancozeb = Mn/Zn 与 EBDC 的
     配位聚合物），返回 `is_mixture=true`、`components`（各片段及角色）与 `representative_smiles`
-    （最大有机片段，仅作**代表结构**），并给出 `mixture_note` 说明代表结构的取法 —— 绝不臆造单一结构。
-    查不到时按分子侧既有规则返回 error 并要求用户补名称/CID/SMILES。
+    （最大有机片段，仅作代表结构），并给出 `mixture_note` 说明代表结构的取法，不构造单一结构。
+    查不到时按分子侧既有规则返回 error，并要求调用方补名称/CID/SMILES。
     """
     id_type = (id_type or "name").lower().strip()
     if id_type not in ("name", "cid", "smiles", "inchikey", "inchi"):
@@ -559,7 +559,7 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
                            "message": "请提供要查询的化合物名/CID/SMILES/InChIKey。"},
                           ensure_ascii=False)
 
-    # 中文名 → 英文名（只翻译、不编造）；失败后按原样再试一次
+    # 中文名转英文名（只做翻译，不构造名称）；映射失败时按原输入再查一次
     attempts: List[str] = []
     if id_type == "name":
         mapped, alias = normalize_molecule_name(q)
@@ -608,8 +608,8 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
                                 "iupac": p.get("IUPACName", ""), "molwt": p.get("MolecularWeight")}
         if smiles:
             try:
-                # 这里是**描述性查询**（把名称解析成结构），不是对接运行：
-                # 用 keep 报告数据库原样形式，避免"代表结构"被中和后与用户看到的记录不一致。
+                # 此处是描述性查询（把名称解析成结构），不涉及对接运行：
+                # 质子化态取 `keep`，保留数据库原样形式，避免代表结构被中和后与记录不一致。
                 desc = describe_ligand(smiles, protonation="keep")
             except Exception as e:  # noqa: BLE001
                 logger.debug("配体体检失败：%s", e)
@@ -647,8 +647,8 @@ def fetch_molecule_record(query: str, id_type: str = "name", runtime: ToolRuntim
         publish_choices("molecule", choices,
                          note="该名称是多组分/聚合物：代表结构的取法需要用户确认，系统不替用户决定",
                          runtime=runtime)
-        # 选项明细只走界面（`run.data["choices"]`）；给**模型**的载荷里不带明细，
-        # 否则主管 Agent 会把四个 SMILES 再抄成一张表 —— 同一问题在界面上出现两次（已知问题）。
+        # 选项明细只走界面（`run.data["choices"]`）；给模型的载荷里不带明细，
+        # 否则主管 Agent 会把四个 SMILES 再抄成一张表，同一问题在界面上出现两次（已知问题）。
         out.update(choices_payload(
             choices,
             message=(f"「{resolved_query}」是多组分结构/配位聚合物：代表结构的取法必须由用户确认，"

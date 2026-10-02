@@ -2,10 +2,10 @@
 
 本地化改造要点：原项目从 Coze 工作负载身份获取 API Key 与网关地址
 （COZE_WORKLOAD_IDENTITY_API_KEY / COZE_INTEGRATION_MODEL_BASE_URL），
-这里改为标准配置：LLM_API_KEY / LLM_BASE_URL / LLM_MODEL（兼容 OPENAI_API_KEY / OPENAI_BASE_URL）。
+本模块改为标准配置：LLM_API_KEY / LLM_BASE_URL / LLM_MODEL（兼容 OPENAI_API_KEY / OPENAI_BASE_URL）。
 
-**按 Agent 角色配置（每个子 Agent 独立模型实例）**
-本模块支持给每个角色单独指定模型/参数，角色名见 ROLES：
+按 Agent 角色配置（每个子 Agent 独立模型实例）
+本模块支持给每个角色单独指定模型与参数，角色名见 ROLES：
 
 1) 配置文件 `config/agent_llm_config.json` 的 `roles` 段：
      {"config": {...全局默认...},
@@ -17,7 +17,7 @@
      LLM_TEMPERATURE_PROPERTY=0
      LLM_BASE_URL_BINDING=... / LLM_API_KEY_CRITIC=... / LLM_MAX_TOKENS_DOCKING=...
 
-每次 build_chat_llm 都会**新建一个独立的 ChatOpenAI 实例**，并按角色记录到
+每次 build_chat_llm 都新建一个独立的 ChatOpenAI 实例，并按角色记录到
 进程内登记表（llm_registry），因此不同子 Agent 的模型互不共享、可分别观测。
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ DISABLED = ("", "none", "null", "disabled", "off", "false")
 
 # 系统内的 LLM 角色：任务受理、协调（编排）、4 个子 Agent。
 ROLES = ("intake", "coordinator", "property", "pocket", "docking", "binding")
-# 角色可覆盖的字段 → 对应的全局环境变量名
+# 角色可覆盖的字段及其对应的全局环境变量名
 _ROLE_ENV_FIELDS = {
     "model": "LLM_MODEL",
     "base_url": "LLM_BASE_URL",
@@ -140,7 +140,7 @@ def _coerce_field(field_name: str, value: Any) -> Any:
 def _layers(raw: Dict[str, Any], role: str, local: Dict[str, Any]) -> list:
     """按优先级从低到高返回 (来源标签, 该层字段字典)。
 
-    界面设置（local_settings.json）比 .env 更具体：用户在设置页面刚改的值必须生效，
+    界面设置（local_settings.json）比 .env 更具体：使用者在设置页面刚改的值必须生效，
     否则「改了没反应」；角色专属环境变量仍高于界面设置（脚本/CI 场景的显式覆盖）。
     """
     layers = [(f"内置默认 {LLM_CONFIG_REL}", dict(raw.get("config") or {})),
@@ -155,7 +155,7 @@ def _layers(raw: Dict[str, Any], role: str, local: Dict[str, Any]) -> list:
 
 
 def resolve_role_config(role: str = "") -> Tuple[Dict[str, Any], Dict[str, str]]:
-    """解析该角色的最终配置，并给出**每个字段的来源**。"""
+    """解析该角色的最终配置，并给出每个字段的来源标签。"""
     load_env()
     raw = _read_raw()
     local = _local_settings()
@@ -189,7 +189,7 @@ def effective_config(role: str = "") -> Dict[str, Any]:
 
 
 def load_llm_config(role: str = "") -> Dict[str, Any]:
-    """返回完整配置：{"config": {...}, "sp": "...", "tools": [...], "roles": {...}}。
+    """返回配置字典：{"config": {...}, "sp": "...", "tools": [...], "roles": {...}}。
 
     role 为空时 config 为全局默认配置（向后兼容既有调用）；
     指定 role（intake/coordinator/property/pocket/docking/binding）时 config 为该角色的最终配置。
@@ -225,7 +225,7 @@ _REGISTRY: Dict[str, Dict[str, Any]] = {}
 
 
 def llm_registry() -> Dict[str, Dict[str, Any]]:
-    """已构建的 LLM 实例（role → 元信息，含 instance_id）。"""
+    """已构建的 LLM 实例，按角色给出元信息（含 instance_id）。"""
     return {k: dict(v) for k, v in _REGISTRY.items()}
 
 
@@ -265,7 +265,7 @@ def restore_registry_entry(role: str, entry: Optional[Dict[str, Any]]) -> None:
 
 
 class _ModelUsageHandler(BaseCallbackHandler):
-    """记录每个角色**实际**被服务端确认的模型名与调用次数。
+    """记录每个角色被服务端确认的模型名与调用次数。
 
     仅看配置不足以证明「不同角色真的用了不同模型」，因此这里从响应元数据
     （response_metadata.model_name）回读服务端回执的模型名。
@@ -313,7 +313,7 @@ def _extra_body(cfg: Dict[str, Any], role: str = "") -> Dict[str, Any]:
     """构造 extra_body：支持 LLM_EXTRA_BODY / LLM_EXTRA_BODY_<ROLE>（JSON），
     以及对豆包模型保持 thinking 语义。"""
     body: Dict[str, Any] = {}
-    # 环境变量先铺底，界面设置（cfg）覆盖 —— 与「界面设置优先于 .env」的顺序一致
+    # 环境变量先铺底，再由界面设置（cfg）覆盖，与「界面设置优先于 .env」的顺序一致
     for name in ("LLM_EXTRA_BODY", _role_env_name(role, "LLM_EXTRA_BODY")):
         raw_extra = env(name)
         if not raw_extra:
@@ -336,7 +336,7 @@ def _extra_body(cfg: Dict[str, Any], role: str = "") -> Dict[str, Any]:
 
 
 def build_chat_llm(ctx: Any = None, *, role: str = ""):
-    """为指定角色构建**独立**的 ChatOpenAI 实例。
+    """为指定角色构建独立的 ChatOpenAI 实例。
 
     role ∈ intake/coordinator/property/pocket/docking/binding：各角色模型与采样参数
     可分别配置（见模块文档），互不共享实例。

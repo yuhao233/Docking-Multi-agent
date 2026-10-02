@@ -1,10 +1,10 @@
 """共享黑板（blackboard）：多 Agent 协作的公共工作区。
 
-为什么需要它：原先子 Agent 之间完全隔离，所有中间结果只能靠「把 JSON 塞进消息字符串」
-在协调 Agent 那里中转——既浪费 token，也让子 Agent 无法互相协作（例如 Docking Agent
-拿不到属性 Agent 规范化后的分子表，Binding Agent 拿不到对接结果）。
+子 Agent 之间彼此隔离时，中间结果只能以 JSON 字符串的形式经协调 Agent 中转，
+既增加 token 开销，子 Agent 之间也无法互相协作，例如 Docking Agent 取不到属性 Agent
+规范化后的分子表，Binding Agent 取不到对接结果。
 
-黑板提供一份**运行级、线程安全**的共享状态，任何 Agent/工具都可以读写：
+黑板提供一份运行级、线程安全的共享状态，任何 Agent 与工具都可以读写：
 
     receptor/site      受体与已知位点
     molecules          规范化去重后的分子库（smiles -> {name, smiles}）
@@ -15,8 +15,8 @@
 
 实现为 ContextVar，由 API 层在每次运行时注入，工具函数用 `current_blackboard.get()` 取用。
 
-**模块位置**：本模块属 `runtime/` 层（跨 Agent 的运行级服务），原先在 `agents/` 下 ——
-那会让最被依赖的 `runtime.context` 反向 import `agents`（审计 V3）。
+模块位置：本模块属 `runtime/` 层（跨 Agent 的运行级服务）；若放在 `agents/` 下，
+最被依赖的 `runtime.context` 会反向 import `agents`。
 """
 from __future__ import annotations
 
@@ -31,14 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 def canonical_key(smiles: str) -> str:
-    """分子身份键：SMILES → 规范形式（**同一个物质的任何写法都必须落成同一个键**）。
+    """分子身份键：SMILES 转成规范形式，同一个物质的任何写法都落成同一个键。
 
-    注意：一次运行只给了 1 个分子，却对接出 2 行 ——
-    `add_molecules` 用**规范** SMILES 做键，而 `set_properties` / `set_docking` / `set_binding`
-    用**原始** SMILES 做键。同一物质（PubChem 原始写法 `S=C([S-])NCC…` 与用户点选的
-    `C(CNC(=S)[S-])…`，canonical/InChIKey 完全相同）因此各占一个键，黑板里出现两个「分子」，
+    同一次运行只给了 1 个分子却对接出 2 行，原因是键口径不一致：
+    `add_molecules` 用规范 SMILES 做键，而 `set_properties` / `set_docking` / `set_binding`
+    用原始 SMILES 做键。同一物质（PubChem 原始写法 `S=C([S-])NCC…` 与调用方点选的
+    `C(CNC(=S)[S-])…`，canonical/InChIKey 相同）因此各占一个键，黑板里出现两个「分子」，
     对接与排行也就出现两行。
-    无法解析时退回原文（保持可追溯，不丢数据）。
+    无法解析时退回原文，保持可追溯且不丢数据。
     """
     text = str(smiles or "").strip()
     if not text:
@@ -52,17 +52,17 @@ def canonical_key(smiles: str) -> str:
         return text
 
 
-#: 黑板在 store 里的命名空间前缀与字段键（**按字段存**：不同字段并发写不会互相覆盖）
+#: 黑板在 store 里的命名空间前缀与字段键；按字段存储，不同字段的并发写不会互相覆盖
 STORE_NS_PREFIX = "blackboard"
 _STORE_FIELDS = ("receptor", "site", "molecules", "properties", "docking", "binding",
                  "positive_control", "pockets", "pocket_engine", "site_pinned", "notes")
 
 
 def dedupe_molecules(molecules: List[Dict[str, Any]]) -> "tuple[List[Dict[str, Any]], int]":
-    """按**化学身份**去重（保持输入顺序）：返回 `(去重后的清单, 去掉的条数)`。
+    """按化学身份去重（保持输入顺序）：返回 `(去重后的清单, 去掉的条数)`。
 
     与 `Blackboard.add_molecules` 用同一个 `canonical_key`：同一物质的两种 SMILES 写法
-    （PubChem 原始写法 / 用户点选写法 / 大小写与原子顺序差异）只保留第一条。
+    （PubChem 原始写法、调用方点选写法、大小写与原子顺序差异）只保留第一条。
     """
     seen: set = set()
     out: List[Dict[str, Any]] = []
@@ -78,14 +78,14 @@ def dedupe_molecules(molecules: List[Dict[str, Any]]) -> "tuple[List[Dict[str, A
 class Blackboard:
     """运行级共享工作区（线程安全）。
 
-    **两种后端**（P2-c：接入 LangGraph `store`）：
+    两种后端（P2-c：接入 LangGraph `store`）：
 
     | 后端 | 何时使用 | 语义 |
     | --- | --- | --- |
-    | 进程内对象（默认，`store=None`） | CLI / 单测 / 不经图的调用 | 与历史行为完全一致（RLock 保护） |
-    | LangGraph `store`（`store=...`） | 图调用链路（父图与 4 个子 Agent 共享同一个 store） | 同一 run 的黑板在**同一命名空间**下；与 checkpointer 对齐、平台可见、跨进程可读 |
+    | 进程内对象（默认，`store=None`） | CLI / 单测 / 不经图的调用 | 与此前行为一致（RLock 保护） |
+    | LangGraph `store`（`store=...`） | 图调用链路（父图与 4 个子 Agent 共享同一个 store） | 同一 run 的黑板位于同一命名空间；与 checkpointer 对齐、平台可见、跨进程可读 |
 
-    为了不丢更新，store 后端**按字段写**（每个字段一个 key），而不是整档覆写；
+    为不丢更新，store 后端按字段写（每个字段一个 key），而不是整档覆写；
     同一字段的并发写为 last-write-wins（与进程内语义一致）。本地 `_cache` 仍是热路径。
     """
 
@@ -100,9 +100,9 @@ class Blackboard:
         self._properties: Dict[str, Dict[str, Any]] = {}
         self._docking: Dict[str, Dict[str, Any]] = {}
         self._binding: Dict[str, Dict[str, Any]] = {}
-        self.positive_control: str = ""      # 阳性对照 SMILES（交叉核验需要它来判定「强对接」）
+        self.positive_control: str = ""      # 阳性对照 SMILES，交叉核验判定「强对接」时需要
         # 口袋分析 Agent 的预测结果与「选定的对接盒」；_site_pinned 表示 site 由 Agent 明确选择，
-        # 后续 set_receptor 不得覆盖（横向协作交接的语义保证）
+        # 后续 set_receptor 不再覆盖它（横向协作交接的语义保证）
         self._pockets: List[Dict[str, Any]] = []
         self.pocket_engine: str = ""
         self._site_pinned: bool = False
@@ -190,10 +190,10 @@ class Blackboard:
                  source: str = "", chosen_by: str = "pocket_agent",
                  pocket: Optional[Dict[str, Any]] = None,
                  validation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """口袋分析 Agent 选定对接盒（提交给 Docking Agent）。
+        """口袋分析 Agent 选定对接盒并提交给 Docking Agent。
 
-        置 _site_pinned 后，后续 set_receptor 不再用受体默认位点覆盖它 —— 这就是
-        「口袋 Agent 决定盒子 → Docking Agent 按此对接」的交接语义。
+        置 _site_pinned 后，后续 set_receptor 不再用受体默认位点覆盖它，这就是
+        「口袋 Agent 决定盒子，Docking Agent 按此对接」的交接语义。
         """
         with self._lock:
             self.site = {
@@ -224,7 +224,7 @@ class Blackboard:
         with self._lock:
             return [dict(p) for p in self._pockets]
 
-    # ---------------- 分子库（规范化 + 去重）----------------
+    # ---------------- 分子库（规范化与去重）----------------
     def add_molecules(self, molecules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """加入分子（自动规范化 SMILES 并去重），返回本次新增的部分。"""
         added: List[Dict[str, Any]] = []
@@ -278,7 +278,7 @@ class Blackboard:
             key = canonical_key(smiles)
             if key in self._properties:
                 return dict(self._properties[key])
-            # 兜底：调用方可能给的是原始写法而键是规范写法（或反之）
+            # 兜底：调用方可能给的是原始写法而键是规范写法，反之亦然
             return dict(self._properties[smiles]) if smiles in self._properties else None
 
     def set_docking(self, results: List[Dict[str, Any]], receptor: Optional[Dict[str, Any]] = None) -> None:
@@ -353,16 +353,16 @@ def get_blackboard() -> Optional[Blackboard]:
 _shared_store: Any = None
 _store_boards: Dict[tuple, Blackboard] = {}
 
-#: 视图缓存上限（护栏）：正常运行会在每个 run 结束时 `forget_store_blackboard()`，
-#: 这里是兜底 —— 任何漏掉的路径（例如 CLI 直调 `active_blackboard()`）也不会让
-#: 缓存无限增长（FIFO 淘汰最旧视图）。
+#: 视图缓存上限（护栏）：正常运行会在每个 run 结束时 `forget_store_blackboard()`；
+#: 缺少这一步时，未被显式清理的路径（例如 CLI 直调 `active_blackboard()`）上
+#: 缓存持续增长，因此这里按 FIFO 淘汰最旧视图。
 _STORE_BOARDS_MAX = 32
 
 
 def shared_store() -> Any:
     """进程内共享的 `InMemoryStore`（图构建时传给 create_agent 的 `store=`）。
 
-    为什么用单例：协调 Agent 与 4 个子 Agent 是**分别编译的图**，只有共享同一个 store
+    这里用单例的原因：协调 Agent 与 4 个子 Agent 是分别编译的图，只有共享同一个 store
     实例，子 Agent 写进黑板的受体/位点盒/分子库才能被父图与其它子 Agent 看到。
     """
     global _shared_store
@@ -389,9 +389,9 @@ def store_blackboard(store: Any, run_id: str = "") -> Blackboard:
 def forget_store_blackboard(run_id: str) -> int:
     """运行结束时丢弃该 run 的 store 黑板视图，返回移除条数。
 
-    为什么必须显式丢弃：`_store_boards` 以 `(id(store), run_id)` 为键缓存视图，
+    显式丢弃的原因：`_store_boards` 以 `(id(store), run_id)` 为键缓存视图，
     视图持有该 run 的分子/性质/对接等运行级状态；服务长时间运行时每个 run 都会留下
-    一条，属于**真实的进程内泄漏**（审计 §2.1）。运行收尾处（API/标准面/兼容面）
+    一条，属于进程内泄漏。运行收尾处（API/标准面/兼容面）
     都应调用本函数；`_STORE_BOARDS_MAX` 只是兜底护栏。
     """
     target = run_id or "default"
@@ -407,7 +407,7 @@ def reset_store_blackboards() -> None:
 
 
 def board_molecules_json(fallback_json: str = "") -> str:
-    """工具用：优先用黑板里的分子库（规范化去重过），否则回退到调用方传入的 JSON。"""
+    """工具用：优先取黑板里规范化去重后的分子库，没有时回退到调用方传入的 JSON。"""
     board = get_blackboard()
     if board is not None:
         molecules = board.molecules()

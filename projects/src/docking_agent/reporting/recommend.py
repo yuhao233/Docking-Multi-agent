@@ -1,9 +1,7 @@
-"""推荐化合物排行：把「对接亲和力」与「理化性质 / 类药性」合成一个**可解释**的综合分。
+"""推荐化合物排行：把「对接亲和力」与「理化性质 / 类药性」合成一个可解释的综合分。
 
-## 为什么要有这一节
-
-只看对接分数会把「大而黏」的分子排到最前（结合位点多、熵代价大，Vina 打分天然偏好大分子），
-所以本模块把四个**各自有明确含义**的分量按权重合成综合分，并逐分子给出分量明细：
+仅按对接分数排序会把「大而黏」的分子排到最前（结合位点多、熵代价大，Vina 打分偏好大分子），
+因此本模块把四个含义明确的分量按权重合成综合分，并逐分子给出分量明细：
 
 | 分量 | 含义 | 满分口径（透明、绝对值，不依赖本批库的分布） |
 | --- | --- | --- |
@@ -12,16 +10,16 @@
 | `drug_likeness` | Lipinski 违例数 | `1 − 0.25 × 违例数`（≥4 条违例记 0） |
 | `physchem` | logP 与 TPSA 是否落在类药窗口 | logP∈[0,4]、TPSA≤120 Å² 记 1.0，超出线性衰减 |
 
-**所有尺度都是绝对口径**（不按本批库做 min-max 归一化），因此不同运行之间的综合分可比、
-也不会因为库换了一批分子而整体漂移。缺少某项数据的分子，该分量按 0 计入并明确标注
-`missing`，不会静默丢弃；没有对接分数的分子根本不进排行（并如实计数）。
+所有尺度都是绝对口径（不按本批库做 min-max 归一化），因此不同运行之间的综合分可比，
+也不会因为库换了一批分子而整体漂移。缺少某项数据的分子，该分量按 0 计入并标注
+`missing`，不做静默丢弃；没有对接分数的分子不进排行（并如实计数）。
 
 权重默认 `0.45 / 0.20 / 0.20 / 0.15`，可由设置项 `runtime.rank_weights`
 （逗号分隔的 4 个权重，或 `affinity=0.5,le=0.2,...` 形式）覆盖；解析失败时回退默认并记 note。
 
-**分工**：本模块只做**计算与规则化建议**（确定性的筛选建议），
-"为什么推荐这几个"的**自然语言理由**由协调 Agent 通过 `submit_recommendations` 写入，
-报告把两者并排呈现，谁的判断一目了然。
+分工：本模块只做计算与规则化建议（确定性的筛选建议）；
+推荐的自然语言理由由协调 Agent 通过 `submit_recommendations` 写入，
+报告把两者并排呈现，计算值与模型判断各自可辨。
 """
 from __future__ import annotations
 
@@ -53,22 +51,22 @@ WEIGHT_ALIASES: Dict[str, str] = {
 }
 
 #: 满分口径常量（改这里就等于改评分尺度，报告会自动跟着变）
-AFFINITY_FULL_KCAL = 12.0        # −12 kcal/mol → 1.0
-LE_FULL = 0.45                   # 0.45 kcal/mol/重原子 → 1.0
+AFFINITY_FULL_KCAL = 12.0        # −12 kcal/mol 记 1.0
+LE_FULL = 0.45                   # 0.45 kcal/mol/重原子 记 1.0
 LOGP_WINDOW: Tuple[float, float] = (0.0, 4.0)
 LOGP_FALLOFF = 3.0               # 超出窗口后每 3 个 log 单位衰减到 0
-TPSA_FULL = 120.0                # ≤120 Å² → 1.0
-TPSA_ZERO = 200.0                # ≥200 Å² → 0.0
+TPSA_FULL = 120.0                # ≤120 Å² 记 1.0
+TPSA_ZERO = 200.0                # ≥200 Å² 记 0.0
 LIPINSKI_STEP = 0.25             # 每条违例扣 0.25
 #: 等级阈值
 GRADE_A = 0.65
 GRADE_B = 0.45
-#: 亲和力门槛：弱于此值的分子即使其它分量满分也不评为 A/B ——
-#: 综合分是"多目标权衡"，但**没有结合**的分子不该因为小而类药就被推荐。
+#: 亲和力门槛：弱于此值的分子即使其它分量满分也不评为 A/B。
+#: 综合分是多目标权衡，但没有结合活性的分子不因分子小而类药就进入推荐。
 AFFINITY_GATE_KCAL = -6.0
 DEFAULT_TOP_N = 10
-#: 排行顺序：等级优先（A→B→C），同级内按综合分降序。
-#: 若只按综合分排，"被封顶为 C 的分子"可能排在 B 级之前 —— 排行与等级自相矛盾。
+#: 排行顺序：等级优先（A、B、C），同级内按综合分降序。
+#: 若只按综合分排，被封顶为 C 的分子可能排在 B 级之前，排行与等级不一致。
 GRADE_ORDER: Dict[str, int] = {"A": 0, "B": 1, "C": 2}
 #: 大分子 / 高柔性阈值（用于给出可操作的筛选建议）
 BIG_MW = 600.0
@@ -94,8 +92,8 @@ def _num(value: Any) -> Optional[float]:
 def parse_weights(text: Optional[str] = None) -> Tuple[Dict[str, float], List[str]]:
     """解析权重设置：`0.45,0.20,0.20,0.15` 或 `affinity=0.45,le=0.2,...`。
 
-    只做**宽松解析 + 如实回退**：任何非法输入都回退到默认权重并给出 note，
-    绝不因为一个设置项写错就让排行失败或悄悄换口径。
+    只做宽松解析加如实回退：任何非法输入都回退到默认权重并给出 note，
+    单个设置项写错不会导致排行失败，也不会静默更换口径。
     """
     notes: List[str] = []
     if text is None:
@@ -171,8 +169,8 @@ def score_compound(row: Dict[str, Any], weights: Optional[Dict[str, float]] = No
         "missing": [],
     }
     # 透传报告可展示的字段（ID / 分子式 / 来源文件 / 引擎 …）：
-    # 协调 Agent 会用 customize_report 指定「这次报告要哪些列」，因此这些字段必须一路带到
-    # 排行行里；否则报告里只能出现固定那几列（用户要 ID 也无从取）。显式赋值的优先。
+    # 协调 Agent 会用 `customize_report` 指定本次报告的列，因此这些字段要一路带到排行行；
+    # 否则报告只能给出固定几列，调用方需要的 ID 无从取用。显式赋值的优先。
     for _key in REPORT_FIELD_LABELS:
         if _key not in out and row.get(_key) not in (None, "", [], {}):
             out[_key] = row[_key]
@@ -233,7 +231,7 @@ def score_compound(row: Dict[str, Any], weights: Optional[Dict[str, float]] = No
     composite = sum(out["components"][k] * out["weights"][k] for k in WEIGHT_KEYS)
     out["composite"] = round(composite, 4)
     grade = "A" if composite >= GRADE_A else ("B" if composite >= GRADE_B else "C")
-    # 硬门槛：亲和力太弱 → 等级封顶为 C（综合分本身照算，不掩盖数值）
+    # 硬门槛：亲和力弱于门槛时等级封顶为 C（综合分本身照算，不掩盖数值）
     if aff is not None and aff > AFFINITY_GATE_KCAL and grade != "C":
         out["grade_gate"] = (f"对接亲和力 {aff:.2f} kcal/mol 弱于门槛 "
                              f"{AFFINITY_GATE_KCAL:.1f} kcal/mol → 等级封顶为 C")
@@ -244,7 +242,7 @@ def score_compound(row: Dict[str, Any], weights: Optional[Dict[str, float]] = No
 
 
 def screening_suggestions(scored: Dict[str, Any]) -> List[str]:
-    """按**可核对的规则**给出筛选建议（每条都能在该分子的分量明细里找到依据）。"""
+    """按可核对的规则给出筛选建议（每条都能在该分子的分量明细里找到依据）。"""
     tips: List[str] = []
     grade = scored.get("grade")
     aff = scored.get("affinity_kcal_mol")
@@ -294,7 +292,7 @@ def build_recommendations(ranking: Sequence[Dict[str, Any]], *,
 
     `reasons`：协调 Agent 通过 `submit_recommendations` 写入的自然语言理由，
     按 `smiles`（优先）或 `name` 与计算行匹配；匹配不上的条目原样放在
-    `unmatched_reasons` 里（不静默丢弃，也不让模型的话覆盖真实数值）。
+    `unmatched_reasons` 里，既不静默丢弃，也不以模型给出的文字覆盖计算数值。
     """
     notes: List[str] = []
     if weights is None:

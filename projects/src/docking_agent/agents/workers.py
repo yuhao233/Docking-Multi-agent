@@ -7,10 +7,10 @@
 
 被整体协调 Agent 通过样本分发工具调用，实现多 Agent 协作。
 
-**每个子 Agent 拥有独立的 LLM 实例**：`init_workers` 会为 property / docking / binding
-三个角色分别调用 `build_chat_llm(role=...)`（见 runtime/llm 的按角色配置说明），
-因此三者可以使用**不同模型/端点/采样参数**，且不共享模型对象；
-同时每个子 Agent 使用**独立的 checkpointer**，短期记忆互不干扰。
+每个子 Agent 拥有独立的 LLM 实例：`init_workers` 会为 property / pocket / docking / binding
+四个角色分别调用 `build_chat_llm(role=...)`（见 runtime/llm 的按角色配置说明），
+因此各角色可分别使用不同的模型、端点与采样参数，且不共享模型对象；
+同时每个子 Agent 使用独立的 checkpointer，短期记忆互不干扰。
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ WORKER_ROLES = ("property", "pocket", "docking", "binding")
 
 
 def _build_llm(ctx: Optional[Context] = None, role: str = "worker"):
-    """构建该子 Agent 专属的 LLM 实例（本地 .env / agent_llm_config.json 按角色配置）。"""
+    """构建该子 Agent 专属的 LLM 实例，模型与参数按角色取自 .env 与 agent_llm_config.json。"""
     return build_chat_llm(ctx, role=role)
 
 
@@ -64,13 +64,13 @@ _pocket_agent = None
 _docking_agent = None
 _binding_agent = None
 
-# 每个子 Agent 一个独立模型实例 / 独立 checkpointer（role → 对象）
+# 每个子 Agent 一个独立模型实例与独立 checkpointer，两者都按角色名索引
 _worker_llms: Dict[str, Any] = {}
 _worker_checkpointers: Dict[str, Any] = {}
 
 
 def _checkpointer(role: str) -> InMemorySaver:
-    """为子 Agent 单独创建 checkpointer：三者的会话记忆彼此隔离。"""
+    """为子 Agent 单独创建 checkpointer，各角色的会话记忆彼此隔离。"""
     if role not in _worker_checkpointers:
         _worker_checkpointers[role] = InMemorySaver()
     return _worker_checkpointers[role]
@@ -79,19 +79,19 @@ def _checkpointer(role: str) -> InMemorySaver:
 def _make_agent(llm, sp, tools, mem, name: str = "worker", structured: bool = True):
     """构建子 Agent 图。
 
-    `name` 必须给：默认名会退化成 `'LangGraph'`，四个子 Agent 在 Studio / 回调归属 /
+    `name` 必须给：缺省时名字会退化成 `'LangGraph'`，四个子 Agent 在 Studio / 回调归属 /
     子图编排里将无法区分（可观测性规范）。
 
-    **结构化输出**（P2）：按角色挂 `response_format=ToolStrategy(<Role>Report)`，
-    由框架强制模型调用结构化输出工具 —— 取代「靠提示词要求模型自己吐 JSON + 服务端解析重试」
-    这条会真实产生 `agent_output_invalid` 的路径（见 `agents/reports.py`）。
+    结构化输出（P2）：按角色挂 `response_format=ToolStrategy(<Role>Report)`，
+    由框架强制模型调用结构化输出工具，取代「靠提示词要求模型输出 JSON 并由服务端解析重试」
+    这条会产生 `agent_output_invalid` 的路径（见 `agents/reports.py`）。
     """
     model_cls = report_model(name) if structured else None
     structured_kwargs: Dict[str, Any] = {}
     from docking_agent.agents.capabilities import structured_output_decision  # noqa: PLC0415
 
-    # 供应商能力记忆：已知该模型不支持强制 tool_choice 时**直接不挂** ToolStrategy，
-    # 不再每次运行先撞一次 400（注意：pocket/property/docking 每轮都刷降级日志）。
+    # 供应商能力记忆：已知该模型不支持强制 tool_choice 时不挂 ToolStrategy，
+    # 避免每次运行先触发一次 400，也不会每轮都刷 pocket/property/docking 的降级日志。
     decision = structured_output_decision(name or "") if model_cls is not None else "text"
     if model_cls is not None and decision == "tool":
         from langchain.agents.structured_output import ToolStrategy  # 延迟导入，构建期开销小
@@ -113,7 +113,7 @@ def _make_agent(llm, sp, tools, mem, name: str = "worker", structured: bool = Tr
                         name=name, **structured_kwargs)
 
 
-#: 角色 → 系统提示词与工具集（构建/重建共用，避免两处漂移）
+#: 角色对应的系统提示词与工具集，构建与重建共用，避免两处定义漂移
 _WORKER_SPECS: Dict[str, Any] = {
     "property": (lambda: PROPERTY_SP,
                  lambda: [normalize_molecule_library, molecular_property_assessment]),
@@ -127,7 +127,7 @@ _WORKER_SPECS: Dict[str, Any] = {
                          check_binding_consistency]),
 }
 
-#: id(子 Agent 图) → 角色名；以及 角色 → 「重建一个文本契约版」的构建器
+#: 子 Agent 图 id 到角色名的映射，以及角色名到「文本契约版重建器」的映射
 _agent_roles: Dict[int, str] = {}
 _WORKER_BUILDERS: Dict[str, Any] = {}
 
@@ -155,7 +155,7 @@ def init_workers(ctx: Optional[Context] = None) -> None:
     _docking_agent = agents["docking"]
     _binding_agent = agents["binding"]
 
-    # 登记「图 → 角色」与「角色 → 文本契约重建器」：供应商拒绝结构化输出时用来降级
+    # 登记图 id 到角色名、角色名到文本契约重建器的映射，供供应商拒绝结构化输出时降级
     for role, agent in agents.items():
         _agent_roles[id(agent)] = role
         _WORKER_BUILDERS[role] = (lambda role=role, **kw: _build_role_agent(
@@ -213,10 +213,10 @@ def worker_llm_models() -> Dict[str, Any]:
     return {role: meta.get("model") for role, meta in worker_llm_info().items()}
 
 
-#: 角色 → 本次构建采用的结构化输出方式（tool / json_mode / text），供日志与运行记录说明
+#: 角色对应的结构化输出方式（tool / json_mode / text），供日志与运行记录说明
 _worker_decisions: Dict[str, str] = {}
 
-#: 结构化输出被供应商拒绝后，按 `id(名字图)` 缓存对应的「文本契约」图（懒构建，只建一次）
+#: 结构化输出被供应商拒绝后按图 id 缓存的文本契约图，懒构建且只建一次
 _worker_text_fallbacks: Dict[int, Any] = {}
 
 
@@ -241,12 +241,12 @@ def _text_fallback_agent(agent: Any, role: str) -> Any:
 def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
     """调用子 Agent 并提取最终文本结果（优先解析为 JSON 原文）。
 
-    子 Agent 是「只调用工具并原样返回结果」的**无状态执行器**（既定设计，P1 明确保留）：
-      - 每次调用使用**独立 thread_id**（`{thread_id}-{agent}-{随机}`），因此同一轮对话里
-        反复调用同一子 Agent 时，它**看不到自己上一次的输出** —— 这是刻意的：
-        防止两次筛选任务之间上下文串扰（本地长驻服务/多会话共享一个进程）；
-      - 需要跨步骤共享的信息一律走**运行级**通道：运行产物文件（`tool_io.artifact_path`）
-        与共享黑板（受体/位点盒/分子库等小状态），而不是子 Agent 的会话记忆。
+    子 Agent 是只调用工具并原样返回结果的无状态执行器（既定设计，P1 保留）：
+      - 每次调用使用独立 thread_id（`{thread_id}-{agent}-{随机}`），因此同一轮对话里
+        反复调用同一子 Agent 时看不到该子 Agent 上一次的输出（刻意如此），
+        以避免两次筛选任务之间上下文串扰（本地长驻服务与多会话共享一个进程）；
+      - 需要跨步骤共享的信息一律走运行级通道：运行产物文件（`tool_io.artifact_path`）
+        与共享黑板（受体、位点盒、分子库等小状态），不使用子 Agent 的会话记忆。
     回归保护：`tests/test_agent_conventions.py::test_sub_agent_calls_are_stateless_by_design`。
     """
     from langchain_core.messages import HumanMessage
@@ -254,11 +254,11 @@ def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
         raise RuntimeError("sub-agent 未初始化，请先调用 init_workers(ctx)")
     call_thread = f"{thread_id}-{id(agent)}-{uuid.uuid4().hex[:8]}"
     payload = {"messages": [HumanMessage(content=content)]}
-    # **必须显式给 recursion_limit**：不给就是 LangGraph 的默认值（25），子 Agent 多调几次工具
-    # 就会抛 `GRAPH_RECURSION_LIMIT`（已知故障）。与协调 Agent 用同一个环境变量，便于统一调。
+    # recursion_limit 需要显式给出：缺省值 25 是 LangGraph 的默认值，子 Agent 多调几次工具
+    # 就会抛 `GRAPH_RECURSION_LIMIT`。与协调 Agent 共用同一个环境变量，便于统一调整。
     config = {"configurable": {"thread_id": call_thread},
               "recursion_limit": env_int("RECURSION_LIMIT", DEFAULT_RECURSION_LIMIT)}
-    # 该角色的结构化输出此前已被供应商拒绝过 → 直接用文本契约图，不再重复付一次 400 的代价
+    # 该角色的结构化输出已被供应商拒绝过，直接使用文本契约图，不再重复触发一次 400
     if isinstance(agent, object) and id(agent) in _worker_text_fallbacks:
         agent = _worker_text_fallbacks[id(agent)]
 
@@ -266,10 +266,10 @@ def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
     worker_role = _agent_roles.get(id(agent), "") or "worker"
 
     def _invoke(agent_obj: Any) -> Any:
-        """调用子 Agent；**跑满步数自动放宽并继续**，到顶返回 None（不抛给上层）。
+        """调用子 Agent；步数跑满时自动放宽并继续，到顶返回 None，不向上层抛出异常。
 
-        与协调 Agent 同一套预算策略（`runtime/limits.py`）：步数是执行细节，不该变成
-        用户可见的报错。到顶时返回 None，由上层如实上报「达到步数上限」。
+        与协调 Agent 共用同一套预算策略（`runtime/limits.py`）：步数属于执行细节，不作为
+        面向调用方的报错。到顶时返回 None，由上层如实上报「达到步数上限」。
         """
         limit = base_limit()
         data: Any = payload
@@ -277,7 +277,7 @@ def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
             try:
                 return agent_obj.invoke(data,
                                         config={**config, "recursion_limit": limit},
-                                        # 双读期：把当前运行上下文作为**权威来源**传入
+                                        # 双读期：当前运行上下文作为权威来源传入
                                         context=current_agent_context())
             except Exception as exc:  # noqa: BLE001 - 只有步数上限在这里被吸收
                 if not is_recursion_error(exc):
@@ -331,7 +331,7 @@ def invoke_worker(agent: Any, content: str, thread_id: str) -> str:
             payload = structured.model_dump()
         elif isinstance(structured, dict):
             payload = structured
-        else:  # 理论上不会发生；如实包装，绝不静默丢数据
+        else:  # 理论上不会发生；如实包装，不静默丢数据
             payload = {"status": "ok", "value": str(structured)}
         logger.info("子 Agent 返回结构化输出：%s 个字段（%s）", len(payload),
                     ", ".join(sorted(payload)[:6]))

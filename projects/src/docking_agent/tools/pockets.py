@@ -1,13 +1,13 @@
 """口袋分析 Agent 的工具：用成熟工具预测结合口袋，并把选定的对接盒提交给 Docking Agent。
 
-设计要点（与「盒子优化」的需求对应）：
+设计要点：
 
-- **不由模型猜盒坐标**：预测由真实工具完成（P2Rank，本地部署；不可用时用内置几何法），
+- 盒坐标不由模型猜测：预测由实际工具完成（P2Rank，本地部署；不可用时用内置几何法），
   返回的每个口袋都带 score / 中心 / 范围 / 附近残基；
-- **有实验位点就用实验位点并做独立验证**：注册表/共晶配体的位点比预测更可信，
-  工具的作用变成独立复核（一致/不一致都如实记录）；
-- **选择权交给 Agent**：`set_docking_site` 由口袋分析 Agent 明确调用，
-  写进共享黑板后 Docking Agent 直接用这个盒子对接（横向协作交接）。
+- 存在实验位点时以实验位点为准并做独立验证：注册表或共晶配体的位点比预测更可信，
+  工具的作用转为独立复核，一致与不一致都如实记录；
+- 选择权交给 Agent：`set_docking_site` 由口袋分析 Agent 明确调用，
+  写入共享黑板后 Docking Agent 直接使用该盒子对接（横向协作交接）。
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def _default_receptor_from_run(run: Any = None) -> Dict[str, str]:
-    """从本次运行的请求里取受体（表单参数永远是权威来源）。"""
+    """从本次运行的请求里取受体，表单参数为权威来源。"""
     run = run if run is not None else current_run.get()
     request = (run.data.get("request") or {}) if run is not None else {}
     return {"receptor_file": str(request.get("receptor_file") or ""),
@@ -36,7 +36,7 @@ def _default_receptor_from_run(run: Any = None) -> Dict[str, str]:
 
 def _resolve_specs(receptor_file: str = "", receptor_sources: str = "",
                   run: Any = None) -> List[Dict[str, Any]]:
-    """把受体参数解析成受体 spec 列表（与 docking 工具同一套解析逻辑）。"""
+    """把受体参数解析成受体 spec 列表，与 docking 工具使用同一套解析逻辑。"""
     from docking_agent.core import read_receptor_file, resolve_receptor_specs
 
     fallback = _default_receptor_from_run(run)
@@ -59,13 +59,13 @@ def _pocket_engine_default() -> str:
 @tool
 def predict_binding_pockets(receptor_file: str = "", receptor_sources: str = "",
                             pocket_engine: str = "", top_n: int = 8, runtime: ToolRuntime[AgentContext] = None) -> str:
-    """用真实的口袋预测工具分析蛋白质受体表面，返回候选结合口袋（含评分与附近残基）。
+    """用实际的口袋预测工具分析蛋白质受体表面，返回候选结合口袋（含评分与附近残基）。
 
-    何时调用：需要确定「对接盒子放在哪」时先调用本工具。它是**真实计算**，
-    不要凭氨基酸序列或经验猜测口袋位置。
+    何时调用：需要确定「对接盒子放在哪」时先调用本工具。该工具执行实际计算，
+    不应凭氨基酸序列或经验猜测口袋位置。
 
     参数：
-      receptor_file: 可选。用户上传/提供的蛋白质文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt，本地路径或 URL）。
+      receptor_file: 可选。使用者上传或提供的蛋白质文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt，本地路径或 URL）。
       receptor_sources: 可选。预置受体名（thrombin / trypsin）或受体文件路径；留空则用本次任务的受体。
       pocket_engine: 留空=按设置页面/环境变量（默认 auto：优先 P2Rank，不可用则内置几何法）；
           也可显式传 p2rank / geometric / known_site。
@@ -76,11 +76,11 @@ def predict_binding_pockets(receptor_file: str = "", receptor_sources: str = "",
     validation, warnings}
       - pockets[].center 为口袋中心（Å），extent 为口袋空间范围（Å）；
       - reference 为实验/已知位点（若存在），validation 是工具预测与它的一致性判定；
-      - suggested 是**按规则建议**的对接盒（实验位点优先、否则用 top 口袋），
-        你可以采纳，也可以在理由充分时改选别的口袋（用 set_docking_site 提交）。
+      - suggested 是按规则建议的对接盒（实验位点优先、否则用 top 口袋），
+        可以采纳，也可以在理由充分时改选别的口袋（用 set_docking_site 提交）。
     """
 
-    # 未指定受体 → 不执行口袋分析（预置受体仅内部测试用，不能替用户挑靶点）
+    # 未指定受体时不执行口袋分析；预置受体仅用于内部测试，不能代替使用者选择靶点
     from docking_agent.core.receptors import receptor_unspecified  # noqa: PLC0415
     from docking_agent.runtime.context import active_run as _active_run  # noqa: PLC0415
 
@@ -112,8 +112,8 @@ def predict_binding_pockets(receptor_file: str = "", receptor_sources: str = "",
                            "message": "未指定受体：请提供受体文件或受体名（thrombin/trypsin）。"},
                           ensure_ascii=False)
 
-    # 注意：不能写 (pocket_engine or "auto")：空字符串会被 "auto" 顶掉，
-    # 导致设置页面里的 pocket_engine 永远不生效。留空 = 跟随设置。
+    # 此处不能写成 (pocket_engine or "auto")：空字符串会被 "auto" 覆盖，
+    # 使设置页面里的 pocket_engine 不生效。留空表示跟随设置。
     engine = (pocket_engine or "").strip() or _pocket_engine_default()
     results = []
     for spec in specs:
@@ -173,11 +173,11 @@ def predict_binding_pockets(receptor_file: str = "", receptor_sources: str = "",
 @tool
 def compare_pocket_with_experiment(pocket_rank: int = 1, receptor_file: str = "",
                                    receptor_sources: str = "", runtime: ToolRuntime[AgentContext] = None) -> str:
-    """把某个预测口袋与**实验/已知位点**（共晶配体或注册表标注）做独立比对。
+    """把某个预测口袋与实验或已知位点（共晶配体或注册表标注）做独立比对。
 
-    用途：在你决定采纳/改选口袋之前，客观检查它是否与实验位点一致
+    用途：在决定采纳或改选口袋之前，客观检查它是否与实验位点一致
     （距离 + 共享残基）。若两者相距很远，说明它们指向不同的口袋，
-    应在结论里明确说明依据（例如用户要求变构位点、或实验位点缺失）。
+    应在结论里明确说明依据（例如需要变构位点、或实验位点缺失）。
 
     参数：
       pocket_rank: 要比对的预测口袋序号（1 = top1，需先调用 predict_binding_pockets）。
@@ -231,11 +231,11 @@ def set_docking_site(pocket_rank: int = 0, center: CoordArray = None, size: Coor
     参数（二选一）：
       pocket_rank: 采纳 predict_binding_pockets 返回的第 N 号口袋（推荐用法，来源可追溯）。
       center/size: 直接给出中心与尺寸，形如 [31.5, 13.74, 24.36] / [22, 22, 22]（用于微调）；
-        也接受逗号分隔字符串（旧调用方兼容）。
+        也接受逗号分隔字符串（兼容既有调用方）。
       reason: 选择理由（会写入协作记录与运行报告，供独立复核检查）。
 
     返回 JSON：{status, site:{center,size,source,chosen_by,pocket,validation}}。
-    调用后 Docking Agent 会使用该盒子；未调用时系统按规则自动确定（实验位点优先，否则用工具预测）。
+    调用后 Docking Agent 会使用该盒子；未调用时系统按规则确定（实验位点优先，否则用工具预测）。
     """
     board = active_blackboard(runtime)
     if board is None:
@@ -244,7 +244,7 @@ def set_docking_site(pocket_rank: int = 0, center: CoordArray = None, size: Coor
                           ensure_ascii=False)
 
     def _nums(values: Any, expect: int = 3) -> Optional[List[float]]:
-        """坐标规范化：数组或 "a,b,c" 字符串都接受（类型化后仍兼容旧调用方）。"""
+        """坐标规范化：数组或 "a,b,c" 字符串都接受，类型化之后仍兼容既有调用方。"""
         text = floats_to_text(values, expect=expect)
         return [float(v) for v in text.split(",")] if text else None
 
@@ -272,7 +272,7 @@ def set_docking_site(pocket_rank: int = 0, center: CoordArray = None, size: Coor
     else:
         source = "口袋分析 Agent 指定坐标"
     if reason:
-        # source 用于报告/界面一行展示，保持简短；完整理由单独存，便于追溯但不撑破布局
+        # source 用于报告与界面的一行展示，保持简短；理由全文单独存放，便于追溯且不撑破布局
         brief = reason.strip().split("。")[0].split("\n")[0][:140]
         source += f"：{brief}"
 
@@ -290,7 +290,7 @@ def set_docking_site(pocket_rank: int = 0, center: CoordArray = None, size: Coor
 
 @tool
 def list_pocket_engines(runtime: ToolRuntime[AgentContext] = None) -> str:
-    """列出可用的口袋预测引擎与启用方式（当 P2Rank 未安装时给出安装指引）。
+    """列出可用的口袋预测引擎与启用方式，P2Rank 未安装时给出安装指引。
 
     返回 JSON：{status, engines:{p2rank,geometric,known_site,centroid}, p2rank_home, install_hint}
     """

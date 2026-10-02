@@ -1,13 +1,13 @@
-"""输入解析能力回归：InChIKey 在线反查 + Excel(.xlsx) 真读。
+"""输入解析能力回归：InChIKey 在线反查与 Excel(.xlsx) 读取。
 
-用户要求「保证分子解析」——本文件看护两条容易被"跳过整行"掩盖的能力：
+这里看护两条容易被「跳过整行」掩盖的能力：
 
-1. **InChIKey**（单向哈希）：
-   - 内置表命中 → 离线可用；
-   - 未收录 → 在线反查 PubChem（**必须回算 InChIKey 校验一致**才采用）→ 写本地缓存；
-   - `INCHIKEY_ONLINE=off` 或网络失败 → 如实跳过并给出可操作原因，**绝不编造结构**；
-   - 结构来源（builtin/cache/pubchem）必须写进 `input_normalization.json` 的 notes。
-2. **xlsx**：扫描**所有工作表**并合并，单元格（整数/日期/布尔）规格化，
+1. InChIKey（单向哈希）：
+   - 命中内置表时离线可用；
+   - 未收录时在线反查 PubChem（回算 InChIKey 校验一致才采用），并写本地缓存；
+   - `INCHIKEY_ONLINE=off` 或网络失败时如实跳过并给出可操作原因，不编造结构；
+   - 结构来源（builtin/cache/pubchem）需写进 `input_normalization.json` 的 notes。
+2. xlsx：扫描所有工作表并合并，单元格（整数/日期/布尔）规格化，
    坏行带工作表名与行号上报；未装 openpyxl 时给出可操作提示而不是静默空结果。
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from docking_agent.config import ensure_runtime_env  # noqa: E402
 
 ensure_runtime_env()
 
-# 真实存在于 PubChem、但**不在内置 22 个常见化合物表**里的 InChIKey（Ravuconazole）
+# 存在于 PubChem、但不在内置 22 个常见化合物表里的 InChIKey（Ravuconazole）
 RAVU_KEY = "OPAHEYNNJWPQPX-RCDICMHDSA-N"
 RAVU_SMILES = "C[C@@H](c1nc(-c2ccc(C#N)cc2)cs1)[C@](O)(Cn1cncn1)c1ccc(F)cc1F"
 
@@ -46,7 +46,7 @@ def test_builtin_table_hits_offline(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
 def test_unknown_key_online_lookup_writes_cache(monkeypatch: pytest.MonkeyPatch,
                                                 tmp_path: Path) -> None:
-    """未收录的键：联网拿到结构 → 回算校验 → 落盘缓存；第二次必须不再联网。"""
+    """未收录的键：联网取结构，回算校验后落盘缓存；第二次不再联网。"""
     from docking_agent.core import inchikey as IK
 
     monkeypatch.setattr(IK, "cache_dir", lambda: tmp_path)
@@ -72,7 +72,7 @@ def test_unknown_key_online_lookup_writes_cache(monkeypatch: pytest.MonkeyPatch,
 
 def test_pubchem_result_is_rejected_when_key_does_not_round_trip(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """回算校验：PubChem 给错结构（或数据不一致）必须拒绝采用，不得悄悄用错分子。"""
+    """回算校验：PubChem 返回的结构不一致时拒绝采用，不使用错误分子。"""
     from docking_agent.core import inchikey as IK
 
     monkeypatch.setattr(IK, "cache_dir", lambda: tmp_path)
@@ -100,7 +100,7 @@ def test_offline_mode_skips_with_actionable_reason(monkeypatch: pytest.MonkeyPat
 
 def test_network_failure_does_not_break_whole_library(monkeypatch: pytest.MonkeyPatch,
                                                       tmp_path: Path) -> None:
-    """网络异常只能让该行跳过，不能把整库解析带崩。"""
+    """网络异常只跳过该行，不使整库解析失败。"""
     from docking_agent.core import inchikey as IK
     from docking_agent.core.normalize import normalize_ligand_text
 
@@ -113,7 +113,7 @@ def test_network_failure_does_not_break_whole_library(monkeypatch: pytest.Monkey
     monkeypatch.setattr(IK, "_http_json", boom)
     mols, norm = normalize_ligand_text(
         f"name,inchikey\n乙醇,CCO\n{RAVU_KEY[:0]}Ravuconazole,{RAVU_KEY}\n尿素,NC(N)=O\n",)
-    # 乙醇/尿素那一行没有结构列（name,inchikey 表里没 SMILES）→ 只有 RAVU 行进不了
+    # 乙醇与尿素两行没有结构列（name,inchikey 表里没 SMILES），只有 RAVU 行无法解析
     assert norm["records_total"] == 3
     assert norm["records_skipped"] >= 1
     assert any("PubChem 查询失败" in str(s.get("reason")) for s in norm["skipped"]), norm["skipped"]
@@ -121,7 +121,7 @@ def test_network_failure_does_not_break_whole_library(monkeypatch: pytest.Monkey
 
 def test_table_with_inchikey_column_is_resolved(monkeypatch: pytest.MonkeyPatch,
                                                 tmp_path: Path) -> None:
-    """只有 InChIKey 列的表也必须能解析出分子，并在 notes 里点名来源。"""
+    """只有 InChIKey 列的表也能解析出分子，并在 notes 里点名来源。"""
     from docking_agent.core import inchikey as IK
     from docking_agent.core.normalize import normalize_ligand_text
 
@@ -162,7 +162,7 @@ def _write_xlsx(path: Path) -> Path:
 
 
 def test_xlsx_reads_all_sheets_and_reports_per_sheet(tmp_path: Path) -> None:
-    """真实 .xlsx：说明页在前的常见排版也能解析；合并多张数据页并逐表上报。"""
+    """实际 .xlsx：说明页在前的常见排版也能解析；合并多张数据页并逐表上报。"""
     from docking_agent.core.normalize import normalize_ligand_file
 
     path = _write_xlsx(tmp_path / "lib.xlsx")
@@ -176,7 +176,7 @@ def test_xlsx_reads_all_sheets_and_reports_per_sheet(tmp_path: Path) -> None:
 
 
 def test_xlsx_cell_normalization(tmp_path: Path) -> None:
-    """整数不能变成 `2244.0`，日期也不能带 `00:00:00`（都会污染 ID/名称列）。"""
+    """整数不写成 `2244.0`，日期不带 `00:00:00`，两者都会污染 ID 与名称列。"""
     openpyxl = pytest.importorskip("openpyxl")
     from docking_agent.core.normalize_io import _xlsx_cell_text
 
@@ -190,7 +190,7 @@ def test_xlsx_cell_normalization(tmp_path: Path) -> None:
 
 def test_xlsx_without_openpyxl_gives_actionable_message(tmp_path: Path,
                                                        monkeypatch: pytest.MonkeyPatch) -> None:
-    """依赖被移除的环境里也必须给出「装什么/怎么办」，而不是静默解析成 0 个。"""
+    """缺少依赖的环境里也给出「装什么、怎么办」的提示，不静默解析成 0 个。"""
     import builtins
 
     from docking_agent.core.normalize import normalize_ligand_file

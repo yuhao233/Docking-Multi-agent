@@ -1,13 +1,13 @@
-"""外部对接引擎（用户自行安装）：登记、探测、拒绝启动语义与调用形状。
+"""外部对接引擎（由调用方自行安装）：登记、探测、拒绝启动语义与调用形状。
 
-对应缺陷/风险：GPU 版对接工具随项目分发不现实，若做成"设置了路径但悄悄不用"，用户会以为
-在用 GPU 而实际拿到 CPU 结果。因此这里把三条边界固定成回归：
+背景：GPU 版对接工具随项目分发不现实，若实现为「设置了路径但静默不使用」，
+使用者会以为在用 GPU 而实际得到 CPU 结果。因此把三条边界固定为回归用例：
 
-1. 未提供路径 → 明确"未配置"，继续用内置 CPU Vina；
-2. 提供了路径但探测不通过 → `require_engine()` 抛错，调用方**拒绝启动**并展示补齐方法；
-3. 提供了路径且探测通过 → 识别引擎类型与版本，并可生成调用参数（P1 执行适配使用）。
+1. 未提供路径时明确报「未配置」，继续使用内置 CPU Vina；
+2. 提供了路径但探测不通过时 `require_engine()` 抛错，调用方拒绝启动并展示补齐方法；
+3. 提供了路径且探测通过时识别引擎类型与版本，并可生成调用参数（供 P1 执行适配使用）。
 
-探测本身不 mock：用临时目录里真实的可执行脚本模拟三类 CLI 的版本输出。
+探测本身不打桩：在临时目录里用可执行脚本模拟三类 CLI 的版本输出。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import pytest
 from docking_agent.core import external_tools as ET
 
 # --------------------------------------------------------------------------- #
-# 脚手架：造一个"像那么回事"的外部引擎可执行文件
+# 脚手架：构造形似外部引擎的可执行文件
 # --------------------------------------------------------------------------- #
 _FAKE_SCRIPTS = {
     "unidock": "Uni-Dock v1.2.0 (CUDA 12.2)\n",
@@ -40,7 +40,7 @@ def _fake_binary(tmp_path: Path, kind: str, *, executable: bool = True) -> Path:
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
-    """本模块自带的 API 客户端（与 tests/test_settings.py 同一套最小环境变量）。"""
+    """本模块自带的 API 客户端（与 `tests/test_settings.py` 使用同一套最小环境变量）。"""
     monkeypatch.setenv("LLM_API_KEY", "sk-test-secret-1234")
     monkeypatch.setenv("LLM_BASE_URL", "https://example.invalid/v1")
     from fastapi.testclient import TestClient
@@ -58,7 +58,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 1) 未配置：明确报"未配置"，不抛错
+# 1) 未配置：报「未配置」，不抛错
 # --------------------------------------------------------------------------- #
 def test_not_configured_uses_builtin(clean_env: None) -> None:
     report = ET.collect()
@@ -69,7 +69,7 @@ def test_not_configured_uses_builtin(clean_env: None) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 2) 探测：路径 / 权限 / 类型识别
+# 2) 探测：路径、权限与类型识别
 # --------------------------------------------------------------------------- #
 def test_missing_path_is_invalid(clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv(ET.ENV_DOCKING_BIN, str(tmp_path / "nope"))
@@ -102,7 +102,7 @@ def test_recognizes_known_flavors(clean_env: None, monkeypatch: pytest.MonkeyPat
     version = ET.run_version(str(path))
     assert version["ok"] is True
     assert version["flavor"] == kind
-    report = ET.collect(check_gpu=False)          # GPU 状态单列，便于沙箱/容器里断言识别结果
+    report = ET.collect(check_gpu=False)          # GPU 状态单列，便于在沙箱与容器中校验识别结果
     assert report["flavor"] == kind
     assert report["flavor_label"] == ET._flavor_label(kind)
     assert report["argv_style"] == ET.FLAVOR_ARGV_STYLE[kind]
@@ -118,7 +118,7 @@ def test_unknown_flavor_is_rejected(clean_env: None, monkeypatch: pytest.MonkeyP
 
 
 # --------------------------------------------------------------------------- #
-# 3) 拒绝启动：已配置但不可用 → 抛错并带补齐方法
+# 3) 拒绝启动：已配置但不可用时抛错并带补齐方法
 # --------------------------------------------------------------------------- #
 def test_require_engine_refuses_when_configured_but_broken(
         clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -131,7 +131,7 @@ def test_require_engine_refuses_when_configured_but_broken(
 
 def test_run_refuses_before_docking(clean_env: None, monkeypatch: pytest.MonkeyPatch,
                                     tmp_path: Path) -> None:
-    """对接入口必须先校验外部引擎：配置错误时不得进入任何计算。"""
+    """对接入口先校验外部引擎：配置错误时不进入任何计算。"""
     monkeypatch.setenv(ET.ENV_DOCKING_BIN, str(tmp_path / "gone"))
     from docking_agent.core.docking import dock_library
 
@@ -140,7 +140,7 @@ def test_run_refuses_before_docking(clean_env: None, monkeypatch: pytest.MonkeyP
 
 
 # --------------------------------------------------------------------------- #
-# 4) 调用形状：三类引擎的 argv（执行适配按此生成，避免运行期再猜参数）
+# 4) 调用形状：三类引擎的 argv（执行适配按此生成，避免运行期推断参数）
 # --------------------------------------------------------------------------- #
 def test_build_argv_per_flavor() -> None:
     common: Dict[str, Any] = dict(
@@ -152,7 +152,7 @@ def test_build_argv_per_flavor() -> None:
     assert "/tmp/a.pdbqt" in uni and "--center_x" in uni and "--size_z" in uni
     vg = ET.build_argv("vina-gpu", **common)
     assert "--ligand_directory" in vg and "--thread" in vg
-    # AutoDock-GPU 吃 autogrid4 的格点图（--ffile），没有图就不是合法调用
+    # AutoDock-GPU 需要 autogrid4 的格点图（--ffile），缺图即非法调用
     with pytest.raises(ET.ExternalEngineError):
         ET.build_argv("autodock-gpu", **common)
     adg = ET.build_argv("autodock-gpu", **common, fld="/tmp/out/rec.maps.fld",
@@ -165,10 +165,10 @@ def test_build_argv_per_flavor() -> None:
 
 
 def test_autodock_gpu_devnum_is_one_based() -> None:
-    """`GPU_DEVICE` 是 0 基（项目口径），AutoDock-GPU 的 `--devnum` 是 1 基（实测传 0 被拒）。
+    """`GPU_DEVICE` 以 0 为基（项目口径），AutoDock-GPU 的 `--devnum` 以 1 为基（传入 0 会被拒）。
 
-    注意：填 `GPU_DEVICE=0` 时下发 `--devnum 0`，引擎直接报
-    "must be an integer between 1 and 65536" 并以状态 255 退出 —— 登记了 GPU 却算不出结果。
+    传入 `GPU_DEVICE=0` 时下发 `--devnum 0`，引擎报
+    "must be an integer between 1 and 65536" 并以状态 255 退出，即登记了 GPU 但无法产出结果。
     """
     argv = ET.build_argv("autodock-gpu", binary="/opt/adgpu", receptor="", ligands=["/tmp/l.pdbqt"],
                          out_dir="/tmp/out", center=[1, 2, 3], size=[20, 20, 20],
@@ -192,10 +192,10 @@ def test_gpu_device_and_batch_from_env(clean_env: None, monkeypatch: pytest.Monk
 def test_cpu_vina_is_recognized_as_its_own_flavor(clean_env: None,
                                                   monkeypatch: pytest.MonkeyPatch,
                                                   tmp_path: Path) -> None:
-    """CPU 版 AutoDock Vina CLI 必须被识别（此前只认三类 GPU 工具 → 本机装了也判「未识别」）。"""
+    """CPU 版 AutoDock Vina CLI 需被识别（原实现只认三类 GPU 工具，本机安装后判为「未识别」）。"""
     assert ET.detect_flavor("AutoDock Vina 1.2.7") == "vina-cpu"
     assert ET.detect_flavor("AutoDock Vina f458505-mod") == "vina-cpu"
-    # 三类 GPU 工具的识别不受影响（顺序敏感：vina-gpu 的特征串更长，不能被 vina-cpu 抢走）
+    # 三类 GPU 工具的识别不受影响（顺序敏感：`vina-gpu` 的特征串更长，先于 `vina-cpu` 匹配）
     assert ET.detect_flavor("AutoDock-Vina-GPU 2.1\nQuickVina2-GPU 2.1") == "vina-gpu"
     binary = _fake_binary(tmp_path, "vina-cpu")
     monkeypatch.setenv(ET.ENV_DOCKING_BIN, str(binary))
@@ -211,7 +211,7 @@ def test_cpu_vina_is_recognized_as_its_own_flavor(clean_env: None,
 
 def test_registering_vina_bin_does_not_change_the_execution_path(
         clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """「登记路径、不改默认执行」：VINA_BIN 只进探测报告，`configured_bin()` 必须仍为空。"""
+    """登记路径但不改变默认执行：`VINA_BIN` 只进入探测报告，`configured_bin()` 仍为空。"""
     binary = _fake_binary(tmp_path, "vina-cpu")
     monkeypatch.setenv(ET.ENV_VINA_BIN, str(binary))
     assert ET.vina_cli_bin() == str(binary)
@@ -234,7 +234,7 @@ def test_vina_bin_falls_back_to_path_and_ignores_bad_path(
 
 
 # --------------------------------------------------------------------------- #
-# 5) 设置页与 doctor 的一致性
+# 5) 设置页与 doctor 的口径一致性
 # --------------------------------------------------------------------------- #
 def test_settings_exposes_external_group() -> None:
     from docking_agent.settings import SPEC_BY_PATH, SPECS
@@ -248,7 +248,7 @@ def test_settings_exposes_external_group() -> None:
 
 
 def test_probe_api_and_doctor_agree(client: Any) -> None:
-    """`/api/tools/probe` 必须给出三块结果，字段与 doctor 的能力项同名同义。"""
+    """`/api/tools/probe` 给出三块结果，字段与 doctor 的能力项同名同义。"""
     r = client.post("/api/tools/probe")
     assert r.status_code == 200
     data = r.json()

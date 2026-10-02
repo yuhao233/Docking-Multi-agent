@@ -1,7 +1,7 @@
-"""输入归一化层（`docking_agent.core.normalize`）的真实测试矩阵。
+"""输入归一化层（`docking_agent.core.normalize`）的测试矩阵。
 
-全部使用真实文件、真实 RDKit 解析、真实受体准备（小 PDB），不 mock。
-覆盖「脏输入」：GBK/UTF-8 BOM、CSV/TSV/分号、单列表头、InChIKey/InChI、
+用例全部使用实际文件、RDKit 解析与受体准备（小 PDB），不使用 mock。
+覆盖的脏输入包括：GBK/UTF-8 BOM、CSV/TSV/分号、单列表头、InChIKey/InChI、
 多记录 SDF、MOL2、错误扩展名、gzip/zip 容器、坏行、重复分子、受体内容嗅探。
 """
 from __future__ import annotations
@@ -66,8 +66,8 @@ NO_CHARGES
     12    6   12 1
 """
 
-# 真实的 6 残基小肽（取自 assets/receptors/structures/thrombin.pdb 的 ATOM 记录），
-# 用于一次真实但很快的 meeko 受体准备（约 0.3s）。
+# 6 残基小肽（取自 assets/receptors/structures/thrombin.pdb 的 ATOM 记录），
+# 用于一次耗时很短的 meeko 受体准备（约 0.3 s）。
 TINY_PDB = "\n".join([
     "ATOM      1  N   GLU L   1C     63.691  25.940  17.920  1.00 39.73           N  ",
     "ATOM      2  CA  GLU L   1C     64.331  26.594  16.778  1.00 41.21           C  ",
@@ -176,7 +176,7 @@ def test_bom_semicolon_csv(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 4. 只有 SMILES 一列（无名称 → MOL1/MOL2/...）
+# 4. 只有 SMILES 一列，无名称时按 MOL1/MOL2/... 编号
 # --------------------------------------------------------------------------- #
 
 
@@ -192,7 +192,7 @@ def test_smiles_only_column_csv(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 5. 只有 InChIKey 一列 → 解析为 SMILES
+# 5. 只有 InChIKey 一列，解析为 SMILES
 # --------------------------------------------------------------------------- #
 
 
@@ -249,7 +249,7 @@ def test_mol2_file(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 8. 错误扩展名：内容是权威
+# 8. 错误扩展名：以内容为准
 # --------------------------------------------------------------------------- #
 
 
@@ -291,7 +291,7 @@ def test_gzip_csv(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 10. 坏行不中断整个库，并且带精确行号
+# 10. 坏行不中断整个库，并记录精确行号
 # --------------------------------------------------------------------------- #
 
 
@@ -316,13 +316,13 @@ def test_bad_rows_report_exact_line_numbers(tmp_path) -> None:
     assert norm["records_total"] == 9
     assert [s["line"] for s in norm["skipped"]] == [2, 5, 9]
     assert all(s["reason"].strip() for s in norm["skipped"])
-    # 坏行没有污染好分子
+    # 坏行不影响其余分子的解析结果
     assert len(mols) == 6
     assert canonical("CCO") in [m["smiles"] for m in mols]
 
 
 def test_smi_smiles_first_with_name(tmp_path) -> None:
-    """.smi 的标准顺序是「SMILES 名称」，名称要被保留。"""
+    """.smi 的标准顺序是「SMILES 名称」，名称需要保留。"""
     path = write(tmp_path / "std.smi", "CCO ethanol\nCCN ethylamine\n")
     mols, norm = N.normalize_ligand_file(str(path))
 
@@ -344,7 +344,7 @@ def test_smi_header_line_is_not_a_bad_record(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 11. 同一规范 SMILES 的重复分子：保留第一条，合并别名
+# 11. 规范 SMILES 相同的重复分子：保留第一条并合并别名
 # --------------------------------------------------------------------------- #
 
 
@@ -368,7 +368,7 @@ def test_duplicate_canonical_smiles_deduped(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 12. 受体侧：非结构被拒绝；`.txt` 里的真 PDB 被识别并准备
+# 12. 受体侧：非结构文件被拒绝；`.txt` 内的 PDB 内容被识别并准备
 # --------------------------------------------------------------------------- #
 
 
@@ -385,7 +385,7 @@ def test_receptor_rejects_non_structure(tmp_path) -> None:
 def test_receptor_pdb_content_in_txt(tmp_path) -> None:
     path = write(tmp_path / "receptor.txt", TINY_PDB)
 
-    # 内容优先：`.txt` 不是结构扩展名，但内容是 PDB
+    # 内容优先：`.txt` 不属于结构扩展名，但文件内容是 PDB
     assert N.sniff_format(str(path)) == "pdb"
     assert N.sniff_format(str(path), path.read_bytes()) == "pdb"
 
@@ -394,7 +394,7 @@ def test_receptor_pdb_content_in_txt(tmp_path) -> None:
     assert receptor_path and os.path.isfile(receptor_path)
     assert norm["notes"] and any("pdb" in note.lower() for note in norm["notes"])
     assert norm["source_file"] == os.path.abspath(str(path))
-    # 化学溯源字段来自 read_receptor_file 的 spec
+    # 化学溯源字段取自 read_receptor_file 的 spec
     assert set(("dropped_hetatm", "kept_hetatm", "dropped_waters", "unsupported_hetatm")) <= set(norm)
 
 
@@ -433,7 +433,7 @@ def test_zip_container_single_member(tmp_path) -> None:
 def test_inchi_column_csv(tmp_path) -> None:
     paracetamol_inchi = Chem.MolToInchi(Chem.MolFromSmiles(PARACETAMOL))
     assert paracetamol_inchi.startswith("InChI=")
-    # InChI 自带逗号：既测正确加引号的 CSV，也测「未加引号」这种真实脏输入
+    # InChI 自带逗号：同时覆盖正确加引号的 CSV 与未加引号的脏输入
     quoted = tmp_path / "inchi_quoted.csv"
     with quoted.open("w", encoding="utf-8", newline="") as fh:
         import csv as _csv
@@ -450,7 +450,7 @@ def test_inchi_column_csv(tmp_path) -> None:
     mols2, norm2 = N.normalize_ligand_file(str(unquoted))
     assert norm2["format"] == "csv"
     # InChI 的 mobile-H 归一化可能在还原时给出另一个等价互变异构体，因此以
-    # 「RDKit 从同一 InChI 还原出的规范 SMILES」为期望值（真实化学行为，非解析缺陷）。
+    # 「RDKit 从同一 InChI 还原出的规范 SMILES」为期望值，属化学层面的等价性。
     expected = [Chem.MolToSmiles(Chem.MolFromInchi(inchi))
                 for inchi in (ASPIRIN_INCHI, paracetamol_inchi)]
     assert [m["id"] for m in mols2] == ["aspirin", "paracetamol"]
@@ -471,7 +471,7 @@ def test_xlsx_signature_without_openpyxl(tmp_path) -> None:
     assert mols == []
     if importlib.util.find_spec("openpyxl") is None:
         assert any("xlsx" in note.lower() and "CSV" in note for note in norm["notes"])
-    else:  # 安装了 openpyxl 的环境：只要不报错并识别为 xlsx 即可
+    else:  # 安装了 openpyxl 的环境：仅要求不报错并识别为 xlsx
         assert isinstance(norm["notes"], list)
 
 
@@ -496,11 +496,11 @@ def test_normalize_ligand_text_and_record_shape(tmp_path) -> None:
     assert [m["source_index"] for m in mols] == [1, 2]
     assert all(m["source_file"] == "" for m in mols)
 
-    # 每条记录都恰好包含约定的标准键
+    # 每条记录恰好包含约定的标准键
     expected = {"id", "name", "smiles", "source_file", "source_index", "raw"}
     assert all(set(m) == expected for m in mols)
 
-    # normalization 摘要的 EXACT 键
+    # normalization 摘要的固定键集合
     expected_norm = {
         "source_file", "format", "records_total", "records_ok", "records_skipped",
         "skipped", "duplicates_removed", "duplicates", "aliases", "encoding",

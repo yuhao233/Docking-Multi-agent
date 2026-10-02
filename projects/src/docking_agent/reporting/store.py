@@ -1,7 +1,7 @@
-"""产物存储：`var/outputs/` 扁平产物目录 + 内容类型推断。
+"""产物存储：`var/outputs/` 扁平产物目录与内容类型推断。
 
 运行级产物（含产物清单与打包下载）由 `docking_agent.runs.RunStore` 管理；
-这里保留扁平目录用于兼容旧接口 `GET /files/{key}` 与简单的单文件产物。
+本模块保留扁平目录，用于兼容旧接口 `GET /files/{key}` 与单文件产物。
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def content_type_for(path: Path) -> str:
 
 
 def artifact_base_url() -> str:
-    """产物下载地址前缀。默认指向本机 HTTP 服务，可用 ARTIFACT_BASE_URL 覆盖。"""
+    """产物下载地址前缀：默认指向本机 HTTP 服务，可用 `ARTIFACT_BASE_URL` 覆盖。"""
     explicit = env("ARTIFACT_BASE_URL")
     if explicit:
         return explicit.rstrip("/")
@@ -56,7 +56,7 @@ def artifact_base_url() -> str:
 
 
 def save_artifact(data: bytes, file_name: str, content_type: str = "application/octet-stream") -> Dict[str, str]:
-    """保存到 `var/outputs/`，返回 {"key","path","url","content_type"}。"""
+    """写入 `var/outputs/`，返回含 `{"key","path","url","content_type"}` 的映射。"""
     safe = safe_name(file_name)
     key = f"{Path(safe).stem}_{uuid4().hex[:8]}{Path(safe).suffix}"
     path = outputs_dir() / key
@@ -70,7 +70,7 @@ def save_artifact(data: bytes, file_name: str, content_type: str = "application/
 
 
 def resolve_output(key: str) -> Optional[Path]:
-    """按 key 定位扁平产物；拒绝路径穿越。"""
+    """按 key 定位扁平产物；key 为空或含路径分隔符、`..` 时返回 None。"""
     if not key or "/" in key or "\\" in key or ".." in key:
         return None
     path = outputs_dir() / key

@@ -1,7 +1,7 @@
 """文件获取：URL 下载与本地路径解析。
 
-用户提供的分子/受体文件可能以「本地绝对路径、相对路径、URL」三种形式传入，
-这里统一归一化为可读的本地绝对路径。
+调用方提供的分子或受体文件可能以本地绝对路径、相对路径、URL 三种形式传入，
+本模块统一归一化为可读的本地绝对路径。
 """
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 def _fetch_file(source: str, hint: str = "file") -> str:
     """把传入的文件来源归一化为本地路径。
 
-    - http(s) URL：下载到 assets/cache 下（同名文件已存在且非空则复用）
+    - `http(s)` URL：下载到 `assets/cache` 下，同名文件已存在且非空时复用
     - 绝对路径：原样返回
-    - 相对路径：依次在 cwd、工作区根、assets/、assets/uploads/、assets/cache/ 下查找
+    - 相对路径：依次在 cwd、工作区根、`assets/`、`assets/uploads/`、`assets/cache/` 下查找
     """
     if not source:
         raise FileNotFoundError("文件来源为空")
@@ -50,9 +50,9 @@ def _fetch_file(source: str, hint: str = "file") -> str:
 
 
 def slug(text: str) -> str:
-    """生成可安全用于文件名的标识（ASCII 名称规范化；非 ASCII 名称附短哈希避免重名）。
+    """生成可安全用于文件名的标识：ASCII 名称规范化，非 ASCII 名称附短哈希以区分同名文件。
 
-    放在 core 层是为了让对接 worker 与运行产物命名保持一致，同时不引入对上层模块的依赖。
+    实现放在 core 层，使对接 worker 与运行产物采用同一套命名，同时不引入对上层模块的依赖。
     """
     import hashlib
     import re

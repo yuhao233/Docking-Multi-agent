@@ -1,24 +1,24 @@
-"""受体质子化：与配体**同一目标 pH** 的准备流程（pdb2pqr + PROPKA → PDBQT）。
+"""受体质子化：与配体同一目标 pH 的准备流程（pdb2pqr + PROPKA 转 PDBQT）。
 
-## 为什么必须做
+## 该流程的作用
 
 对接是"受体 + 配体"的相互作用：配体按目标 pH 分配了质子化态，受体却停在
-meeko 残基模板的默认态（≈pH 7 的固定状态），两边就**不是同一套化学条件**：
+meeko 残基模板的默认态（≈pH 7 的固定状态），两边就不是同一套化学条件：
 
-- HIS 的质子化/互变异构（HID/HIE/HIP）直接决定它能否作为氢键供体；
+- HIS 的质子化与互变异构（HID/HIE/HIP）直接决定它能否作为氢键供体；
 - ASP/GLU 在酸性条件下应质子化，否则 S1/活性中心的静电与氢键互补全错；
 - 凝血酶的 ASP189（PROPKA pKa ≈ 6.6）正是决定 P1 精氨酸/脒基结合的关键残基。
 
 本模块用 `pdb2pqr --ph-calc-method=propka --with-ph=<pH>` 生成 PQR（含氢与电荷/半径），
-再交给 meeko `--read_pqr` 写出受体 PDBQT。**逐残基的 PROPKA pKa 与最终 HIS 状态都会留痕**，
+再交给 meeko `--read_pqr` 写出受体 PDBQT。逐残基的 PROPKA pKa 与最终 HIS 状态都会留痕，
 可人工核对；PQR 与 PROPKA 文本会随运行产物交付。
 
-## 失败时的口径（绝不假装做过）
+## 失败时的口径（不假设处理已生效）
 
-- 找不到 pdb2pqr / pdb2pqr 失败 / meeko 读 PQR 失败 → **回退**到原标准准备流程，
+- 找不到 pdb2pqr、pdb2pqr 失败或 meeko 读 PQR 失败时，回退到原标准准备流程，
   并在 `receptor_protonation` 里写明 `applied=False` 与原因，报告同时给出
   「受体质子化为模板默认态，未与配体目标 pH 对齐」的提示；
-- 要求保留的杂原子若不是**单原子离子**（金属离子/卤素），说明有有机辅因子：
+- 要求保留的杂原子若不是单原子离子（金属离子/卤素），说明有有机辅因子：
   pdb2pqr 无法为它们参数化，此时同样回退标准流程（保辅因子优先），并如实记录。
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
-#: 主链原子：缺任一即认为该残基不完整（pdb2pqr 会因缺原子直接报错退出）
+#: 主链原子：缺少其中任一原子即认为该残基不完整（pdb2pqr 遇到时直接报错退出）
 _BACKBONE = ("N", "CA", "C", "O")
 #: pdb2pqr 能直接参数化的单原子离子（可随蛋白一起做 pH 处理）
 SIMPLE_IONS = frozenset({
@@ -61,7 +61,7 @@ def _env(name: str, default: str = "") -> str:
 
 
 def pdb2pqr_bin() -> str:
-    """定位 pdb2pqr：`PDB2PQR_BIN` → PATH → 常见本地安装（PyMOL 自带）。找不到返回空串。"""
+    """定位 pdb2pqr：依次查找 `PDB2PQR_BIN`、PATH、常见本地安装（PyMOL 自带）。找不到返回空串。"""
     candidate = _env("PDB2PQR_BIN")
     if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
         return candidate
@@ -130,7 +130,7 @@ def filter_incomplete_residues(pdb_text: str) -> Tuple[str, List[Dict[str, Any]]
 
 
 def hetatm_are_simple_ions(pdb_text: str) -> Tuple[bool, List[str]]:
-    """要保留的杂原子是否都是单原子离子（否则 pdb2pqr 无法参数化 → 不应走 pH 路径）。"""
+    """要保留的杂原子是否都是单原子离子（否则 pdb2pqr 无法参数化，不应走 pH 路径）。"""
     residues = {line[17:20].strip().upper() for line in pdb_text.splitlines()
                 if line.startswith("HETATM")}
     unsupported = sorted(r for r in residues if r not in SIMPLE_IONS)
@@ -144,12 +144,12 @@ _PQR_RESID_RE = re.compile(r"^([A-Za-z]?)(-?\d+)([A-Za-z]?)$")
 def parse_pqr_atom_line(line: str) -> Optional[Dict[str, Any]]:
     """解析一条 PQR 的 ATOM/HETATM 行，返回字段字典；不是原子行或无法解析时返回 None。
 
-    **为什么不能只按白空格切**：pdb2pqr 按 PDB 固定列写 PQR，白空格切分有两种粘连：
-      * 插入码贴在残基号上：`ILE H 36A` → 第 6 个 token 是 `36A`；
-      * **4 位残基号**把链号挤到没有空格：`GLU A1005` → 该行只有 10 个 token，
-        meeko 会把 `A1005` 当链号、把 x 坐标当残基号 → `int('128.990')` 崩
-        （注意：7YHP 的残基号到 1xxx，整条 pH 准备因此失败、静默回退标准流程）。
-    这里按「最后 5 个 token 一定是 x y z charge radius」反推残基键，不依赖列宽。
+    只按白空格切分不可行的原因：pdb2pqr 按 PDB 固定列写 PQR，白空格切分有两种粘连：
+      * 插入码贴在残基号上：`ILE H 36A`，第 6 个 token 是 `36A`；
+      * 4 位残基号把链号挤到没有空格：`GLU A1005` 行内只有 10 个 token，
+        meeko 会把 `A1005` 当链号、把 x 坐标当残基号，`int('128.990')` 抛错
+        （7YHP 的残基号到 1xxx，整条 pH 准备因此失败并静默回退标准流程）。
+    本实现按「最后 5 个 token 是 x y z charge radius」反推残基键，不依赖列宽。
     """
     parts = line.split()
     if len(parts) < 9 or parts[0] not in ("ATOM", "HETATM"):
@@ -167,7 +167,7 @@ def parse_pqr_atom_line(line: str) -> Optional[Dict[str, Any]]:
 
 
 def format_pqr_atom_line(atom: Dict[str, Any]) -> str:
-    """把 `parse_pqr_atom_line` 的结果写成 meeko 一定能解析的形态（链/残基号/插入码各自独立）。"""
+    """把 `parse_pqr_atom_line` 的结果写成 meeko 可解析的形态（链/残基号/插入码各自独立）。"""
     parts = [str(atom["record"]), str(atom["serial"]), str(atom["name"]), str(atom["resname"])]
     if atom.get("chain"):
         parts.append(str(atom["chain"]))
@@ -183,8 +183,8 @@ def normalize_pqr_for_meeko(pqr_text: str) -> Tuple[str, int]:
     """把 pdb2pqr 的 PQR 规范化成 meeko 能解析的形式，返回 (规范化文本, 改写行数)。
 
     meeko 的 PQR 解析器要求 `serial name resName [chain] resSeq [icode] x y z charge radius`
-    是**独立字段**；pdb2pqr 的固定列写法在两种情况下会让白空格切分粘连（插入码、4 位残基号），
-    两种都由 `parse_pqr_atom_line` 统一拆开。**不能丢掉插入码**（1DWC 里 36 与 36A 是不同残基）。
+    是独立字段；pdb2pqr 的固定列写法在两种情况下出现白空格切分粘连（插入码、4 位残基号），
+    两种都由 `parse_pqr_atom_line` 统一拆开。插入码不可丢弃（1DWC 里 36 与 36A 是不同残基）。
     非原子行（REMARK/TER/END…）原样保留。
     """
     split = 0
@@ -193,7 +193,7 @@ def normalize_pqr_for_meeko(pqr_text: str) -> Tuple[str, int]:
         if line.startswith(("ATOM", "HETATM")):
             parts = line.split()
             key_tokens = parts[4:-5] if len(parts) >= 9 else []
-            # 已经是规范形状（链与残基号各自独立）→ 原样保留，不做无谓的数值重排
+            # 已经是规范形状（链与残基号各自独立），原样保留，不做数值重排
             canonical = ((len(key_tokens) == 1 and key_tokens[0].lstrip("-").isdigit())
                          or (len(key_tokens) == 2 and len(key_tokens[0]) == 1
                              and key_tokens[1].lstrip("-").isdigit()))
@@ -234,7 +234,7 @@ def titratable_states(rows: Sequence[Dict[str, Any]], ph: float) -> Dict[str, An
         if resname not in _ACIDIC and resname not in _BASIC:
             continue
         pka = float(row.get("pka") or 0.0)
-        protonated = ph < pka          # 酸: pH<pKa 质子化；碱: pH<pKa 质子化 —— 判据同一形式
+        protonated = ph < pka          # 酸与碱的判据同一形式：pH<pKa 即质子化
         bucket = summary.setdefault(resname, {"total": 0, "protonated": 0})
         bucket["total"] += 1
         bucket["protonated"] += 1 if protonated else 0
@@ -248,8 +248,8 @@ def titratable_states(rows: Sequence[Dict[str, Any]], ph: float) -> Dict[str, An
 def his_states_from_pqr(pqr_text: str) -> Dict[str, int]:
     """从 PQR 的氢原子位置读出 HIS 实际被赋予的状态（HID / HIE / HIP）。
 
-    PROPKA 只给 pKa，互变异构由 pdb2pqr 优化决定 —— 所以这里读**真正应用了什么**，
-    而不是用 pKa 猜。HD1 与 HE2 同时在 → 双质子化（HIP）。
+    PROPKA 只给 pKa，互变异构由 pdb2pqr 优化决定，因此本函数读真正应用了什么，
+    而不用 pKa 推测。HD1 与 HE2 同时存在时判为双质子化（HIP）。
     """
     atoms: Dict[Tuple[str, str], set] = {}
     for line in pqr_text.splitlines():
@@ -282,10 +282,10 @@ def _cache_key(prot_text: str, ph: float) -> str:
 def parse_unmatched_residues(text: str) -> List[str]:
     """从 meeko 输出里解析「模板匹配失败」的残基键（如 `A:402`）。
 
-    meeko 的两种表现都要认：
+    meeko 的两种表现都要识别：
       - 严格模式：整条准备报错退出，错误里带 `Template matching failed for: ['A:402', ...]`；
-      - 容错模式（`-x/--delete_bad_res`）：打 warning 后丢弃这些残基继续（**必须**如实上报，
-        否则用户不会知道受体少了一段）。
+      - 容错模式（`-x/--delete_bad_res`）：打 warning 后丢弃这些残基继续，此时必须如实上报，
+        否则使用者不会知道受体少了一段。
     """
     if not text or "Template matching failed" not in text:
         return []
@@ -342,13 +342,13 @@ def _run_meeko_pqr(meeko_pqr: str, out_base_ph: str, extra: Sequence[str]) -> Tu
     return True, text, ""
 
 
-#: 准备阶梯（按**质量从优到劣**）。为什么是这个顺序：
+#: 准备阶梯（按质量从优到劣排列），顺序依据如下：
 #:   1. `opt`：pdb2pqr 默认会做氢键网络优化（His 的 HID/HIE 由氢键环境决定，最接近真实）；
-#:   2. `noopt`：只按几何摆氢。某些结构里 pdb2pqr 的优化会把羟基氢**摆到受体羰基氧 1.1 Å 处**
+#:   2. `noopt`：只按几何摆氢。某些结构里 pdb2pqr 的优化会把羟基氢摆到受体羰基氧 1.1 Å 处
 #:      （8ZE2 的 ILE402···THR406：晶体 O···O 仅 2.15 Å），meeko 的距离法键感知会把它当成
-#:      **残基间共价键**而拒绝整条 PQR。此时退到几何摆氢可以**保住全部残基**，只损失 His 互变异构的择优；
+#:      残基间共价键而拒绝整条 PQR。此时退到几何摆氢可以保住全部残基，只损失 His 互变异构的择优；
 #:   3. `delete`：仍然不行才删掉模板不匹配的残基（并逐个上报）。
-#: 明确**不**先删残基：删掉的可能正是活性位点附近的残基，代价比"氢摆放不最优"大得多。
+#: 不先删残基的原因：删掉的可能正是活性位点附近的残基，代价比"氢摆放不最优"大得多。
 _PREP_LADDER: Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], ...] = (
     ("opt", (), ()),
     ("noopt", ("--noopt",), ()),
@@ -364,9 +364,9 @@ def prepare_pdbqt_at_ph(prot_pdb: str, out_base: str, ph: float,
     产物一律写到 `out_base` 前缀下（调用方已按「源文件内容 + keep 集」内容寻址），
     因此并发运行不会互相覆盖；同一 (蛋白内容, pH) 组合再次请求时直接复用缓存。
 
-    失败时依次尝试 `_PREP_LADDER` 里的降级方案（见其注释），每一步的成败都记进
-    `info["attempts"]`，最终用的是哪一档写 `info["variant"]`，被 meeko 丢弃的残基写
-    `info["dropped_bad_residues"]` —— 报告与运行笔记都会显示。
+    失败时按顺序套用 `_PREP_LADDER` 里的降级方案（见其注释），每一步的成败都记进
+    `info["attempts"]`，最终采用的档位写 `info["variant"]`，被 meeko 丢弃的残基写
+    `info["dropped_bad_residues"]`，报告与运行笔记都会显示。
     """
     _ = cache_dir or os.path.dirname(out_base) or "."   # 产物统一写在 out_base 前缀下（内容寻址）
     pqr_path = f"{out_base}_ph{ph:g}.pqr"
@@ -473,10 +473,10 @@ def prepare_pdbqt_at_ph(prot_pdb: str, out_base: str, ph: float,
 def sidecar_path(out_base: str, ph: float) -> str:
     """pH 受体的溯源侧车：与 `<out_base>_ph<ph>.pdbqt` 同名同目录。
 
-    为什么单独写一份：`prepare_user_receptor` 的位点侧车挂在**基础名**上
-    （`<base>.site.json`），而 pH 产物是 `<base>_ph7.4.pdbqt` —— 下游只拿到这个 PDBQT 时
-    按名字找不到位点侧车，也就丢掉了「确实按 pH 7.4 准备过」的溯源（真实踩到过：
-    报告把一次**做过** pH 处理的受体误报成「未按 pH 准备」）。
+    单独写一份的原因：`prepare_user_receptor` 的位点侧车挂在基础名上
+    （`<base>.site.json`），而 pH 产物是 `<base>_ph7.4.pdbqt`，下游只拿到这个 PDBQT 时
+    按名字找不到位点侧车，也就丢掉了「确实按 pH 7.4 准备过」的溯源。此前的实现会把
+    做过 pH 处理的受体误报成「未按 pH 准备」。
     """
     return f"{out_base}_ph{ph:g}.site.json"
 

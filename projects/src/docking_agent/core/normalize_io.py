@@ -1,17 +1,17 @@
-"""统一输入归一化层：把「脏」的分子库 / 受体文件归一化为标准表示。
+"""统一输入归一化层：把格式不规范的分子库 / 受体文件归一化为标准表示。
 
-用户给的输入几乎不会刚好是目标格式：可能是 URL / 绝对路径 / 相对路径，
+调用方给出的输入往往不是目标格式：可能是 URL / 绝对路径 / 相对路径，
 可能是 GBK 编码、带 BOM、带注释行，可能是 `.txt` 里装着 SDF、`.sdf` 里装着 CSV，
 可能是 gzip / zip 压缩包，也可能只是聊天里粘贴的一段自由文本。本模块把这些差异
-统一收敛为两类稳定产物：
+收敛为两类稳定产物：
 
   - 分子库：`[{"id","name","smiles","source_file","source_index","raw"}, ...]`
             其中 `smiles` 一律是 RDKit 规范 SMILES，按规范 SMILES 去重并合并别名；
   - 受体：`read_receptor_file()` 产出的受体路径 + 可解释的 normalization 摘要。
 
-设计原则与 `core/ligands.py`、`core/receptors.py` 保持一致：**只报事实、不静默失败**。
-一条坏记录不会丢掉整个分子库，但一定会在 `skipped` 里留下行号与原因；受体文件内容
-不像结构时直接抛 `ValueError` 并说明「看起来是什么、缺什么、该怎么办」。
+设计原则与 `core/ligands.py`、`core/receptors.py` 一致：只报事实、不静默失败。
+一条坏记录不会丢掉整个分子库，但会在 `skipped` 里留下行号与原因；受体文件内容
+不像结构时直接抛 `ValueError`，并说明「看起来是什么、缺什么、该怎么办」。
 """
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ from docking_agent.paths import cache_dir
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    # 本模块只导出**自己定义**的东西：归一化层的对外入口在 `core/normalize.py`
-    # （此前这里错列了 4 个 normalize.py 的名字，`__all__` 与实际内容不符）。
+    # 本模块只导出自身定义的名字：归一化层的对外入口在 `core/normalize.py`
+    # （该清单曾错列 4 个 `normalize.py` 的名字，与模块实际内容不符）。
     "sniff_format",
 ]
 
@@ -51,7 +51,7 @@ FORMATS = ("sdf", "mol", "mol2", "csv", "tsv", "smi", "pdb", "cif", "xlsx", "unk
 _STRUCTURE_FORMATS = frozenset({"pdb", "cif", "pdbqt"})
 #: 文本类格式（需要解码；xlsx/unknown 不需要）
 _TEXT_FORMATS = frozenset({"sdf", "mol", "mol2", "csv", "tsv", "smi", "pdb", "cif"})
-#: 扩展名 → 格式（只在内容为空 / 无法判断时当提示用，绝不优先于内容）
+#: 扩展名到格式的对照（只在内容为空 / 无法判断时当提示用，优先级低于内容）
 _EXT_HINT = {
     ".sdf": "sdf", ".sd": "sdf", ".mol": "mol", ".mol2": "mol2",
     ".csv": "csv", ".tsv": "tsv", ".smi": "smi", ".smiles": "smi", ".txt": "smi",
@@ -72,8 +72,8 @@ _SMILES_ALIASES = frozenset({
 })
 _INCHI_ALIASES = frozenset({"inchi", "inchikey", "inchi_key", "inchi键"})
 
-#: InChIKey 是**单向哈希**，RDKit / InChI 库都无法离线反解。这里内置常见化合物的
-#: 键 → 规范 SMILES 映射（键由 RDKit `MolToInchiKey` 生成），并对未知键如实跳过。
+#: InChIKey 是单向哈希，RDKit / InChI 库都无法离线反解。这里内置常见化合物的
+#: 键到规范 SMILES 的映射（键由 RDKit `MolToInchiKey` 生成），并对未知键如实跳过。
 _INCHIKEY_MAP = {
     "BNRNXUUZRGQAQC-UHFFFAOYSA-N": "CCCc1nn(C)c2c(=O)[nH]c(-c3cc(S(=O)(=O)N4CCN(C)CC4)ccc3OCC)nc12",  # sildenafil
     "BQJCRHHNABKAKU-KBQPJGBKSA-N": "CN1CC[C@]23c4c5ccc(O)c4O[C@H]2[C@@H](O)C=C[C@H]3[C@H]1C5",  # morphine
@@ -105,7 +105,7 @@ _INCHIKEY_ANY_RE = re.compile(r"[A-Z]{14}-[A-Z]{10}-[A-Z]")
 def _inchikeys_in(text: str) -> List[str]:
     """文本里出现过的所有 InChIKey（不要求独占一行）。
 
-    用于如实上报「这个结构是从内置映射表还原来的」——工具只报事实。
+    用于如实上报结构是否由内置映射表还原，工具只报事实。
     """
     return [m.group(0).upper() for m in _INCHIKEY_ANY_RE.finditer(str(text or ""))]
 
@@ -127,7 +127,7 @@ def _read_bytes(path: str) -> bytes:
 
 
 def _decode_bytes(data: bytes) -> Tuple[str, str]:
-    """按 utf-8-sig → utf-8 → gbk → utf-16 → latin-1 依次尝试，返回 (编码名, 文本)。"""
+    """按 utf-8-sig、utf-8、gbk、utf-16、latin-1 的次序逐个解码，返回 (编码名, 文本)。"""
     for enc in _ENCODINGS:
         try:
             return enc, data.decode(enc)
@@ -185,7 +185,7 @@ def _looks_like_inchikey(value: str) -> bool:
 
 
 def _canonical(mol: Any) -> str:
-    """分子 → 规范 SMILES（先隐式化显式氢）。失败返回 ""。"""
+    """把分子转成规范 SMILES（先隐式化显式氢）。失败返回 ""。"""
     if mol is None:
         return ""
     target = mol
@@ -233,7 +233,7 @@ def _canonical_from_smiles(value: str) -> Optional[str]:
 
 
 def _canonical_from_inchi(value: str) -> Optional[str]:
-    """InChI（可逆）或 InChIKey（单向哈希：内置表 → 本地缓存 → 在线反查）。"""
+    """InChI（可逆）或 InChIKey（单向哈希，依次查内置表、本地缓存、在线反查）。"""
     val = (value or "").strip()
     if not val:
         return None
@@ -257,8 +257,8 @@ def _canonical_from_inchi(value: str) -> Optional[str]:
 def _inchi_from_fields(fields: List[str], idx: Optional[int], delim: str) -> Optional[str]:
     """从表格字段里还原 InChI。
 
-    InChI 本身含逗号，未加引号时会被分隔符切成多段（真实脏输入）。这里从最长候选
-    开始逐步收缩，直到某一段能解析——既兼容正确加引号的 CSV，也兼容未加引号的情况。
+    InChI 本身含逗号，未加引号时会被分隔符切成多段。这里从最长候选
+    开始逐步收缩，直到某一段能解析，因此既兼容正确加引号的 CSV，也兼容未加引号的情况。
     """
     if idx is None or idx >= len(fields):
         return None
@@ -279,10 +279,10 @@ def _shorten_names(names: List[str], limit: int = 5) -> str:
 
 
 def _xlsx_cell_text(value: Any) -> str:
-    """把一个单元格值变成可解析的文本（数字/日期/布尔都要给出稳定形态）。
+    """把一个单元格值变成可解析的文本（数字/日期/布尔都给出稳定形态）。
 
-    Excel 里最容易踩的两个坑：整数被读成 `2244.0`（CID 之类会带小数点），
-    日期被读成 `datetime`（`str()` 出来带 00:00:00）。两者都会污染 ID/名称列。
+    Excel 读取时有两处常见偏差：整数被读成 `2244.0`（CID 之类会带小数点），
+    日期被读成 `datetime`（`str()` 结果带 00:00:00）。两者都会污染 ID/名称列。
     """
     if value is None:
         return ""
@@ -296,12 +296,12 @@ def _xlsx_cell_text(value: Any) -> str:
 
 
 def xlsx_to_csv_sheets(data: bytes, notes: List[str]) -> List[Tuple[str, str]]:
-    """把 xlsx 的**每张工作表**转成 CSV 文本，返回 `[(工作表名, csv文本)]`。
+    """把 xlsx 的每张工作表转成 CSV 文本，返回 `[(工作表名, csv文本)]`。
 
-    为什么不是只读 `wb.active`：真实表格的第一张工作表常是「说明/目录」，数据在第二张，
-    只读 active 会得到「0 个分子」（用户看到的就是「解析不出来」）。这里逐表转换，
-    由上层合并并在 notes 里如实写出每张表解析到多少个分子，绝不静默丢数据。
-    依赖缺失/文件损坏都只写 notes 并返回空列表，**不抛异常**。
+    只读 `wb.active` 会漏数据：表格的第一张工作表常是「说明/目录」，数据在第二张，
+    此时解析结果为「0 个分子」。因此这里逐表转换，由上层合并并在 notes 里如实写出
+    每张表解析到多少个分子，避免静默丢数据。
+    依赖缺失或文件损坏都只写 notes 并返回空列表，不抛异常。
     """
     try:
         import openpyxl  # type: ignore
@@ -335,9 +335,9 @@ def _record(id_: str, smiles: str, raw: str, source_file: str, source_index: int
             cas: str = "") -> Dict[str, Any]:
     """标准分子记录：默认 id 与 name 同值。
 
-    `id_override`：表格文件里**单独有一列 ID**（如 `id,名称,smiles` 或 `编号,SMILES`）时，
-    把那一列作为真正的 `id`，而 name 仍是名称列 —— 用户要求「报告带上小分子 ID」时，
-    这个 ID 才是有信息量的（与名称不同）。
+    `id_override`：表格文件里单独有一列 ID（如 `id,名称,smiles` 或 `编号,SMILES`）时，
+    把那一列作为真正的 `id`，而 name 仍是名称列。报告需要带上小分子 ID 时，
+    该 ID 才有信息量（与名称不同）。
     """
     ident = str(id_override or "").strip() or id_
     record: Dict[str, Any] = {
@@ -348,8 +348,8 @@ def _record(id_: str, smiles: str, raw: str, source_file: str, source_index: int
         "source_index": int(source_index),
         "raw": raw,
     }
-    # 来源文件里的**附加字段**（SDF 的 ID/CAS/编号等）原样带走：用户要"输出带上 ID/CAS"时，
-    # 这些字段是唯一来源，不能在这一层丢掉（此前只留 name/smiles，报告里就没有 ID 列）。
+    # 来源文件里的附加字段（SDF 的 ID/CAS/编号等）原样带走：报告要"输出带上 ID/CAS"时，
+    # 这些字段是唯一来源，不能在这一层丢掉（只留 name/smiles 时报告里就没有 ID 列）。
     if cas:
         record["cas"] = str(cas)
     if fields:
@@ -432,10 +432,10 @@ def _analyze_tabular(text: str) -> Optional[Dict[str, Any]]:
 
 
 def sniff_format(path: str, data: bytes | None = None) -> str:
-    """按**内容**嗅探格式，扩展名只作提示。
+    """按内容嗅探格式，扩展名只作提示。
 
     返回 `"sdf"|"mol"|"mol2"|"csv"|"tsv"|"smi"|"pdb"|"cif"|"xlsx"|"unknown"`。
-    gzip / 普通 zip 会被透明地看进去（选第一个受支持成员）；xlsx 的 zip 签名会被
+    gzip / 普通 zip 会被透明地看进去（取第一个受支持成员）；xlsx 的 zip 签名会被
     识别为 `"xlsx"`。
     """
     name = str(path or "").lower()
@@ -449,7 +449,7 @@ def sniff_format(path: str, data: bytes | None = None) -> str:
     if not data:
         return _EXT_HINT.get(ext, "unknown")
 
-    # ---- 容器：透明看进去 ----
+    # ---- 容器：按压缩包内容继续嗅探 ----
     if data[:2] == b"\x1f\x8b":
         try:
             return sniff_format("", gzip.decompress(data))

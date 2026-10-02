@@ -1,14 +1,14 @@
-"""统一输入归一化层（解析与标准表示）：把「脏」输入收敛为分子库/受体的稳定表示。
+"""统一输入归一化层（解析与标准表示）：把不规范输入收敛为分子库与受体的稳定表示。
 
-本模块是 `core/normalize_io.py`（容器解包 + 格式嗅探 + 表格/编码基础设施）之上的
-**解析与归一化**部分，对外提供：
+本模块在 `core/normalize_io.py`（容器解包 + 格式嗅探 + 表格/编码基础设施）之上提供
+解析与归一化能力，对外接口为：
 
-  - 分子库：`normalize_ligand_file` / `normalize_ligand_text` → 规范 SMILES + 原始 ID；
-  - 受体：`normalize_receptor_source` → 可对接路径 + 可解释的化学溯源；
-  - 溯源落盘：`record_input_normalization` → 运行产物 `input_normalization.json`。
+  - 分子库：`normalize_ligand_file` / `normalize_ligand_text`，输出规范 SMILES 与原始 ID；
+  - 受体：`normalize_receptor_source`，输出可对接路径与化学溯源；
+  - 溯源落盘：`record_input_normalization`，写出运行产物 `input_normalization.json`。
 
-设计原则：**只报事实、不静默失败**。一条坏记录不会丢掉整库，但一定在 `skipped` 里
-留下行号与原因；受体内容不像结构时抛 `ValueError` 并说明「看起来是什么、缺什么、怎么办」。
+处理原则：只报事实、不静默失败。一条坏记录不会丢掉整库，但会记入 `skipped`，
+留下行号与原因；受体内容不像结构时抛 `ValueError`，说明内容像什么、缺什么、需要什么。
 """
 from __future__ import annotations
 
@@ -65,16 +65,16 @@ __all__ = [
 ]
 
 
-#: 「第 N 行解析不出分子」提示里**必须隐去**的内容：疑似密钥/凭据的赋值行。
-#: 为什么需要：这条提示会经 API 与报告展示给用户；用户误把 `.env` 之类交给解析器时，
-#: 逐行回显原文等于把 API Key 打印出来（真实漏洞）。提示本身仍要有用 —— 只隐去
-#: 疑似凭据行，其余照旧回显一小段。
+#: 「第 N 行解析不出分子」提示里需要隐去的内容：疑似密钥或凭据的赋值行。
+#: 该提示会经 API 与报告展示给调用方；把 `.env` 之类的文件交给解析器时，
+#: 逐行回显原文等于输出 API Key。该说明仍需可用，因此只隐去
+#: 疑似凭据行，其余回显一小段。
 _SECRETY_LINE = re.compile(
     r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|bearer|private[_-]?key)")
 
 
 def _line_hint(line: str, limit: int = 40) -> str:
-    """解析失败行的可展示提示：疑似凭据行只报「已隐去」，其余回显前 `limit` 个字符。"""
+    """解析失败行的可展示文案：疑似凭据行只报「已隐去」，其余回显前 `limit` 个字符。"""
     text = (line or "").strip()
     if not text:
         return "（空行）"
@@ -192,8 +192,8 @@ def _parse_sdf(data: bytes, local: Optional[str], source_file: str,
             if not smiles:
                 skipped.append({"line": start, "reason": f"第 {idx} 条 SDF 记录无法生成规范 SMILES"})
                 continue
-            # SDF 的附加字段（ID / CAS / MOLENAME / 编号…）：用户常要求"输出带上 ID 号"，
-            # 这些字段就写在 SDF 里，必须在这里取出来并一路带到排序表/CSV/报告。
+            # SDF 附加字段（ID / CAS / MOLENAME / 编号…）：这些字段写在 SDF 里，
+            # 需要在此取出并带到排序表、CSV 与报告，供「输出带上 ID 号」的场景使用。
             try:
                 props = {str(k): str(v).strip() for k, v in (mol.GetPropsAsDict() or {}).items()
                          if str(v).strip()}
@@ -209,7 +209,7 @@ def _parse_sdf(data: bytes, local: Optional[str], source_file: str,
         skipped.append({"line": blocks[0][0] if blocks else 1,
                         "reason": f"SDF 读取异常：{exc}"})
         idx = len(blocks)
-    # Supplier 可能因畸形块提前结束：剩余块按失败记录补报，绝不静默丢弃
+    # Supplier 可能因畸形块提前结束：剩余块按失败记录补报，不静默丢弃
     while idx < len(blocks):
         skipped.append({"line": blocks[idx][0],
                         "reason": f"第 {idx + 1} 条 SDF 记录不完整或无法解析"})
@@ -235,7 +235,7 @@ def _parse_mol(data: bytes, local: Optional[str], source_file: str, fmt: str,
     return [_record(name, smiles, text.strip(), source_file, 1)], [], {}
 
 
-#: 表格里「ID 列」的表头（中英文常见写法）——命中即作为分子 id
+#: 表格里「ID 列」的表头（中英文常见写法），命中即作为分子 id
 _ID_HEADER_RE = re.compile(
     r"^(id|编号|序号|分子id|分子编号|no\.?|num|number|catalog(\s*no\.?)?|cat\.?\s*no\.?|code|"
     r"compound(\s*id)?|zinc(\s*_?id)?|chembl(\s*_?id)?|pubchem(\s*_?cid)?|cid|cas(\s*_?no\.?)?)$",
@@ -260,16 +260,16 @@ def _parse_tabular(data: bytes, text: str, source_file: str,
                 smiles_idx = i
             elif kind == "inchi" and inchi_idx is None:
                 inchi_idx = i
-        # 表格里可能**单独有一列 ID**（id / 编号 / catalog / ChEMBL …）：抓出来当分子 id，
-        # 这样「报告带上小分子 ID」拿到的是文件里那个编号，而不是与名称重复的值。
+        # 表格里可能单独有一列 ID（id / 编号 / catalog / ChEMBL …）：取出作为分子 id，
+        # 使「报告带上小分子 ID」得到文件里的编号，而不是与名称重复的值。
         for i, header in enumerate(header_fields):
             if i == smiles_idx or i == inchi_idx:
                 continue
             if _ID_HEADER_RE.match(str(header or "").strip()):
                 id_idx = i
                 break
-        # 启发式常把 ID 列判成 name（例如表头 `id,name,smiles`）：
-        # 既然它是 ID 列，就把 name 让给后面真正的名称列（没有名称列时才回落到 ID）。
+        # 启发式会把 ID 列判成 name（例如表头 `id,name,smiles`）：该列既为 ID 列，
+        # name 归后面真正的名称列；没有名称列时才回落到 ID。
         if id_idx is not None and id_idx == name_idx:
             name_idx = next((i for i, kind in enumerate(kinds)
                              if kind == "name" and i != id_idx and i != smiles_idx), None)
@@ -322,8 +322,8 @@ def _parse_tabular(data: bytes, text: str, source_file: str,
                         name = field.strip()
                         break
         if not smiles:
-            # 行里带 InChIKey 时，把**真实失败原因**带出来（网络/未收录/校验不一致），
-            # 否则用户只看到"无法解析"，根本不知道是网络问题还是数据问题（已知缺陷）。
+            # 行里带 InChIKey 时带出具体失败原因（网络/未收录/校验不一致），
+            # 否则调用方只看到"无法解析"，无法区分网络问题与数据问题。
             detail = ""
             for key in _inchikeys_in(raw):
                 note = _inchikey_failure_note(key)
@@ -409,7 +409,7 @@ def _parse_smiles_text(text: str, source_file: str,
 
 
 def _inchikey_failure_note(key: str) -> str:
-    """把 InChIKey 解析失败的真实原因写进「跳过原因」（否则用户只看到"解析不出"）。"""
+    """把 InChIKey 解析失败的原因写进「跳过原因」（否则调用方只看到"解析不出"）。"""
     from docking_agent.core.inchikey import resolution_error  # 局部导入避免循环依赖
 
     detail = resolution_error(key)
@@ -420,7 +420,7 @@ def _inchikey_failure_note(key: str) -> str:
 
 def _parse_xlsx(source_file: str, data: bytes, notes: List[str],
                 name_prefix: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
-    """读 Excel：**合并所有能解析出分子的工作表**（转换在 normalize_io，见那里的说明）。"""
+    """读 Excel：合并所有能解析出分子的工作表（转换逻辑在 normalize_io）。"""
     records: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     meta: Dict[str, Any] = {}
@@ -477,7 +477,7 @@ def _parse_by_format(data: bytes, text: str, fmt: str, local: Optional[str],
 
 
 def _dedupe(records: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, List[str]]]:
-    """按规范 SMILES 去重：保留**第一条**记录，合并所有别名。"""
+    """按规范 SMILES 去重：保留第一条记录，合并所有别名。"""
     kept: List[Dict[str, Any]] = []
     groups: Dict[str, Dict[str, Any]] = {}
     dup_records: List[Dict[str, Any]] = []
@@ -544,8 +544,8 @@ def _finalize(source_file: str, fmt: str, records: List[Dict[str, Any]],
     from docking_agent.core.inchikey import provenance_notes  # 局部导入避免循环依赖
 
     all_notes.extend(provenance_notes(kept))
-    # 多片段（盐/溶剂）只报事实，不改写 smiles：下游 describe_ligand 会按最大有机片段对接
-    # 质子化态是**运行级**策略：这里只做库级汇总（每个分子都报会写出上百条重复 note），
+    # 多片段（盐/溶剂）只报事实，不改写 smiles：下游 describe_ligand 按最大有机片段对接
+    # 质子化态是运行级策略：此处只做库级汇总（逐分子上报会写出上百条重复 note），
     # 逐分子溯源在对接/性质结果与排序 CSV 里（`protonation_policy`/`charge_input`/`charge_used`）。
     protonated = 0
     for rec in kept:
@@ -624,11 +624,11 @@ def normalize_ligand_text(text: str, *, name_prefix: str = "MOL") -> Tuple[List[
     encoding, decoded = _decode_bytes(data) if fmt in _TEXT_FORMATS else ("", raw_text)
     records, skipped, meta = _parse_by_format(data, decoded or raw_text, fmt, None, "",
                                               name_prefix, notes)
-    # 逗号会让 `sniff_format` 把「名称:SMILES,名称:SMILES」判成 CSV（真实回归：删掉流水线后
-    # Agent 路径成了唯一入口，用户这样写就解析出 0 条）。一条都解析不出来时，用行内 SMILES
-    # 解析器再试一次；成功则按 smi 归并，失败保持原结论（不掩盖真正的 CSV 解析问题）。
-    # 只在**单行**文本上回退：多行说明它很可能真是 CSV/SDF（例如 name,inchikey 表里
-    # InChIKey 需要在线反查，CSV 解析可能暂时 0 条），此时回退会改写跳过原因、掩盖真实原因。
+    # 逗号会使 `sniff_format` 把「名称:SMILES,名称:SMILES」判成 CSV，误判后解析出 0 条记录。
+    # 此时用行内 SMILES 解析器再试一次；成功则按 smi 归并，
+    # 失败保持原结论（不掩盖 CSV 解析问题）。
+    # 只在单行文本上回退：多行更可能是 CSV/SDF（例如 name,inchikey 表里 InChIKey
+    # 需要在线反查，CSV 解析可能暂时 0 条），此时回退会改写跳过原因、掩盖原原因。
     if not records and raw_text.strip() and "\n" not in raw_text.strip():
         parsed = parse_smiles_text(raw_text)
         if parsed:
@@ -665,8 +665,8 @@ def normalize_receptor_source(source: str, *,
                               ph: Any = None) -> Tuple[str, Dict[str, Any]]:
     """把受体来源（URL/路径；可 gzip/zip 压缩）归一化为可对接的受体文件路径。
 
-    内容优先：扩展名像结构但内容不是结构 → `ValueError`（可执行的说明）；
-    扩展名未知但内容确实是结构 → 照常接受。返回 `(受体文件路径, normalization)`。
+    判定以内容优先：扩展名像结构而内容不是结构时抛 `ValueError`（含可执行的说明）；
+    扩展名未知而内容确实是结构时照常接受。返回 `(受体文件路径, normalization)`。
     """
     if not source:
         raise FileNotFoundError("受体来源为空")
@@ -725,7 +725,7 @@ def normalize_receptor_source(source: str, *,
         "protein": spec.get("protein"),
         "site_source": (spec.get("site") or {}).get("source") or "",
         "cocrystal_ligand": spec.get("cocrystal_ligand") or {},
-        # 受体质子化（是否与配体同一目标 pH）—— 报告与界面都要显示
+        # 受体质子化（是否与配体同一目标 pH），报告与界面都要显示
         "receptor_protonation": spec.get("receptor_protonation") or {},
     }
     return path, normalization

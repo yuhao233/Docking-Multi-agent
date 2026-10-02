@@ -1,6 +1,6 @@
 """报告骨架的后半部分：第 3–9 节（推荐分子、理化性质、结合模式、方法与局限、失败与跳过、结论、产物）。
 
-与 `report_sections_setup.py` 一样：每个 `section_*` 函数是「上下文 → 行列表」，
+与 `report_sections_setup.py` 一样：每个 `section_*` 函数把上下文转成行列表，
 由 `report.py:build_markdown_report()` 按固定顺序调用。
 """
 from __future__ import annotations
@@ -60,11 +60,11 @@ def _section_3_1_recommendations(ctx: ReportContext) -> List[str]:
              f"其余为 **C**；亲和力弱于 {crit['affinity_gate_kcal']:g} kcal/mol 者等级封顶为 C。"
              "缺数据的分量按 0 计入，表中以 `—` 标注。")
     L.append("")
-    # 排行表只放「决定名次」的 6 列：宽表在 PDF 里会被降级成逐行竖排（8 列以上），
+    # 排行表只放决定名次的 6 列：宽表在 PDF 里会被降级成逐行竖排（8 列以上），
     # 反而不整洁；其余逐分子指标（分子量/logP/TPSA/违例/相似度）在下面的结构卡里，
-    # 完整字段仍在 ranking.csv / 分子详情页。
-    # 协调 Agent 按用户要求附加的列（customize_report → extra_columns）：只加真实有值的字段，
-    # 列名来自共享字段表，取数仍是本次真实计算结果 —— 骨架不变，内容能按用户要求变化。
+    # 其余字段仍在 ranking.csv 与分子详情页。
+    # 协调 Agent 附加的列来自 customize_report 的 extra_columns：只加有值的字段，
+    # 列名取自共享字段表，取数仍是本次计算结果，骨架不变而内容可按调用方需要调整。
     extra_columns = ctx.extra_columns
     extra_headers = [REPORT_FIELD_LABELS.get(c, c) for c in extra_columns]
 
@@ -102,14 +102,14 @@ def _section_3_1_recommendations(ctx: ReportContext) -> List[str]:
     for note in (rec.get("notes") or [])[:2]:
         L.append(f"> {_brief(note, 90)}")
     L.append("")
-    # 逐分子卡片：**左边 2D 结构、右边指标表**（同一张图，网页/PDF/离线包一致），
-    # 下面再跟两行精简过的理由与建议。完整理由在产物与结果 JSON 里。
+    # 逐分子卡片：左侧 2D 结构、右侧指标表（网页/PDF/离线包为同一张图），
+    # 下面跟两行精简过的理由与建议，详细理由在产物与结果 JSON 里。
     L.append("#### 逐个分子：2D 结构 + 关键指标")
     L.append("")
     reasons_txt = 0
     for index, r in enumerate(rec["rows"], start=1):
         name = r.get("name") or r.get("smiles")
-        # 标题只写名次与名字：综合分/等级已经在卡片图里，重复两遍反而乱
+        # 标题只写名次与名字：综合分与等级已在卡片图里，重复两遍反而乱
         L.append(f"##### #{r.get('rank') or index} {name}")
         L.append("")
         L += ctx.figure_by_rel(f"charts/recommend_card_{index:02d}.png",
@@ -154,7 +154,7 @@ def _section_3_1_recommendations(ctx: ReportContext) -> List[str]:
 
 
 def _section_3_2_beats_control(ctx: ReportContext) -> List[str]:
-    """3.2 优于阳性对照的分子（与综合分排行互补，不是同一件事）。"""
+    """3.2 优于阳性对照的分子（与综合分排行互为补充）。"""
     L: List[str] = ["### 3.2 优于阳性对照的分子", ""]
     if not ctx.pc:
         L.append("未提供阳性对照，无法做以对照为基准的富集判断；可参考第 2 节排序，"
@@ -280,7 +280,7 @@ def _section_5_3_binding_rows(ctx: ReportContext) -> List[str]:
     L += ctx.figure_block("binding_scatter", "结合模式：相似度 vs 亲和力（含对照亲和力参考线）")
     L += ctx.figure_block("structure_grid",
                           "推荐分子结构对比（含阳性对照，按推荐排行；无推荐排行时按对接排序）")
-    # 展示对象 = **推荐分子**（全部），不再按亲和力另截一批；没有推荐排行时退回排序表
+    # 展示对象为推荐分子（全部），不按亲和力另截一批；没有推荐排行时退回排序表
     shown = ctx.recommended or ctx.ranking
     L.append(f"> 下表按**推荐分子**列出（{len(shown)} 个；推荐排行见第 3 节）"
              "；相似度取自同一批分子的结合模式分析。" if ctx.recommended
@@ -425,8 +425,8 @@ def section_8_conclusions(ctx: ReportContext) -> List[str]:
     L: List[str] = ["## 8. 结论与建议", ""]
     L.append("> 结论限定在本流程条件下（见第 6 节），用于候选优先级排序，需经实验验证。")
     L.append("")
-    # 只取协调 Agent 的**结论/建议**类小节：整段报告贴进来会让同一批数字出现两遍
-    # （第 1–7 节已用真实表格写过），用户明确要求"报告中不要重复内容"。
+    # 只取协调 Agent 的结论与建议类小节：整段报告贴进来会使同一批数字出现两遍
+    #（第 1–7 节已用表格写过），报告内容不重复是约定。
     narrative = extract_agent_conclusions(ctx.agent_narrative)
     if narrative:
         L.append("> 以下为协调 Agent 的结论/建议（数据与参数见第 1–7 节；完整原文见产物 "

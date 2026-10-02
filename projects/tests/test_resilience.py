@@ -1,6 +1,6 @@
-"""新增能力的回归测试：在线工具容错、任务取消、阳性对照可选。
+"""回归测试：在线工具容错、任务取消、阳性对照可选。
 
-全部为离线可跑（不依赖外网）；在线工具只测纯函数逻辑与错误映射。
+全部用例离线可跑，不依赖外网；在线工具只测纯函数逻辑与错误映射。
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _run_agent(client, body: dict, monkeypatch) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# 在线数据库工具：检索式容错（回归：此前把蛋白名拼进 accession: 导致 UniProt 400）
+# 在线数据库工具：检索式容错（回归用例：蛋白名曾被拼进 accession: 过滤器，UniProt 返回 400）
 # --------------------------------------------------------------------------- #
 def test_uniprot_query_chain_never_puts_names_into_accession_filter():
     from docking_agent.tools.online import _uniprot_queries
@@ -165,7 +165,7 @@ def test_agent_runs_positive_control_when_provided(client, monkeypatch) -> None:
 
 
 def test_smi_accepts_both_column_orders(tmp_path):
-    """.smi 既要支持标准的「SMILES 名称」，也要兼容中文用户常写的「名称 SMILES」。"""
+    """.smi 既要支持标准的「SMILES 名称」，也要兼容中文使用者常写的「名称 SMILES」。"""
     from docking_agent.core import read_molecule_file
 
     f1 = tmp_path / "standard.smi"
@@ -227,7 +227,7 @@ def _slow_worker_30s(item):  # noqa: ANN001, ANN201 - 必须是模块级函数�
 
 
 # --------------------------------------------------------------------------- #
-# 取消必须在**单个分子还在跑**时就生效（注意：chat 模式点停止后 load 不降）
+# 取消在单个分子仍运行时即须生效；chat 模式点停止后系统负载下降
 # --------------------------------------------------------------------------- #
 def test_cancel_during_long_molecule_stops_promptly(monkeypatch: pytest.MonkeyPatch) -> None:
     """第一个分子就要跑很久时，「停止」必须在秒级内终止进程池，而不是等它跑完。"""
@@ -252,8 +252,8 @@ def test_cancel_during_long_molecule_stops_promptly(monkeypatch: pytest.MonkeyPa
     thread = threading.Thread(target=_call, daemon=True)
     started = time.time()
     thread.start()
-    time.sleep(1.5)          # 让进程池真的跑起来
-    ev.set()                 # 用户点了「停止」
+    time.sleep(1.5)          # 等待进程池进入运行状态
+    ev.set()                 # 调用方点了「停止」
     thread.join(timeout=15)
     elapsed = time.time() - started
 
@@ -264,7 +264,7 @@ def test_cancel_during_long_molecule_stops_promptly(monkeypatch: pytest.MonkeyPa
 
 def test_agent_mode_docking_receives_run_cancel_flag(monkeypatch: pytest.MonkeyPatch,
                                                     tmp_path: Path) -> None:
-    """chat/多 Agent 模式的对接必须接上本次运行的取消标志，否则停止按钮是摆设。"""
+    """chat/多 Agent 模式的对接必须接上本次运行的取消标志，否则停止按钮不生效。"""
     from docking_agent.cancellation import cancel_flag, clear_cancel, request_cancel
     from docking_agent.runs import current_run
     from docking_agent.tools import docking as TD
@@ -302,7 +302,7 @@ def test_agent_mode_docking_receives_run_cancel_flag(monkeypatch: pytest.MonkeyP
 
 def test_cancelled_run_refuses_to_start_new_docking(monkeypatch: pytest.MonkeyPatch,
                                                     tmp_path: Path) -> None:
-    """已取消的运行里，在途的工具调用不得再开始整库对接（注意：取消后 load 反涨）。"""
+    """已取消的运行里，在途的工具调用不得再开始整库对接，否则取消后系统负载回升。"""
     from docking_agent.runs import current_run
     from docking_agent.tools import docking as TD
 
@@ -347,10 +347,10 @@ def test_cancelled_flag_blocks_before_starting_pool() -> None:
 
 def test_cancel_does_not_let_pool_chew_the_queued_molecules(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """取消后**不能再有**新分子被算完：队列里待跑的任务要一起取消，worker 要真被杀掉。
+    """取消后不能再有新分子被算完：队列里待跑的任务要一起取消，worker 要被真正终止。
 
-    注意：147 个分子在 24 个 worker 上一次性提交，`terminate` 之后执行器的管理线程
-    发现队列还有一百多个任务，于是重新拉起 worker 继续啃 —— 用户点了停止，load 反而涨到 40。
+    此前的实现曾在 147 个分子、24 个 worker 的配置下一次性提交任务：`terminate` 之后执行器的
+    管理线程读到队列里还有一百多个任务，重新拉起 worker 继续执行，调用方点停止后系统负载反而涨到 40。
     """
     import threading
     import time
@@ -391,9 +391,9 @@ def test_cancel_does_not_let_pool_chew_the_queued_molecules(
 def test_single_molecule_docking_is_cancellable(monkeypatch: pytest.MonkeyPatch) -> None:
     """单分子对接也必须能被「停止」打断。
 
-    旧实现里 ≤7 个分子走「单进程多线程」，Vina 在进程内跑、没法从外部杀掉，
-    只能等本分子跑完（用户点停止后 load 不降）。现在所有对接都在 worker 进程里，
-    因此单分子同样秒级可取消。
+    此前的实现中不超过 7 个分子走「单进程多线程」，Vina 在进程内运行，无法从外部终止，
+    只能等该分子算完，调用方点停止后系统负载不下降。当前所有对接都在 worker 进程里运行，
+    因此单分子同样可在秒级取消。
     """
     import threading
     import time

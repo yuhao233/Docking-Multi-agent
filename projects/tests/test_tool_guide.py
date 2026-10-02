@@ -1,4 +1,4 @@
-"""工具用法文档：Agent 按需查阅（而不是把纪律堆进系统提示词）。"""
+"""工具用法文档：由 Agent 按需查阅，操作细则不集中放入系统提示词。"""
 from __future__ import annotations
 
 

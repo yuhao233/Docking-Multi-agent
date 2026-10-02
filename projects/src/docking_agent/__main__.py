@@ -1,4 +1,4 @@
-"""`python -m docking_agent` 入口。"""
+"""`python -m docking_agent` 命令行入口：调用 `cli.main` 并以其返回值作为退出码。"""
 from __future__ import annotations
 
 import sys

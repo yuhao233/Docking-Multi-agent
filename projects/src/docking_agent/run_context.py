@@ -1,12 +1,11 @@
-"""「当前运行」的**只读获取点**：反转 `core/` → `runs/` 的反向依赖（审计 V2）。
+"""「当前运行」的只读获取点：反转 `core/` 到 `runs/` 的反向依赖。
 
-问题：`core/normalize.py` 与 `core/protonation.py` 各有一处
-`from docking_agent.runs import current_run`，于是最底层的**纯计算包**传递依赖了
-`runs` → `reporting.store`（持久化层）。`core/` 反向依赖报告层是分层错误：
-单测/脚本只想算个数，却被迫拉起运行记录与产物存储。
+`core/normalize.py` 与 `core/protonation.py` 各自 `from docking_agent.runs import current_run`，
+最底层的纯计算包因此传递依赖 `runs` 与 `reporting.store`（持久化层）。`core/` 反向依赖
+报告层属于分层错误：单测或脚本只做数值计算，仍会被迫拉起运行记录与产物存储。
 
-做法：上层在导入时把「怎么读当前运行」注册进来，`core/` 只读本模块。
-本模块**不 import 任何项目内模块**（保证可以被任何层安全导入）：
+约定：上层在导入时注册「怎么读当前运行」，`core/` 只读本模块。
+本模块不 import 任何项目内模块，因此可以被任何层安全导入：
 
     # runs.py（上层）导入时注册
     from docking_agent import run_context
@@ -16,7 +15,7 @@
     from docking_agent import run_context
     run = run_context.active_run_or_none()
 
-没有注册（CLI / 脚本 / 单测）时返回 `None`，与原先「没有运行上下文」的行为一致。
+没有注册（CLI、脚本、单测）时返回 `None`，与没有运行上下文时的行为一致。
 """
 from __future__ import annotations
 

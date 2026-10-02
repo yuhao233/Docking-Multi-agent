@@ -1,6 +1,6 @@
-"""固定格式的 Markdown 报告生成（两种运行模式共用同一模板）。
+"""固定格式的 Markdown 报告生成，两种运行模式共用同一模板。
 
-报告章节顺序与编号**固定**，便于人工阅读与机器解析：
+报告章节顺序与编号固定，便于人工阅读与机器解析：
 
     表 1  报告信息（运行编号 / 模式 / 生成时间 / 受体 / 对接盒 / 参数 / 计数）
     ## 1. 任务与参数
@@ -23,16 +23,16 @@
 
 排版约定（Markdown 与 PDF 共用同一套骨架）：
 
-* 图、表都有**连续编号与题注**（表题在表上方，图题在图下方）；
-* 图片以**相对路径**内嵌（`![图 N …](charts/xxx.png)`），任何 Markdown 阅读器都能直接显示；
-  网页报告页会把相对路径解析成产物接口的真实 `<img src>`，界面不出现任何地址文本；
-* 正文**不出现 URL**：产物引用统一写成「文件名 + 章节位置」，不使用裸链接；
-* 数字格式统一：亲和力 2 位小数 + 单位 `kcal/mol`、分子量 2 位、logP/TPSA 2 位、百分比 1 位。
+* 图、表均带连续编号与题注，表题在表上方，图题在图下方；
+* 图片以相对路径内嵌，写法为 Markdown 图片标签加编号图题（`图 N …` 与 `charts/xxx.png`），
+  Markdown 阅读器可直接显示；网页报告页把相对路径解析成产物接口的真实 `<img src>`，界面不出现地址文本；
+* 正文不出现 URL：产物引用统一写成「文件名加章节位置」，不使用裸链接；
+* 数字格式统一：亲和力 2 位小数加单位 `kcal/mol`、分子量 2 位、logP/TPSA 2 位、百分比 1 位。
 
-**结构**（第 2 波拆分）：原先这里是一个 900+ 行的 `build_markdown_report()`。现在它只做两件事：
-构造 `ReportContext`（见 `report_context.py`，集中所有「算一次」的派生数据与图/表编号），
-再按下面的固定顺序调用各章节函数（见 `report_sections_setup.py` / `report_sections_results.py`）。
-每个章节函数都是「上下文 → 行列表」的纯函数，`tests/test_report_golden.py` 用逐字节快照兜底。
+模块划分：`build_markdown_report()` 先构造 `ReportContext`（见 `report_context.py`，
+集中存放只计算一次的派生数据与图/表编号），再按固定顺序调用各章节函数
+（见 `report_sections_setup.py` 与 `report_sections_results.py`）。各章节函数是由上下文
+生成行列表的纯函数，`tests/test_report_golden.py` 以逐字节快照校验输出。
 """
 from __future__ import annotations
 
@@ -60,11 +60,11 @@ from docking_agent.reporting.report_sections_setup import (
     section_header,
 )
 
-# 仍从本模块导出：`artifacts.py` 与 `pdf.py` 通过 `report.CHART_FILES` / `report.tool_versions` 复用
+# 仍从本模块导出：`artifacts.py` 与 `pdf.py` 经 `report.CHART_FILES` 与 `report.tool_versions` 复用
 __all__ = ["CHART_FILES", "build_markdown_report", "tool_versions"]
 
-#: 报告骨架的**固定渲染顺序**（章节编号与顺序是报告契约的一部分 —— 不要重排）。
-#: 图表编号计数器在上下文里递增，因此顺序也决定了图/表编号。
+#: 报告骨架的固定渲染顺序（章节编号与顺序属于报告契约，不重排）。
+#: 图表编号计数器在上下文中递增，因此该顺序同时决定图/表的编号。
 SECTIONS: List[Callable[[ReportContext], List[str]]] = [
     section_header,
     section_0_requirements,
@@ -89,8 +89,8 @@ def build_markdown_report(result: Dict[str, Any], *, kind: str = "agent",
                           created_at: str = "", top_n: int = 0) -> str:
     """按固定模板生成报告。
 
-    agent_narrative：多 Agent 模式下协调 Agent 的结论文本，放入固定的第 8 节。
-    agent_models：多 Agent 模式下各角色 Agent 实际使用的模型（每个角色独立实例）。
+    `agent_narrative`：多 Agent 模式下协调 Agent 的结论文本，放入固定的第 8 节。
+    `agent_models`：多 Agent 模式下各角色 Agent 实际使用的模型（每个角色独立实例）。
     """
     ctx = ReportContext(result, kind=kind, run_id=run_id, receptor_label=receptor_label,
                         site=site, artifacts=artifacts, agent_narrative=agent_narrative,

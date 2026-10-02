@@ -1,15 +1,15 @@
-"""候选选择（choices）的生命周期：**同一个问题只问一次、只显示一份**。
+"""候选选择（choices）的生命周期约束：同一个问题只询问一次，界面上只保留一份候选。
 
-注意：
-  「配体选择出现了两次：一个很快很短，直接让选配体；另一个慢，会说受体解析完成、
-   配体需要选择，并且会覆盖之前的输出。如果点了先出现的那个选项，后面的选项就出不来了。」
+服务端的两条不变式：
+  1. `publish_choices` 以 kind+id 判定「同一个问题」，已下发的候选不被新的
+     label/prompt 改写；`run.data["choices"]` 若被改写，`_tick` 会因内容变化重发 SSE，
+     前端会覆盖已有选项；
+  2. 候选清空后，同一问题再次需要时仍可重新下发；幂等标记只作用于未清空的候选，
+     不吞掉「先问、已答、又问」这条路径。
 
-根因是两处：
-  1. `publish_choices` 只要 kind+id 相同就算「同一个问题」，但旧实现仍会用**新的**
-     label/prompt 改写 `run.data["choices"]` —— 于是 SSE 又发一份（`_tick` 比的是内容），
-     前端把已有的选项**覆盖**掉；
-  2. 前端 `clearChoicesEverywhere()` 清空**所有**消息的候选、`applyChoice` 运行中点选又被
-     busy 判定静默丢弃。前端的看护在 `scripts/browser_check.py`，这里看住服务端的两条不变式。
+前端侧的对应行为：`clearChoicesEverywhere()` 清空所有消息的候选，`applyChoice` 在运行中的
+点选被 busy 判定静默丢弃，因此服务端不依赖前端补发候选。
+前端的看护在 `scripts/browser_check.py`，本模块看住服务端的两条不变式。
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from docking_agent.tools.choices import clear_choices, publish_choices
 
 
 def _molecule_choices(query: str) -> list:
-    """两套写法解析到同一个 CID（真实场景：代森锰锌 / Mancozeb）。"""
+    """两种写法解析到同一个 CID（示例：代森锰锌 / Mancozeb）。"""
     return [
         {"id": "molecule:3034368:raw", "kind": "molecule",
          "label": "Mancozeb（CID 3034368） · PubChem 原始多组分结构",
@@ -32,7 +32,7 @@ def _molecule_choices(query: str) -> list:
 
 
 def test_republishing_the_same_question_keeps_the_first_options(run_ctx: Any) -> None:
-    """同一问题重复发布 → `choices` 保持第一次那份（第二次的 prompt 不得覆盖）。"""
+    """同一问题重复发布时，`choices` 保持第一次下发的版本，第二次的 prompt 不覆盖。"""
     run, _board = run_ctx
     publish_choices("molecule", _molecule_choices("代森锰锌"), note="需要确认取法", runtime=None)
     first = [dict(c) for c in run.data["choices"]]
@@ -45,9 +45,9 @@ def test_republishing_the_same_question_keeps_the_first_options(run_ctx: Any) ->
 
 
 def test_clear_then_republish_really_asks_again(run_ctx: Any) -> None:
-    """清掉候选（解析成功后）→ 同一问题若再次真的需要，必须能重新下发。
+    """候选清空（解析成功后）后，同一问题再次出现时需要能重新下发。
 
-    幂等标记不能把「先问 → 已答 → 又问」这条路一起吞掉。
+    幂等标记不覆盖「先问、已答、又问」这条路径。
     """
     run, _board = run_ctx
     publish_choices("molecule", _molecule_choices("代森锰锌"), runtime=None)
@@ -74,10 +74,10 @@ def test_clear_one_kind_keeps_the_other_question(run_ctx: Any) -> None:
 
 
 def test_pending_choice_run_is_needs_user_input_not_no_op(tmp_path: Path) -> None:
-    """停下来等用户点选 ≠ 「没有任何工具产出」：状态与原因都必须如实。
+    """等待选择与「没有任何工具产出」是两种状态，返回的状态与原因分别对应。
 
-    注意：受体已解析成功、工具确实跑过，只因配体侧要用户确认就被标成 `no_op`，
-    界面日志说「未执行计算（未调用任何工具）」，历史列表显示 [ SKIP ]。
+    受体已解析成功且工具执行过时，仅因配体侧等待确认就标成 `no_op`，会与界面日志
+    「未执行计算（未调用任何工具）」及运行列表里的 [ SKIP ] 冲突。
     """
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
@@ -93,12 +93,12 @@ def test_pending_choice_run_is_needs_user_input_not_no_op(tmp_path: Path) -> Non
     assert not result.get("no_op"), "等用户选择被当成了 no_op"
     reason = str(run.data.get("no_report_reason") or "")
     assert "等待" in reason and "确认" in reason, reason
-    # 没有真实计算 → 仍然不产规范报告（避免空报告噪声）
+    # 没有实际计算时不产出规范报告，避免空报告噪声
     assert not (tmp_path / "R-ASK" / "report.md").is_file()
 
 
 def test_empty_run_without_choices_is_still_no_op(tmp_path: Path) -> None:
-    """对照组：真的没受理、也没候选项时，仍然必须如实标成 no_op。"""
+    """对照组：既没有受理也没有候选项时，状态标成 no_op。"""
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
 
@@ -111,14 +111,14 @@ def test_empty_run_without_choices_is_still_no_op(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 阻断式候选：未回答前不许继续算（设计约束）
+# 阻断式候选：未回答前不继续计算（设计约束）
 # --------------------------------------------------------------------------- #
 def test_blocking_choice_blocks_until_answered(run_ctx: Any) -> None:
-    """`blocking=True` 的候选（共晶配体是否作阳性对照）在清掉之前一直是"待回答"状态。
+    """`blocking=True` 的候选（共晶配体是否作阳性对照）在清除之前保持待回答状态。
 
-    注意：候选下发后若继续执行，主管 Agent
-    重试对接工具时被"一次运行只询问一次"的幂等标记放行，**用户还没回答就把 2961 个分子算了
-    40 分钟**，运行结束时才把问题显示出来。
+    候选下发后若继续执行，主管 Agent 重试对接工具时会被「一次运行只询问一次」的
+    幂等标记放行，在调用方尚未回答时算完 2961 个分子、耗时 40 分钟，
+    问题直到运行结束才显示。
     """
     from docking_agent.tools.choices import blocking_choice_pending
 
@@ -144,9 +144,9 @@ def test_non_blocking_choice_does_not_block_docking(run_ctx: Any) -> None:
 
 def test_dispatch_refuses_to_start_docking_while_choice_pending(
         run_ctx: Any, monkeypatch) -> None:
-    """待回答的阻断式问题存在时，主管的 `run_docking` 必须原地返回 needs_user_input。
+    """存在待回答的阻断式问题时，主管的 `run_docking` 原地返回 needs_user_input。
 
-    这一层护栏的意义：连子 Agent 都不调度（省掉一整轮 LLM 调用），也不可能"绕过"去开跑。
+    该护栏在调度子 Agent 之前生效，省掉一整轮 LLM 调用，也不会绕过检查直接开跑。
     """
     import json
 

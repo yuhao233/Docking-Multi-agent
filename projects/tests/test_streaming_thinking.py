@@ -1,8 +1,8 @@
-"""思考（thinking）输出必须**单独成轨**：正文里不能混进推理，避免聊天区被刷屏。
+"""思考（thinking）输出的轨道约定：推理单独下发，正文不混入推理。
 
-真实场景：思考模式下，部分供应商/端点会把推理直接拼进 `content`（`<thinking>…</thinking>`），
-或放在 `additional_kwargs.reasoning_content`（DeepSeek/豆包等）。前端要把它折叠成可展开的
-「思考」气泡 —— 前提是服务端**分开**下发：`token` 只带正文，`thinking` 带推理。
+部分供应商或端点在思考模式下会把推理直接拼进 `content`（`<thinking>…</thinking>`），
+或放在 `additional_kwargs.reasoning_content`（DeepSeek/豆包等）。前端将其折叠为可展开的
+「思考」气泡，要求服务端分开下发：`token` 只带正文，`thinking` 带推理。
 """
 from __future__ import annotations
 
@@ -20,13 +20,13 @@ def _frames(text: str) -> List[Dict[str, Any]]:
             if line.startswith("data: "):
                 try:
                     out.append(json.loads(line[6:]))
-                except json.JSONDecodeError:  # 允许静默：非 JSON 片段不是本用例的断言对象
+                except json.JSONDecodeError:  # 允许静默：非 JSON 片段不属于本用例的断言对象
                     pass
     return out
 
 
 class _FakeGraph:
-    """最小假图：按 `stream_mode=["messages","updates","custom"]` 的契约吐块。"""
+    """最小假图：按 `stream_mode=["messages","updates","custom"]` 的契约产出数据块。"""
 
     def __init__(self, chunks: List[Any]) -> None:
         self._chunks = chunks
@@ -79,7 +79,7 @@ def test_thinking_content_block_is_recognized() -> None:
 
 
 def test_standard_envelope_carries_thinking_as_custom_frame() -> None:
-    """标准 Agent Protocol 面：thinking 必须走 custom 帧（不能混进 messages/partial）。"""
+    """标准 Agent Protocol 面：thinking 经 custom 帧下发，不进入 messages/partial。"""
     from docking_agent.api.agent_service import _DOMAIN_TYPES, _map_legacy_event
 
     assert "thinking" in _DOMAIN_TYPES

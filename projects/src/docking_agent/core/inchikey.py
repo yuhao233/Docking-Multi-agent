@@ -1,19 +1,16 @@
-"""InChIKey → 结构：内置表 + 本地缓存 + PubChem 在线反查（可关）。
+"""InChIKey 到结构的解析：内置表、本地缓存与 PubChem 在线反查（可关）。
 
-## 为什么需要这一层
+InChIKey 是单向哈希，离线无法反解。上传的表格带 InChIKey 列时，原先的实现只认内置的
+22 个常见化合物，其余整行跳过，调用方只看到「解析不出来」。本模块提供两项能力：
 
-InChIKey 是**单向哈希**，离线无法反解。用户上传的表格里带 InChIKey 列时，旧实现只认内置的
-22 个常见化合物，其余整行跳过 —— 用户看到的就是「解析不出来」。这里补两件事：
+1. 在线反查：PubChem PUG REST 支持按 InChIKey 精确检索（`compound/inchikey/<key>/...`），
+   取到 SMILES 后回算 InChIKey 并与查询值逐字比对，一致才采用（避免命中错误或数据不一致）；
+2. 本地缓存：命中过的键落盘到 `assets/cache/inchikey/<KEY>.json`，此后可离线使用。
 
-1. **在线反查**：PubChem PUG REST 支持按 InChIKey 精确检索（`compound/inchikey/<key>/...`），
-   拿到 SMILES 后**必须回算 InChIKey 与查询值逐字比对**才接受（防止命中错误/数据不一致）；
-2. **本地缓存**：命中过的键落盘到 `assets/cache/inchikey/<KEY>.json`，之后完全离线可用。
-
-## 边界与诚实性
-
-- 网络默认开（`INCHIKEY_ONLINE=on`），可关；单键超时 `INCHIKEY_TIMEOUT`（默认 8 s）。
-- 失败**绝不编造**：返回空并给出可操作原因（网络不可用 / 未收录 / 校验不一致）。
-- 结构来源（builtin / cache / pubchem）全程可查：`lookup_source()` 与 `resolutions()`。
+边界：
+- 网络默认开启（`INCHIKEY_ONLINE=on`），可关闭；单键超时由 `INCHIKEY_TIMEOUT` 控制（默认 8 s）。
+- 失败时不编造结构：返回空并给出可操作原因（网络不可用、未收录、校验不一致）。
+- 结构来源（`builtin` / `cache` / `pubchem`）可通过 `lookup_source()` 与 `resolutions()` 查询。
 """
 from __future__ import annotations
 
@@ -34,19 +31,19 @@ logger = logging.getLogger(__name__)
 
 PUBCHEM_INCHIKEY = ("https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{}/property/"
                     "{}/JSON")
-#: PubChem 不同版本返回的属性名不一样，按「信息量」从多到少取第一个可用的
+#: PubChem 不同版本返回的属性名不一样，按信息量从多到少取第一个可用的
 _SMILES_KEYS = ("IsomericSMILES", "SMILES", "CanonicalSMILES", "ConnectivitySMILES")
 _USER_AGENT = "docking-agent/0.16 (+local inchikey resolve)"
 
-#: 本次进程内「这个键的结构从哪来」的记录（builtin / cache / pubchem），供溯源落盘使用
+#: 本次进程内「该键的结构来自哪里」的记录（`builtin` / `cache` / `pubchem`），供溯源落盘使用
 _resolutions: Dict[str, str] = {}
-#: 失败原因（网络不可达 / 未收录 / 校验不一致…）：上层要把它写进「跳过原因」，不能只说"解析不出"
+#: 失败原因（网络不可达、未收录、校验不一致等）：上层需写入「跳过原因」，而非只报「解析不出」
 _errors: Dict[str, str] = {}
 _resolutions_lock = threading.Lock()
 
 
 def online_enabled() -> bool:
-    """是否允许联网反查（设置页面/环境变量可关；测试默认关）。"""
+    """是否允许联网反查（设置页面或环境变量可关闭；测试默认关闭）。"""
     return env_bool("INCHIKEY_ONLINE", True)
 
 
@@ -70,13 +67,13 @@ def _remember_error(key: str, error: str) -> None:
 
 
 def resolution_error(key: str) -> str:
-    """该键最近一次失败的原因（没有失败记录则空串）。"""
+    """该键最近一次失败的原因（无失败记录时返回空串）。"""
     with _resolutions_lock:
         return _errors.get(str(key or "").upper(), "")
 
 
 def lookup_source(key: str) -> str:
-    """该键的来源：builtin / cache / pubchem / ''（未知）。"""
+    """该键的结构来源：`builtin` / `cache` / `pubchem` / `''`（未知）。"""
     k = str(key or "").upper()
     if k in _resolutions:
         return _resolutions[k]
@@ -114,12 +111,12 @@ def _cache_put(key: str, smiles: str, cid: Any = None) -> None:
         path.write_text(json.dumps({"inchikey": key.upper(), "smiles": smiles, "cid": cid,
                                     "source": "pubchem", "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
                                    ensure_ascii=False, indent=1), encoding="utf-8")
-    except OSError as e:  # 缓存写不进去不影响本次解析
+    except OSError as e:  # 缓存写入失败不影响本次解析
         logger.debug("InChIKey 缓存写入失败（%s）：%s", path, e)
 
 
 def _fail(key: str, error: str) -> Dict[str, Any]:
-    """统一的失败返回：记下原因（供跳过原因/溯源引用），结构一律留空。"""
+    """统一的失败返回：记录原因供跳过原因与溯源引用，结构字段留空。"""
     _remember_error(key, error)
     return {"smiles": "", "source": "", "error": error}
 
@@ -133,7 +130,7 @@ def _http_json(url: str, timeout: int) -> Any:
 
 
 def _smiles_from_payload(payload: Any) -> tuple:
-    """从 PubChem property 响应里取最具体的 SMILES，并带上 CID。"""
+    """从 PubChem 的 property 响应中取信息量最大的 SMILES，并附带 CID。"""
     props = (((payload or {}).get("PropertyTable") or {}).get("Properties") or [])
     if not props:
         return "", None
@@ -146,7 +143,7 @@ def _smiles_from_payload(payload: Any) -> tuple:
 
 
 def _verify(key: str, smiles: str) -> bool:
-    """回算 InChIKey 必须与查询键逐字一致 —— 「解析到」不等于「解析对」。"""
+    """回算 InChIKey 并与查询键逐字比对，解析到结构不等于解析正确。"""
     try:
         from rdkit import Chem
 
@@ -154,7 +151,7 @@ def _verify(key: str, smiles: str) -> bool:
         if mol is None:
             return False
         return Chem.MolToInchiKey(mol).upper() == key.upper()
-    except Exception as e:  # noqa: BLE001 - 校验失败按不通过处理，绝不接受未校验结构
+    except Exception as e:  # noqa: BLE001 - 校验失败按不通过处理，未校验的结构不采用
         logger.debug("InChIKey 回算校验异常（%s）：%s", key, e)
         return False
 
@@ -164,7 +161,7 @@ def resolve_inchikey(key: str, *, allow_network: Optional[bool] = None) -> Dict[
 
     返回 `{"smiles": str, "source": "builtin|cache|pubchem", "cid": ...}`
     或 `{"smiles": "", "source": "", "error": "<可操作原因>"}`。
-    **顺序**：内置表 → 本地缓存 → 在线（可关）。在线结果必须通过回算校验才落盘与采用。
+    顺序为内置表、本地缓存、在线反查（可关）。在线结果须通过回算校验才落盘并采用。
     """
     text = str(key or "").strip().upper()
     if not text:
@@ -193,7 +190,7 @@ def resolve_inchikey(key: str, *, allow_network: Optional[bool] = None) -> Dict[
         if e.code in (404, 400):
             return _fail(text, f"PubChem 未收录该 InChIKey（HTTP {e.code}）")
         return _fail(text, f"PubChem 查询失败（HTTP {e.code}）")
-    except Exception as e:  # noqa: BLE001 - 网络问题不能中断整库解析
+    except Exception as e:  # noqa: BLE001 - 网络问题不中断整库解析
         return _fail(text, f"PubChem 查询失败：{type(e).__name__}: {e}")
 
     smiles, cid = _smiles_from_payload(payload)
@@ -207,9 +204,9 @@ def resolve_inchikey(key: str, *, allow_network: Optional[bool] = None) -> Dict[
 
 
 def provenance_notes(records: Any) -> List[str]:
-    """给归一化结果生成 InChIKey 溯源说明：逐条点名结构来自 内置表 / 本地缓存 / 在线还原。
+    """为归一化结果生成 InChIKey 溯源说明，逐条标注结构来自内置表、本地缓存或在线还原。
 
-    InChIKey 是单向哈希，用户有权知道「这个结构到底从哪来」——因此不允许默默填上。
+    InChIKey 是单向哈希，调用方需要知道结构的具体来源，因此不静默填补结构。
     """
     from docking_agent.core.normalize_io import _inchikeys_in, _shorten_names  # 局部导入避免循环
 

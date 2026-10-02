@@ -1,9 +1,9 @@
-"""分子筛选与优化协作系统 —— 整体协调 Agent 入口。
+"""分子筛选与优化协作系统：整体协调 Agent 入口。
 
 整体协调 Agent 统筹 3 个子 Agent（分子属性评估 / Docking 执行 / 结合模式检测），
-完成「分子库导入 → 任务分发 → 并行处理 → 结果汇总与优化建议」的完整闭环。
+覆盖分子库导入、任务分发、并行处理、结果汇总与优化建议全流程。
 
-LLM 由 docking_agent.runtime.llm 依据 .env 构建（任意 OpenAI 兼容端点）。
+LLM 由 docking_agent.runtime.llm 依据 .env 构建（任意 OpenAI 兼容端点），
 不再依赖 Coze 工作负载身份与平台网关。
 """
 from __future__ import annotations
@@ -55,8 +55,8 @@ def build_agent(ctx: Optional[Context] = None) -> Any:
     llm = build_chat_llm(ctx, role="coordinator")
     logger.info("整体协调 Agent 构建完成，model=%s", cfg["config"].get("model"))
 
-    # 系统提示词：配置里的 `sp` 是**全文**（含条件段标记）。动态提示词中间件按本次运行的
-    # 事实抽掉用不到的纪律段（省固定开销），并把注入清单记进 run.data["prompt_blocks"]。
+    # 系统提示词：配置里的 `sp` 为全文（含条件段标记）。动态提示词中间件按本次运行的
+    # 事实去掉用不到的纪律段（降低固定开销），并把注入清单记进 run.data["prompt_blocks"]。
     base_sp = cfg.get("sp") or COORDINATOR_SP
     middleware = list(build_agent_middleware(llm, role="coordinator"))
     middleware.append(coordinator_prompt_middleware(base_sp))
@@ -72,7 +72,7 @@ def build_agent(ctx: Optional[Context] = None) -> Any:
             run_binding_mode_analysis,
             recommend_compounds,
             submit_recommendations,
-            customize_report,          # 按用户对输出内容/形式的要求定制报告（骨架不变）
+            customize_report,          # 按调用方对输出内容与形式的要求定制报告（骨架不变）
             analyze_pose_pocket,
             generate_screening_report,
             fetch_protein_structure,
@@ -83,7 +83,7 @@ def build_agent(ctx: Optional[Context] = None) -> Any:
         checkpointer=get_memory_saver(),
         state_schema=AgentState,
         context_schema=AgentContext,
-        # P2-c：父图与 4 个子 Agent 共享同一个 store → 黑板在 store 后端下互相可见
+        # P2-c：父图与 4 个子 Agent 共享同一个 store，黑板在 store 后端下互相可见
         store=shared_store(),
         name="coordinator",
     )

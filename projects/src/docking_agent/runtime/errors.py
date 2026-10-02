@@ -1,11 +1,11 @@
-"""错误包装：替代 coze_coding_utils.error.classifier / log.err_trace。"""
+"""错误包装：平台 coze_coding_utils.error.classifier 与 log.err_trace 的本地等价实现。"""
 from __future__ import annotations
 
 import traceback
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-# 常见错误 -> (错误码, 分类)
+# 异常类型到（错误码, 分类）的映射表
 _RULES = [
     (FileNotFoundError, "RESOURCE_NOT_FOUND", "resource"),
     (PermissionError, "PERMISSION_DENIED", "resource"),
@@ -17,7 +17,7 @@ _RULES = [
 
 
 def core_stack(limit: int = 12) -> str:
-    """提取精简堆栈（去掉框架内部帧）。"""
+    """提取精简堆栈，去掉框架内部帧。"""
     tb = traceback.format_exc()
     if tb.strip() == "NoneType: None":
         tb = "".join(traceback.format_stack()[-limit:])

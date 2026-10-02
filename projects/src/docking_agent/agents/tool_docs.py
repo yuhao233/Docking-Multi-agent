@@ -1,9 +1,7 @@
-"""工具用法文档（**给 Agent 查的**，不是塞进系统提示词的纪律）。
+"""工具用法文档：供 Agent 按需查阅，不作为系统提示词的固定内容。
 
-为什么要这个模块：用户明确要求"不要用超长提示词实现功能，让 Agent 合理调用文档和工具"。
-于是把"怎么用、有什么约束、什么情况下会被拒绝"写成**可调用的文档**：
-主管 Agent 不确定时调用 `tool_guide()`（或 `tool_guide("docking")`）取用，而不是把几十行
-规则常驻在 SP 里（SP 只留角色与产出契约）。
+主管 Agent 不确定时调用 `tool_guide()`（或 `tool_guide("docking")`）取用，
+替代在系统提示词里常驻几十行规则；系统提示词只保留角色与产出契约。
 """
 from __future__ import annotations
 
@@ -11,7 +9,7 @@ from typing import Any, Dict
 
 from langchain.tools import tool
 
-#: 主题 → 用法说明。写"工具会做什么/会拒绝什么/产出在哪"，不写流程口号。
+#: 主题到用法说明的映射。内容为工具会做什么、会拒绝什么、产出在哪，不写流程口号。
 TOOL_GUIDE: Dict[str, str] = {
     "docking": (
         "molecular_docking / run_docking —— 真实对接。\n"

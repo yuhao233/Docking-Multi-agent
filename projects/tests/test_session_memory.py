@@ -1,8 +1,8 @@
-"""会话记忆与运行上下文的直接覆盖（这几处原先零直接测试）。
+"""会话记忆与运行上下文的直接覆盖。
 
 1. `coordinator._windowed_messages` / `MAX_MESSAGES`：滑动窗口行为与顺序；
 2. `runtime/context.py`：`new_context` / `request_context` 的 ContextVar 语义（含异常复位）；
-3. `runtime/streaming.py`：SSE 编解码、截断、最终回答提取，以及 `stream_agent_sse` 的完整帧序列。
+3. `runtime/streaming.py`：SSE 编解码、截断、最终回答提取，以及 `stream_agent_sse` 的帧序列。
 """
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ def test_windowed_messages_appends_below_cap() -> None:
 
 
 def test_windowed_messages_never_splits_tool_call_pairs() -> None:
-    """回归（已知缺陷）：按条数硬切会把 AI(tool_calls)+ToolMessage 截断，留下悬空 ToolMessage，
-    OpenAI 兼容端点直接 400。裁剪必须从人类消息开始，配对完整。"""
+    """回归：按条数硬切会把 AI(tool_calls)+ToolMessage 截断，留下悬空 ToolMessage，
+    OpenAI 兼容端点会直接返回 400。裁剪须从人类消息开始，保持调用与结果成对。"""
     msgs: List[Any] = [HumanMessage(content="sys-like", id="h0")]
     for i in range(6):
         msgs.append(AIMessage(content="", tool_calls=[
@@ -106,7 +106,7 @@ def test_request_context_set_and_reset_semantics() -> None:
 
 
 def test_request_context_isolated_between_tasks() -> None:
-    """ContextVar 的语义保证：并发任务之间互不串味（多用户场景的底线）。"""
+    """ContextVar 的语义保证：并发任务之间互不影响，这是多调用方场景的底线。"""
     from docking_agent.runtime.context import new_context, request_context
 
     async def worker(tag: str) -> str:
@@ -160,7 +160,7 @@ def test_final_from_state_picks_last_ai_message() -> None:
 
 
 def _tiny_graph() -> Any:
-    """最小真实图：一个节点追加一条 AIMessage，带 checkpointer（aget_state 需要）。"""
+    """最小图：一个节点追加一条 AIMessage，带 checkpointer（aget_state 需要）。"""
 
     def node(state: MessagesState) -> Dict[str, Any]:
         return {"messages": [AIMessage(content="最终回答")]}
@@ -186,7 +186,7 @@ def test_stream_agent_sse_emits_start_update_final() -> None:
 
     frames = asyncio.run(collect())
     types = [f["type"] for f in frames]
-    # 契约：start → (token / update / tool_call / tool_result)* → final → done
+    # 契约：start、(token / update / tool_call / tool_result)*、final、done 依次出现
     assert types[0] == "start" and frames[0]["run_id"] == "R-1"
     assert "token" in types and "update" in types, types
     assert types[-2:] == ["final", "done"], types
@@ -196,8 +196,8 @@ def test_stream_agent_sse_emits_start_update_final() -> None:
 
 
 def test_custom_stream_channel_surfaces_progress() -> None:
-    """P1 新增：节点内 `get_stream_writer()` 上报的进度以 `type=custom` 帧出现，
-    且**既有事件类型一个都没变**（start/token/update/final/done）。"""
+    """节点内 `get_stream_writer()` 上报的进度以 `type=custom` 帧出现，
+    且既有事件类型保持不变（start/token/update/final/done）。"""
     from langgraph.config import get_stream_writer
 
     def node(state: MessagesState) -> Dict[str, Any]:
@@ -243,6 +243,6 @@ def test_stream_agent_sse_reports_error_frame() -> None:
 
     frames = asyncio.run(collect())
     types = [f["type"] for f in frames]
-    # 契约：出错时 start → error → done（前端据此收尾）
+    # 契约：出错时依次为 start、error、done（前端据此收尾）
     assert types == ["start", "error", "done"], types
     assert "模拟图失败" in json.dumps(frames[1], ensure_ascii=False)

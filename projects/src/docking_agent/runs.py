@@ -41,14 +41,14 @@ logger = logging.getLogger(__name__)
 
 RUN_META = "run.json"
 
-# 完整排序结果的进程内缓存：{(run_id): (mtime, rows)}，避免分页请求反复解析大 JSON
+# 排序结果的进程内缓存：{(run_id): (mtime, rows)}，避免分页请求反复解析大 JSON
 _RANKING_CACHE: Dict[str, Any] = {}
 _RANKING_CACHE_MAX = 4
 
 # 当前正在执行的运行（多 Agent 模式下由 API 层注入，工具据此把中间数据写入运行目录）
 current_run: ContextVar[Optional["Run"]] = ContextVar("current_run", default=None)
 
-# 注册给下层：`core/` 读「当前运行」只走 run_context，不再 import 本模块（审计 V2）
+# 注册给下层：`core/` 读「当前运行」只走 run_context，不再 import 本模块
 _run_context.set_run_provider(lambda: current_run.get())
 
 
@@ -56,19 +56,19 @@ def new_run_id() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + datetime.now().strftime("%f")[:4]
 
 
-#: 运行 / 线程标识的合法字符集（首字符必须是字母或数字，其余允许 `._-`）。
-#: 它同时是**单层路径片段**，所以必须严格：未校验时 `run_id="../x"` 会让
-#: `root / run_id` 逃出运行目录 —— 真实漏洞：`POST /run` 的 `x-run-id` 头可在工作区
-#: 任意位置建目录并写入攻击者可控内容；`POST /threads` 的 `thread_id` 可覆盖任意 `*.json`。
+#: 运行 / 线程标识的合法字符集（首字符须为字母或数字，其余允许 `._-`）。
+#: 该标识同时用作单层路径片段，未校验时 `run_id="../x"` 会使
+#: `root / run_id` 解析到运行目录之外：`POST /run` 的 `x-run-id` 头可在工作区
+#: 任意位置建目录并写入调用方可控内容，`POST /threads` 的 `thread_id` 可覆盖任意 `*.json`。
 RUN_COMPONENT_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def safe_run_component(value: Any, *, field: str = "run_id") -> str:
-    """校验并返回可安全用作**单层路径片段**的标识符；不合法直接抛 `ValueError`。
+    """校验并返回可安全用作单层路径片段的标识符；不合法直接抛 `ValueError`。
 
     三道门：① 非空；② 字符集白名单（拒绝 `/`、`\\`、`..` 与控制字符）；
-    ③ 解析后必须仍在 `root` 之下（`ensure_inside`）—— 最后一道是防未来有人放宽
-    字符集时静默回归的兜底，不是主要防线。
+    ③ 解析后必须仍在 `root` 之下（`ensure_inside`）。第三道是字符集放宽后
+    防止静默回归的兜底，不是主要防线。
     """
     text = str(value if value is not None else "").strip()
     if not text:
@@ -102,12 +102,12 @@ def _dir_size(path: Path) -> int:
 
 
 # 下载文件名里只允许 ASCII 安全字符：中文受体名/空格/斜杠一律降级为下划线，
-# 避免 Content-Disposition 出现引号或路径分隔符，也方便用户在下载目录里辨认。
+# 避免 Content-Disposition 出现引号或路径分隔符，也便于在下载目录里辨认。
 _DOWNLOAD_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _download_token(text: Any, *, fallback: str, limit: int = 0, strip_edges: bool = False) -> str:
-    """把任意文本压成 ASCII 安全片段；limit>0 时截断。"""
+    """把任意文本压成 ASCII 安全片段；`limit` 大于 0 时截断到该长度。"""
     token = _DOWNLOAD_SAFE.sub("_", str(text if text is not None else "").strip())
     if strip_edges:
         token = token.strip("._-")
@@ -119,8 +119,8 @@ def _download_token(text: Any, *, fallback: str, limit: int = 0, strip_edges: bo
 def download_prefix(run_id: str, *, receptor: str = "", molecules: int = 0) -> str:
     """规范化下载名的公共前缀：`dock_{run_id}_{receptor}[_{N}mols]`。
 
-    receptor 取运行的受体标签（中文/空格/斜杠会降级为下划线，空则用 `receptor`）；
-    分子数已知时带上 `_{N}mols`，未知时**整段省略**（不写 `namols` 这种读不通的名字）。
+    `receptor` 取运行的受体标签（中文/空格/斜杠降级为下划线，空值用 `receptor`）；
+    分子数已知时带上 `_{N}mols`，未知时省略该计数段（不写 `namols` 这种读不通的名字）。
     """
     rid = _download_token(run_id, fallback="run", limit=64)
     rec = _download_token(receptor, fallback="receptor", limit=24, strip_edges=True)
@@ -135,8 +135,8 @@ def download_name(run_id: str, kind: str, *, receptor: str = "", molecules: int 
     """规范、可读、ASCII 安全的下载文件名：`dock_{run_id}_{receptor}[_{N}mols]_{kind}.{ext}`。
 
     例：`download_name("20260914-151116-3404", "report", receptor="thrombin",
-    molecules=8, ext="pdf")` → `dock_20260914-151116-3404_thrombin_8mols_report.pdf`；
-    分子数未知时省略计数段 → `dock_20260914-151116-3404_thrombin_report.pdf`。
+    molecules=8, ext="pdf")` 得到 `dock_20260914-151116-3404_thrombin_8mols_report.pdf`；
+    分子数未知时省略计数段，得到 `dock_20260914-151116-3404_thrombin_report.pdf`。
     """
     prefix = download_prefix(run_id, receptor=receptor, molecules=molecules)
     name = _download_token(kind, fallback="data", limit=24, strip_edges=True)
@@ -168,7 +168,7 @@ def download_names(run_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
 class Artifact:
     name: str
     label: str
-    path: str            # 相对 run 目录
+    path: str            # 相对运行目录的路径
     size: int = 0
     content_type: str = "application/octet-stream"
 
@@ -231,8 +231,8 @@ class Run:
     def rel(self, path: Any) -> str:
         """把运行目录内的路径换算成相对路径（登记产物用）。
 
-        三处调用点原先各写一遍同样的表达式；统一在这里，且**失败时不抛异常**——
-        返回原路径，由调用方决定是否登记（大库位姿可能不在运行目录内）。
+        该换算在三处调用点各写一遍；统一到这里，且失败时不抛异常，
+        返回原路径并由调用方决定是否登记（大库位姿可能不在运行目录内）。
         """
         try:
             return str(Path(path).resolve().relative_to(self.dir.resolve()))
@@ -278,7 +278,7 @@ class Run:
         return p
 
     def write_ranking(self, rows: List[Dict[str, Any]]) -> Path:
-        """写入完整排序结果（分页接口据此读取，避免每次解析巨大的 result.json）。"""
+        """写入全部排序结果（分页接口据此读取，避免每次解析巨大的 result.json）。"""
         p = self.path("ranking.json")
         p.write_text(json.dumps(rows, ensure_ascii=False, default=str), encoding="utf-8")
         self.add_artifact("ranking.json", "ranking_json", "排序结果（完整 JSON）",
@@ -312,9 +312,9 @@ class Run:
     def save(self) -> None:
         """落盘 run.json。
 
-        **原子写**：先写同目录临时文件再 `os.replace` —— 否则并发读取
-        （`GET /api/runs/{id}`、运行列表、外部脚本）可能读到只写了一半/空文件
-        （真实踩到过：`json.loads` 报 "Expecting value: line 1 column 1"）。
+        采用原子写：先写同目录临时文件再 `os.replace`。并发读取
+        （`GET /api/runs/{id}`、运行列表、外部脚本）因此不会读到只写了一半或空文件
+        （并发读取 `json.loads` 曾报 "Expecting value: line 1 column 1"）。
         """
         payload = dict(self.data)
         payload["artifacts"] = [a.to_dict(self.id) for a in self._artifacts.values()]
@@ -339,14 +339,14 @@ class RunStore:
     def __init__(self, root: Optional[Path] = None):
         self.root = Path(root) if root else runs_dir()
         self.root.mkdir(parents=True, exist_ok=True)
-        # 历史检索索引（惰性建立，进程内缓存；运行目录变化时重建）
+        # 检索索引（惰性建立，进程内缓存；运行目录变化时重建）
         self._index_cache: Optional[List[Dict[str, Any]]] = None
         self._index_signature: Optional[Any] = None
         self._index_lock = threading.Lock()
 
     def new(self, kind: str, request: Dict[str, Any], run_id: Optional[str] = None) -> Run:
-        # 外部传入的 run_id（如兼容入口 `POST /run` 的 `x-run-id` 头）必须先过白名单；
-        # 不合法直接抛 ValueError，由 API 层转成 400 —— 绝不落到 `root / run_id` 上。
+        # 外部传入的 run_id（如兼容入口 `POST /run` 的 `x-run-id` 头）先过白名单；
+        # 不合法直接抛 ValueError，由 API 层转成 400，不会落到 `root / run_id` 上。
         rid = safe_run_component(run_id) if str(run_id or "").strip() else new_run_id()
         while (self.root / rid).exists():
             rid = new_run_id()
@@ -356,10 +356,10 @@ class RunStore:
         return (self.root / run_id / RUN_META).is_file()
 
     def load(self, run_id: str) -> Optional["Run"]:
-        """按 run_id 载入**既有**运行（不新建、不重置元数据）。续跑同一运行时用它。
+        """按 run_id 载入既有运行（不新建、不重置元数据）。续跑同一运行时使用。
 
         与 `Run(...)` 的区别：构造函数会把状态写成 `running`、重挂 created_at 并覆盖
-        request.json，对续跑来说是灾难（等于把这次运行的第一段历史抹掉）。
+        request.json，续跑时这会覆盖本次运行的已有元数据。
         """
         rid = safe_run_component(run_id)
         meta = self.meta(rid)
@@ -378,7 +378,7 @@ class RunStore:
                 art = Artifact(name=str(entry["name"]), label=str(entry.get("label") or ""),
                                path=str(entry.get("path") or ""), size=int(entry.get("size") or 0),
                                content_type=str(entry.get("content_type") or ""))
-            except Exception:  # noqa: BLE001 - 单条产物坏掉不该让整次续跑失败
+            except Exception:  # noqa: BLE001 - 单条产物坏掉不应中断整次续跑
                 continue
             run._artifacts[art.name] = art
         data = {k: v for k, v in meta.items() if k not in ("artifacts", "log")}
@@ -392,8 +392,8 @@ class RunStore:
     def delete(self, run_id: str) -> bool:
         """删除一条运行记录（整棵运行目录）。不存在返回 False；非法 id 抛 ValueError。
 
-        用途有两类：① 门禁脚本清理**自己创建**的运行记录（`scripts/ui_e2e.js` /
-        `scripts/browser_check.py` 每跑一次会真实创建十几条，长期会挤满用户的历史列表）；
+        调用方有两类：① 门禁脚本清理自己创建的运行记录（`scripts/ui_e2e.js` /
+        `scripts/browser_check.py` 每跑一次会真实创建十几条，长期会挤满运行列表）；
         ② 界面/接口按需删除。删除后索引签名（目录数 / mtime）自变，检索自动重建。
         """
         rid = safe_run_component(run_id)
@@ -417,12 +417,12 @@ class RunStore:
             return None
 
     # --------------------------------------------------------------------- #
-    # 历史检索：关闭页面后仍可按关键词 / 状态 / 受体 / 时间找回旧运行
+    # 检索：关闭页面后仍可按关键词 / 状态 / 受体 / 时间找回旧运行
     # --------------------------------------------------------------------- #
     def _index_entry(self, run_id: str) -> Optional[Dict[str, Any]]:
         """一条索引记录：运行元数据 + 排序表前若干行的分子名/ID（用于按分子检索）。
 
-        只读 `run.json` 与排序文件的前 64 KB —— 3 千多条运行也能在数秒内建成索引，
+        只读 `run.json` 与排序文件的前 64 KB，3 千多条运行也可在数秒内建成索引，
         且不受大库产物体积影响。
         """
         meta = self.meta(run_id)
@@ -487,9 +487,9 @@ class RunStore:
     def search(self, *, q: str = "", status: str = "", kind: str = "", receptor: str = "",
                since: str = "", until: str = "", offset: int = 0,
                limit: int = 20) -> Dict[str, Any]:
-        """按关键词/状态/类型/受体/时间检索历史运行，返回分页结果。
+        """按关键词/状态/类型/受体/时间检索运行记录，返回分页结果。
 
-        `q` 会在 run_id、受体、状态、任务描述与**排序表里的分子名/ID**上做子串匹配
+        `q` 会在 run_id、受体、状态、任务描述与排序表里的分子名/ID 上做子串匹配
         （大小写不敏感，空格分隔的多个词按 AND 处理）。`since`/`until` 接受
         `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`，按运行创建时间比较。
         """
@@ -499,7 +499,7 @@ class RunStore:
         kind_l = str(kind or "").strip().lower()
         receptor_l = str(receptor or "").strip().lower()
         since_s, until_s = str(since or "").strip(), str(until or "").strip()
-        if len(until_s) == 10:                     # 只给日期 → 含当天整天
+        if len(until_s) == 10:                     # 只给日期时按含当天整天处理
             until_s += "T23:59:59"
         if len(since_s) == 10:
             since_s += "T00:00:00"
@@ -542,16 +542,16 @@ class RunStore:
         return items
 
     # --------------------------------------------------------------------- #
-    # 保留策略：运行目录不能无限增长（审计：3 882 个目录 / 2.0 GB，且启动扫描全部目录）
+    # 保留策略：限制运行目录的增长（现状为 3 882 个目录 / 2.0 GB，且启动时扫描全部目录）
     # --------------------------------------------------------------------- #
     def prune(self, *, keep_last: int = 200, max_age_days: float = 30.0,
               dry_run: bool = True) -> Dict[str, Any]:
-        """清理过旧的运行目录，返回报告（**默认只报告不删除**）。
+        """清理过旧的运行目录，返回报告（默认只报告不删除）。
 
-        删除条件（**两条都满足才删**，保守，避免误删刚产生的运行）：
+        删除条件（两条都满足才删，口径保守，避免误删刚产生的运行）：
           1. 按目录 mtime 倒序排名 ≥ `keep_last`（不属于最近 N 个）；
           2. `max_age_days > 0` 且目录年龄 > `max_age_days`。
-        另外 `status == "running"` 的运行**永不删除**（进程内可能正在跑）。
+        此外 `status == "running"` 的运行不参与删除（进程内可能正在跑）。
 
         目录 mtime 取目录自身与其 `run.json` 的较大者：两者都会被写入更新。
         """
@@ -609,11 +609,11 @@ class RunStore:
     def reconcile_interrupted(self) -> List[str]:
         """把残留的 `running` 运行标记为 `interrupted`，返回被收尾的 run_id 列表。
 
-        运行只存在于本进程内（checkpointer 在内存、运行注册表在内存），因此**进程重启后
-        不可能还有正在运行的运行**：残留的 `running` 一定是进程被杀/崩溃留下的。
-        不处理会让它们永久显示"运行中"（注意：历史列表一直转圈、`finished_at` 为空）。
-        这里如实标记并留下说明，而不是假装完成；`choices` 等既有字段原样保留，
-        用户仍可点选候选（点选会以同一会话发起新的运行）。
+        运行只存在于本进程内（checkpointer 在内存、运行注册表在内存），因此进程重启后
+        不会还有正在运行的任务：残留的 `running` 由进程被杀或崩溃留下。
+        不处理时它们会一直显示"运行中"（列表持续转圈、`finished_at` 为空）。
+        这里如实标记并留下说明，不按完成处理；`choices` 等既有字段原样保留，
+        候选点选信息仍可用于后续选择（点选会以同一会话发起新的运行）。
         """
         fixed: List[str] = []
         if not self.root.is_dir():
@@ -673,7 +673,7 @@ class RunStore:
         inline_limit = env_int("RESULT_INLINE_LIMIT", 200)
 
         # 上万分子时，内联的分子库/性质/对接明细同样必须截断；
-        # 完整数据以产物文件（molecules.json / properties.json / docking.json）提供下载。
+        # 数据以产物文件（molecules.json / properties.json / docking.json）提供下载。
         molecules = _read_json("molecules.json") or []
         properties = _read_json("properties.json") or []
         docking = _read_json("docking.json") or {}
@@ -702,7 +702,7 @@ class RunStore:
             "pockets": result_json.get("pockets", []),
             "pocket_analysis": result_json.get("pocket_analysis", {}),
             # 流程备注（含「受体丢掉了哪些金属/辅因子」「配体盐被拆掉」这类化学事实）
-            # 必须随详情一起返回：否则用户只看到分数，不知道体系里少了什么。
+            # 随详情一起返回：只给分数而不说明体系里少了什么，结论无法复核。
             "notes": (result_json.get("notes") or [])[:40],
             "task_spec": result_json.get("task_spec", {}),
             "param_plan": result_json.get("param_plan", {}),
@@ -733,7 +733,7 @@ class RunStore:
                 "exhaustiveness")
 
     def ranking_rows(self, run_id: str) -> List[Dict[str, Any]]:
-        """读取完整排序结果（带 mtime 缓存，避免每次请求重复解析大 JSON）。"""
+        """读取排序结果（带 mtime 缓存，避免每次请求重复解析大 JSON）。"""
         path = self.root / run_id / "ranking.json"
         if path.is_file():
             mtime = path.stat().st_mtime
@@ -892,7 +892,7 @@ def get_run_store() -> RunStore:
 
 
 def slug(text: str) -> str:
-    """生成可安全用于文件名/产物名的标识（统一实现在 core.files，避免上下层重复）。"""
+    """生成可安全用于文件名/产物名的标识（统一实现位于 core.files，避免上下层重复）。"""
     from docking_agent.core.files import slug as _slug
 
     return _slug(text)

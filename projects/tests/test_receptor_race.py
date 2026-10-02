@@ -1,14 +1,14 @@
-"""受体准备缓存的**并发隔离**回归测试。
+"""受体准备缓存的并发隔离回归测试。
 
-背景（已知缺陷，可复现）：受体准备产物原先只按源文件的 basename 命名
-（`<base>_prot.pdb` / `<base>.pdbqt` / `<base>.site.json`），而缓存目录是全局共享的。
-于是两个并发运行（或两个都叫 `receptor.pdb` 的上传）会写同一组文件、互相覆盖，
-出现「请求保留 ZN，拿回来的却是别人的 HEM+ZN 结果」这种静默串数据——
-它也正是全量 pytest 里那条偶发失败（`test_docking_notes_report_untemplatable_kept_residues`）的根因：
-两个 pytest 进程同时准备同名受体。
+此前的实现按源文件 basename 命名受体准备产物
+（`<base>_prot.pdb` / `<base>.pdbqt` / `<base>.site.json`），而缓存目录全局共享，
+两个并发运行（或两个同名 `receptor.pdb` 上传）会写同一组文件并互相覆盖，
+出现「请求保留 ZN，返回的却是其它请求的 HEM+ZN 结果」这类静默串数据；
+该行为也是全量 pytest 中偶发失败（`test_docking_notes_report_untemplatable_kept_residues`）的技术原因，
+两个 pytest 进程会同时准备同名受体。
 
-修法：准备产物改为**内容寻址**（文件名带源文件内容哈希 + keep 集哈希），
-不同输入天然落到不同文件；对外展示名仍然是原始 basename。
+现实现把准备产物改为内容寻址（文件名带源文件内容哈希与 keep 集哈希），
+不同输入落到不同文件，对外展示名仍为原始 basename。
 """
 from __future__ import annotations
 
@@ -36,16 +36,16 @@ def _prepare_in_thread(tag: str, keep: tuple, sink: dict, barrier: threading.Bar
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"receptor-race-{tag}-",
                                      dir=str(PROJECT_ROOT / "var" / "tmp")))
-    # 关键：三个并发请求用**完全同名**的源文件，模拟真实上传/多运行场景
+    # 三个并发请求共用同名源文件，模拟同名上传与多运行场景
     src = work_dir / "receptor.pdb"
     src.write_text(_receptor_pdb_text(), encoding="utf-8")
-    barrier.wait(timeout=30)          # 尽量让三次准备真正重叠
+    barrier.wait(timeout=30)          # 三次准备尽量重叠执行
     spec = prepare_user_receptor(str(src), keep_hetatm=keep)
     sink[tag] = spec
 
 
 def test_concurrent_prepare_same_filename_is_isolated() -> None:
-    """同名受体 + 不同 keep_hetatm 并发准备：各自结果必须与自己的请求一致。"""
+    """同名受体、不同 keep_hetatm 并发准备：各结果与自身请求的参数一致。"""
     sink: dict = {}
     barrier = threading.Barrier(3)
     cases = {"keep_zn": ("ZN",), "keep_hem_zn": ("HEM", "ZN"), "keep_none": ()}
@@ -63,15 +63,15 @@ def test_concurrent_prepare_same_filename_is_isolated() -> None:
     assert hem["kept_hetatm"] == {"ZN": 1}, hem["kept_hetatm"]
     assert hem["unsupported_hetatm"] == ["HEM"], hem["unsupported_hetatm"]
 
-    # 结果文件必须互不相同（内容寻址），否则就是又回到了共享同名文件
+    # 结果文件互不相同（内容寻址），否则会退化为共享同名文件
     files = {Path(s["pdbqt"]).name for s in sink.values()}
     assert len(files) == 3, f"准备产物发生文件名碰撞：{sorted(files)}"
-    # 对外展示名仍然是原始 basename（不能把内容哈希泄露到 receptor_key / 报告里）
+    # 对外展示名仍为原始 basename（内容哈希不得进入 receptor_key 与报告）
     assert {s["key"] for s in sink.values()} == {"receptor"}, [s["key"] for s in sink.values()]
 
 
 def test_pdbqt_spec_strips_content_address_suffix() -> None:
-    """只拿到内容寻址的 .pdbqt 时，展示用的 base 要去掉哈希后缀。"""
+    """只拿到内容寻址的 .pdbqt 时，展示用的 base 去掉哈希后缀。"""
     from docking_agent.core.receptors import _pdbqt_spec
 
     work_dir = Path(tempfile.mkdtemp(prefix="receptor-name-", dir=str(PROJECT_ROOT / "var" / "tmp")))
@@ -83,7 +83,7 @@ def test_pdbqt_spec_strips_content_address_suffix() -> None:
     again = _pdbqt_spec(spec["pdbqt"])
     assert again["key"] == "my_receptor", again["key"]
     assert spec["key"] == "my_receptor"
-    # sidecar 仍能被找到（盒子来源不能因为改名而退化成蛋白质心）
+    # sidecar 仍可被找到（盒子来源不因改名退化为蛋白质中心）
     assert (again.get("site") or {}).get("source"), again.get("site")
 
 

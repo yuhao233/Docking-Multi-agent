@@ -1,12 +1,12 @@
 """标准 Agent Protocol 服务面（LangGraph Platform / Agent Server 兼容子集）。
 
-**为什么要它**：网页端原本只用项目自定义的 `/api/agent/stream`；而外部客户端
-（LangGraph SDK、LangGraph Studio、其它 Agent 平台）期望的是**标准协议**：
-`assistants` / `threads` / `runs` + 标准 SSE 帧。本模块把这套标准面**薄薄地适配**到
-项目既有的执行链路上——同一个 Run、同一套产物、同一份黑板、同一套受理层——
-因此**功能与产物完全不变**，只是多了一种标准的调用方式。
+外部客户端（LangGraph SDK、LangGraph Studio、其它 Agent 平台）使用标准协议：
+`assistants` / `threads` / `runs` 与标准 SSE 帧；网页端自定义的 `/api/agent/stream`
+仍保留。本模块把标准面适配到项目既有的执行链路：同一个 Run、同一套产物、
+同一份黑板、同一套受理层。
+功能与产物不变，只增加一种标准调用方式。
 
-采用的标准子集（用户确认「最小可用集」）：
+采用的标准子集：
 
 | 分组 | 端点 |
 | --- | --- |
@@ -16,7 +16,7 @@
 | Thread Runs | `POST /threads/{id}/runs/stream`、`POST /threads/{id}/runs/wait`、`GET /threads/{id}/runs`、`GET /threads/{id}/runs/{run_id}`、`POST /threads/{id}/runs/{run_id}/cancel` |
 | Stateless Runs | `POST /runs/stream`、`POST /runs/wait` |
 
-SSE 帧（按本机 `langgraph dev` 的实测格式）：
+SSE 帧（按本机 `langgraph dev` 的输出格式）：
 
     event: metadata          data: {"run_id": "<platform uuid>", "attempt": 1, ...业务 id 作为扩展字段}
     event: messages/partial  data: [<AIMessageChunk 字典>]        # 增量 token
@@ -26,9 +26,9 @@ SSE 帧（按本机 `langgraph dev` 的实测格式）：
     event: error             data: {"error": ..., "message": ...}
     event: end               data: null
 
-**run_id 语义（用户决策：双 id，业务 id 为准）**：标准面的 `run_id` 是平台风格 uuid
-（进程内句柄，用于取消/查询）；真正的业务运行 id（`var/runs/<id>/`，产物与报告按它落盘）
-放在 `metadata.business_run_id`，并且**取消/查询同时接受两种 id**。
+run_id 语义：标准面的 `run_id` 是平台风格 uuid（进程内句柄，用于取消与查询）；
+业务运行 id（`var/runs/<id>/`，产物与报告按它落盘）放在 `metadata.business_run_id`，
+取消与查询同时接受两种 id。
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 PLATFORM_RUN_PREFIX = "run_"
 THREADS_DIR_NAME = "threads"
 
-#: 图名 → 助手元信息（`kind` 决定走哪条内部执行链路）
+#: 图名与助手元信息的对应表（`kind` 决定走哪条内部执行链路）
 ASSISTANTS: Dict[str, Dict[str, str]] = {
     "coordinator": {"kind": "agent", "description": "整体协调 Agent：把自然语言任务拆给 4 个子 Agent"},
     "intake": {"kind": "intake", "description": "任务受理层：自然语言 + 表单 → 结构化任务规约"},
@@ -66,7 +66,7 @@ ASSISTANTS: Dict[str, Dict[str, str]] = {
 
 
 def assistant_id_for(name: str) -> str:
-    """助手 id：由名字派生的**确定性** uuid5（重启不变，SDK 兼容）。"""
+    """助手 id：由名字派生的确定性 uuid5（重启不变，SDK 兼容）。"""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"docking-agent/assistant/{name}"))
 
 
@@ -93,9 +93,9 @@ def _threads_dir() -> Path:
 def _thread_path(thread_id: str) -> Path:
     """线程文件路径 `var/threads/<thread_id>.json`。
 
-    `thread_id` 来自请求体/URL，会被当成**单层文件名**使用，因此必须过白名单 +
+    `thread_id` 来自请求体/URL，会作为单层文件名使用，因此需要白名单校验与
     目录包含性断言：未校验时 `thread_id="../x"` 可写到 `var/threads/` 之外，
-    覆盖工作区里任意 `*.json`（真实漏洞，已实测）。
+    覆盖工作区里任意 `*.json`。
     """
     from docking_agent.runs import ensure_inside, safe_run_component  # noqa: PLC0415
 
@@ -160,7 +160,7 @@ def delete_thread(thread_id: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 平台 run 句柄（进程内）↔ 业务 run id
+# 平台 run 句柄（进程内）与业务 run id 的对应
 # --------------------------------------------------------------------------- #
 _RUNS: Dict[str, Dict[str, Any]] = {}
 
@@ -174,7 +174,7 @@ def register_platform_run(thread_id: str, assistant_id: str) -> Tuple[str, Dict[
 
 
 def _resolve_run_id(run_id: str) -> Optional[Dict[str, Any]]:
-    """按平台 uuid 或**业务 run id** 找 run 句柄。"""
+    """按平台 uuid 或业务 run id 找 run 句柄。"""
     if run_id in _RUNS:
         return _RUNS[run_id]
     for record in _RUNS.values():
@@ -207,24 +207,24 @@ def _message_dicts(messages: List[Any]) -> List[Dict[str, Any]]:
     return out
 
 
-#: 领域事件（网页端自定义契约）→ 标准面的 `custom` 通道
+#: 领域事件（网页端自定义契约）与标准面 `custom` 通道的对应关系
 _DOMAIN_TYPES = {"stage", "molecules", "progress", "choices", "cancelled", "tool_call",
                  "tool_result", "update", "intake",
                  # 步数预算：跑满递归上限时自动放宽/收尾的如实告知（不是错误）
                  "limit",
-                 # 思考/推理增量：走 custom 通道（**不**进 messages/partial），前端折叠到「思考」气泡
+                 # 思考/推理增量：走 custom 通道（不进 messages/partial），前端折叠到「思考」气泡
                  "thinking"}
 
 
 def _map_legacy_event(data: Dict[str, Any], *, state: Dict[str, Any]) -> List[str]:
-    """把内部（网页端）事件对象映射成**标准帧**。
+    """把内部（网页端）事件对象映射成标准帧。
 
-    单帧 → 可能多帧（例如一个 final 同时给出 messages/complete 与 values）。
+    单帧可展开为多帧（例如一个 final 同时给出 messages/complete 与 values）。
     """
     kind = str(data.get("type") or "")
     out: List[str] = []
     if kind == "token":
-        # 增量文本 → messages/partial（与平台一致：data 是消息字典数组）
+        # 增量文本转 messages/partial（与平台一致：data 是消息字典数组）
         out.append(frame("messages/partial", [{"type": "AIMessageChunk",
                                                "content": data.get("content") or "",
                                                "id": f"chunk-{state.get('seq', 0)}"}]))
@@ -244,7 +244,7 @@ def _map_legacy_event(data: Dict[str, Any], *, state: Dict[str, Any]) -> List[st
         state["task_spec"] = data.get("task_spec")
         state["request"] = data.get("request")
         # `start` 的受理信息（task_spec / request）在标准协议里没有对应事件，
-        # 放进 `custom` 通道 —— 否则前端会丢掉「任务受理」横幅与参数来源展示。
+        # 因此放进 `custom` 通道，否则前端会丢掉「任务受理」横幅与参数来源展示。
         out.append(frame("custom", data))
     elif kind in _DOMAIN_TYPES:
         out.append(frame("custom", data))
@@ -260,7 +260,7 @@ def _map_legacy_event(data: Dict[str, Any], *, state: Dict[str, Any]) -> List[st
 
 
 # --------------------------------------------------------------------------- #
-# 运行一条内部链路（标准面 → 既有端点/图）
+# 运行一条内部链路（标准面复用既有端点与图）
 # --------------------------------------------------------------------------- #
 async def _stream_assistant(app: FastAPI, assistant: str, body: Dict[str, Any],
                             thread_id: str, request: Request,
@@ -309,7 +309,7 @@ async def _stream_assistant(app: FastAPI, assistant: str, body: Dict[str, Any],
 
 
 def _agent_request(inp: Dict[str, Any], thread_id: str) -> AgentRequest:
-    """标准 `input` → 内部 `AgentRequest`：消息文本 + 既有表单字段（未给的字段用服务端默认）。"""
+    """标准 `input` 转内部 `AgentRequest`：消息文本 + 既有表单字段（未给的字段用服务端默认）。"""
     payload = {k: v for k, v in inp.items() if k in AgentRequest.model_fields}
     messages = inp.get("messages") or []
     text = ""
@@ -409,7 +409,7 @@ def parse_frame(chunk: str) -> Tuple[str, Any]:
 
 async def _wait_assistant(app: FastAPI, assistant: str, body: Dict[str, Any], thread_id: str,
                           request: Request, platform_run: Dict[str, Any]) -> Dict[str, Any]:
-    """`/runs/wait`：把同一条流跑到底，返回**最后一帧 `values`**（含业务 run id，便于取产物）。"""
+    """`/runs/wait`：把同一条流跑到底，返回最后一帧 `values`（含业务 run id，便于取产物）。"""
     values: Dict[str, Any] = {}
     failed: Optional[str] = None
     async for chunk in _stream_assistant(app, assistant, body, thread_id, request, platform_run):
@@ -600,10 +600,10 @@ def register_agent_service(app: FastAPI) -> None:
 
 def _wait_payload(values: Dict[str, Any], platform_id: str, thread_id: str,
                   platform_run: Dict[str, Any]) -> Dict[str, Any]:
-    """`/runs/wait` 的返回体：**以最终 values 为准**（标准语义），平台句柄用独立字段。
+    """`/runs/wait` 的返回体：以最终 values 为准（标准语义），平台句柄用独立字段。
 
-    注意不能写成 `{"run_id": platform_id, **values}` —— values 里已经有**业务 run id**
-    （产物目录名，前端与报告都按它取产物），那样会被覆盖掉（真实踩到过）。
+    不能写成 `{"run_id": platform_id, **values}`，values 里已经有业务 run id
+    （产物目录名，前端与报告都按它取产物），该字段会被覆盖。
     """
     business = platform_run.get("business_run_id") or values.get("run_id")
     return {**values, "business_run_id": business, "thread_id": thread_id,
@@ -648,7 +648,7 @@ async def _thread_state(app: FastAPI, thread_id: str) -> Dict[str, Any]:
 def _input_schemas(name: str) -> Dict[str, Any]:
     """助手的输入 schema（标准面 `/assistants/{id}/schemas`）。
 
-    直接复用 pydantic 请求模型 → **schema 与真实校验同一处定义**，不会再漂移。
+    直接复用 pydantic 请求模型，schema 与校验使用同一处定义，不会再漂移。
     """
     if name == "coordinator":
         schema = AgentRequest.model_json_schema()

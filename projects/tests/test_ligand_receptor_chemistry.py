@@ -1,14 +1,14 @@
 """「特殊化学」处理规范的回归测试。
 
-用户要求：**特殊分子/特殊体系本来就该交给 Agent 处理** —— 那么底层工具的责任就是
-「不静默丢掉信息、不悄悄改变化学、把事实如实报出来」。本文件看护三件事：
+特殊分子与特殊体系由 Agent 决定处理方式，底层工具的职责是保持信息不被静默丢弃、
+不悄悄改变化学形式，并如实报出事实。以下三件事由本测试看护：
 
-1. 配体侧：盐/反离子、金属、净电荷、未定义手性 → 必须有可解释的处理与告警
-   （多片段时按最大有机片段对接，并写清移除了什么、为什么）。
-2. 受体侧：金属/辅因子/水被丢弃或按要求保留 → 必须逐残基名计数上报
+1. 配体侧：盐/反离子、金属、净电荷、未定义手性都要有可解释的处理与告警；
+   多片段时按最大有机片段对接，并写清移除了哪些片段及其原因。
+2. 受体侧：金属/辅因子/水被丢弃或按要求保留时逐残基名计数上报
    （`dropped_hetatm` / `kept_hetatm` / `dropped_waters`），并进入给模型看的 notes。
-3. 共晶配体识别：必须取「最大的非水/非添加剂 HETATM 团」，不能被金属离子、
-   硫酸根、甘油这类东西把位点中心带偏。
+3. 共晶配体识别：取「最大的非水/非添加剂 HETATM 团」，避免金属离子、
+   硫酸根、甘油这类基团把位点中心带偏。
 """
 from __future__ import annotations
 
@@ -33,10 +33,10 @@ ensure_runtime_env()
 # 1. 配体化学体检（describe_ligand）
 # --------------------------------------------------------------------------- #
 def test_plain_ligand_is_untouched():
-    """普通中性单片段分子：在 keep 策略下不得被改写，也不该产生噪声告警。
+    """普通中性单片段分子：在 keep 策略下不被改写，也不产生噪声告警。
 
-    注意：**默认策略是 ph（生理 pH 7.4）**，阿司匹林的羧酸会被去质子化（这是有意的化学处理，
-    见 test_default_ph_policy_deprotonates_acid）。要验证"一字不改"必须显式指定 keep。
+    默认策略是 ph（生理 pH 7.4），阿司匹林的羧酸会被去质子化，属于有意的化学处理
+    （见 test_default_ph_policy_deprotonates_acid）。验证“一字不改”需显式指定 keep。
     """
     from docking_agent.core.ligands import describe_ligand
 
@@ -48,10 +48,10 @@ def test_plain_ligand_is_untouched():
 
 
 def test_default_ph_policy_deprotonates_acid(monkeypatch: pytest.MonkeyPatch) -> None:
-    """默认策略 = ph（7.4）：羧酸按生理 pH 去质子化，且必须留痕（不是静默改写）。
+    """默认策略 = ph（7.4）：羧酸按生理 pH 去质子化，且逐官能团留痕，不属于静默改写。
 
-    本用例断言内置规则表的逐官能团留痕（`protonation["rules"]`），因此**固定用 rules 引擎**；
-    专业引擎（Dimorphite-DL）的路径见 `tests/test_ligand_pka.py`。
+    本用例断言内置规则表的逐官能团留痕（`protonation["rules"]`），因此固定用 rules 引擎；
+    Dimorphite-DL 引擎的路径见 `tests/test_ligand_pka.py`。
     """
     monkeypatch.setenv("LIGAND_PKA_ENGINE", "rules")
     from docking_agent.core.ligands import DEFAULT_PH, describe_ligand
@@ -70,10 +70,10 @@ def test_default_ph_policy_deprotonates_acid(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_salt_counterion_is_stripped_and_explained():
-    """乙酸钠：必须只对接有机片段，写明移除了 Na+（反离子），并按运行级策略处理质子化态。
+    """乙酸钠：只对接有机片段，写明移除了 Na+（反离子），并按运行级策略处理质子化态。
 
-    契约（v0.20）：`neutralize`（默认）会把带净电荷的有机片段中和后再对接，
-    但**原始 SMILES 必须保留**、改动必须**逐分子留痕**；`keep` 时保持输入形式。
+    契约（v0.20）：`neutralize`（默认）先把带净电荷的有机片段中和后再对接，
+    原始 SMILES 仍需保留，改动逐分子留痕；`keep` 时保持输入形式。
     """
     from docking_agent.core.ligands import describe_ligand
 
@@ -92,14 +92,14 @@ def test_salt_counterion_is_stripped_and_explained():
     assert "2 个片段" in text and "反离子" in text
     assert "质子化态已按运行级策略调整" in text and "净电荷 -1 → +0" in text
 
-    # keep：完全保持输入形式，但如实告警「净电荷 -1 需确认」
+    # keep：保持输入形式不变，同时如实告警「净电荷 -1 需确认」
     kept = describe_ligand("CC(=O)[O-].[Na+]", protonation="keep")
     assert kept["smiles"] == "CC(=O)[O-]"
     assert "净电荷 -1" in "；".join(kept["warnings"])
 
 
 def test_metal_containing_ligand_is_flagged_not_guessed():
-    """含金属配体：工具不能假装能算，必须明确告警（由 Agent 决定怎么处理）。"""
+    """含金属配体：工具不代为计算，而是给出明确告警，由 Agent 决定处理方式。"""
     from docking_agent.core.ligands import describe_ligand
 
     d = describe_ligand("c1ccc2ccccc2c1.[Zn+2]")
@@ -135,7 +135,7 @@ GOL_ATOMS = 12     # 甘油（结晶添加剂）故意比 HEM 大
 
 def _pdb_line(record: str, serial: int, name: str, resname: str, chain: str,
               resseq: int, x: float, y: float, z: float, element: str) -> str:
-    """按 PDB 固定列宽写一行 —— 列位错了 resName 会被读成别的（测试自己先别踩这个坑）。"""
+    """按 PDB 固定列宽写一行；列位写错时 resName 会被解析成别的残基名。"""
     return (f"{record:<6}{serial:>5} {name:<4}{'':1}{resname:>3} {chain:1}{resseq:>4}    "
             f"{x:>8.3f}{y:>8.3f}{z:>8.3f}  1.00 20.00          {element:>2}\n")
 
@@ -152,16 +152,16 @@ def _receptor_pdb_text() -> str:
         ("ATOM", 7, "CA", "GLY", "A", 2, 14.100, 12.800, 10.000, "C"),
         ("ATOM", 8, "C", "GLY", "A", 2, 15.500, 12.600, 10.000, "C"),
         ("ATOM", 9, "O", "GLY", "A", 2, 16.200, 13.600, 10.000, "O"),
-        # 单原子金属离子：位置故意远离 HEM，用来验证「位点中心不被离子带偏」
+        # 单原子金属离子：位置远离 HEM，用于验证位点中心不被离子带偏
         ("HETATM", 10, "ZN", "ZN", "A", 101, 5.000, 5.000, 5.000, "ZN"),
     ]
-    # 血红素（共晶配体，HEM_ATOMS 个原子）—— 应当是选中的那一团
+    # 血红素（共晶配体，HEM_ATOMS 个原子），应当是选中的那一团
     hem = [(14.5, 12.0, 12.0, "FE"), (15.0, 12.5, 12.5, "N"), (15.5, 13.0, 12.0, "C"),
            (16.0, 12.5, 11.5, "C"), (16.5, 12.0, 12.0, "C"), (16.0, 11.5, 12.5, "C"),
            (15.0, 11.5, 11.5, "N"), (15.5, 11.8, 12.2, "N")]
     for i, (x, y, z, el) in enumerate(hem):
         atoms.append(("HETATM", 11 + i, el, "HEM", "A", 102, x, y, z, el))
-    # 结晶添加剂（甘油）：原子数故意**多于** HEM。若黑名单失效，位点会被它抢走。
+    # 结晶添加剂（甘油）：原子数故意多于 HEM，黑名单失效时位点会被它抢走
     gol = [(30.0 + 0.4 * i, 30.0, 30.0 + 0.3 * i) for i in range(GOL_ATOMS)]
     for i, (x, y, z) in enumerate(gol):
         atoms.append(("HETATM", 30 + i, "C", "GOL", "A", 103, x, y, z, "C"))
@@ -186,7 +186,7 @@ def receptor_pdb(tmp_path):
 
 
 def test_dropped_hetatm_is_tallied_not_silently_lost(receptor_pdb):
-    """标准流程会剔除水与杂原子，但必须逐残基名计数上报（金属/辅因子不能被抹掉）。"""
+    """标准流程会剔除水与杂原子，同时逐残基名计数上报，金属/辅因子不被抹掉。"""
     from docking_agent.core.receptors import prepare_user_receptor
 
     spec = prepare_user_receptor(receptor_pdb)
@@ -200,7 +200,7 @@ def test_dropped_hetatm_is_tallied_not_silently_lost(receptor_pdb):
 
 
 def test_keep_hetatm_keeps_metal_ions(receptor_pdb):
-    """金属离子是「可直接保留」的一类：指定后必须真的进入受体 PDBQT。"""
+    """金属离子属于「可直接保留」的一类：指定后真正进入受体 PDBQT。"""
     from docking_agent.core.receptors import prepare_user_receptor
 
     spec = prepare_user_receptor(receptor_pdb, keep_hetatm=("ZN",))
@@ -214,7 +214,7 @@ def test_keep_hetatm_keeps_metal_ions(receptor_pdb):
 
 
 def test_untemplatable_cofactor_is_reported_not_silently_dropped(receptor_pdb):
-    """缺少 meeko 化学模板的大辅因子（HEM/NAD…）：不能悄悄丢，也不能让整次对接失败。
+    """缺少 meeko 化学模板的大辅因子（HEM/NAD…）：不静默丢弃，也不导致整次对接失败。
 
     期望行为：把能留的（ZN）留下，把留不下的（HEM）记进 `unsupported_hetatm`
     交给 Agent 判断（提供模板 / 换引擎 / 明确接受去辅因子结果）。
@@ -228,10 +228,10 @@ def test_untemplatable_cofactor_is_reported_not_silently_dropped(receptor_pdb):
 
 
 def test_receptor_prep_cache_follows_content_not_timestamp(receptor_pdb, tmp_path):
-    """缓存必须按准备后结构的内容哈希判定。
+    """缓存按准备后结构的内容哈希判定。
 
-    原来的时间戳比较有两个错误方向：prot 每次重写导致缓存恒失效（每次重跑 meeko），
-    而 keep_hetatm 变化时又可能误用旧结果。这里用 mtime 不变的写法验证走的是哈希。
+    按时间戳比较的实现在两个方向上都会出错：prot 每次重写导致缓存恒失效（每次重跑 meeko），
+    keep_hetatm 变化时又可能复用旧结果。这里保持 mtime 不变，验证判定依据是内容哈希。
     """
     from docking_agent.core import receptors as R
 
@@ -245,7 +245,7 @@ def test_receptor_prep_cache_follows_content_not_timestamp(receptor_pdb, tmp_pat
     assert Path(spec2["pdbqt"]).read_text(encoding="utf-8") == "SENTINEL-CACHED\n", \
         "相同输入应复用缓存（按内容哈希）"
 
-    # keep_hetatm 改变 → 内容哈希变化 → 必须重新准备，不能复用上面的哨兵
+    # keep_hetatm 改变会带来内容哈希变化，此时必须重新准备，不复用上面的哨兵
     spec3 = R.prepare_user_receptor(receptor_pdb, keep_hetatm=("ZN",))
     text = Path(spec3["pdbqt"]).read_text(encoding="utf-8", errors="ignore")
     assert "SENTINEL" not in text, "保留杂原子后必须重新准备受体"
@@ -253,7 +253,7 @@ def test_receptor_prep_cache_follows_content_not_timestamp(receptor_pdb, tmp_pat
 
 
 def test_docking_library_notes_report_dropped_hetatm(receptor_pdb):
-    """给模型看的 notes 里必须出现「丢了哪些杂原子」，否则 Agent 无从判断。"""
+    """给模型看的 notes 里要出现「丢了哪些杂原子」，否则 Agent 无法判断。"""
     from docking_agent.core.docking import dock_library
 
     out = dock_library([{"name": "T1", "smiles": "CCO"}], receptor=receptor_pdb,
@@ -268,7 +268,7 @@ def test_docking_library_notes_report_dropped_hetatm(receptor_pdb):
 
 
 def test_docking_notes_report_untemplatable_kept_residues(receptor_pdb):
-    """Agent 要求保留却留不下的残基，必须在 notes 里点名报出（含补救办法）。"""
+    """Agent 要求保留却留不下的残基，在 notes 里点名报出并给出补救办法。"""
     from docking_agent.core.docking import dock_library
 
     out = dock_library([{"name": "T1", "smiles": "CCO"}], receptor=receptor_pdb,
@@ -283,7 +283,7 @@ def test_docking_notes_report_untemplatable_kept_residues(receptor_pdb):
 
 
 def test_docking_dropped_hetatm_reaches_tool_payload(tmp_path, monkeypatch):
-    """工具层必须把受体杂原子统计带进返回结构（含大库摘要视图）。"""
+    """工具层把受体杂原子统计带进返回结构，大库摘要视图同样包含该统计。"""
     from docking_agent.tools.docking import molecular_docking
 
     p = tmp_path / "rec.pdb"
@@ -300,7 +300,7 @@ def test_docking_dropped_hetatm_reaches_tool_payload(tmp_path, monkeypatch):
 # 3. 共晶配体识别：取最大团，不被离子/添加剂带偏
 # --------------------------------------------------------------------------- #
 def test_cocrystal_ligand_picks_largest_group_over_ions():
-    """位点中心不能被 Zn/硫酸根/甘油带偏：应取最大的一团（此处 HEM 4 原子）。"""
+    """位点中心不被 Zn/硫酸根/甘油带偏：取最大的一团（此处 HEM 4 原子）。"""
     import tempfile
 
     from docking_agent.core.pockets import cocrystal_ligand
@@ -317,7 +317,7 @@ def test_cocrystal_ligand_picks_largest_group_over_ions():
 
 
 def test_prepared_receptor_site_names_the_cocrystal_ligand(receptor_pdb):
-    """位点来源要写清是哪个共晶配体，否则用户无法核对盒子依据。"""
+    """位点来源要写清对应的共晶配体，供调用方核对盒子依据。"""
     from docking_agent.core.receptors import prepare_user_receptor
 
     spec = prepare_user_receptor(receptor_pdb)
@@ -327,14 +327,14 @@ def test_prepared_receptor_site_names_the_cocrystal_ligand(receptor_pdb):
 
 
 # --------------------------------------------------------------------------- #
-# 4. 化学溯源必须一路走到用户能看到的地方（上传响应 → sidecar → 对接 notes）
+# 4. 化学溯源要一路传到调用方可见的位置（上传响应 / sidecar / 对接 notes）
 # --------------------------------------------------------------------------- #
 def test_upload_response_reports_chemistry(receptor_pdb) -> None:
-    """化学溯源必须走到用户能看到的地方，不能等用户看到分数才发现缺了金属/辅因子。
+    """化学溯源要传到调用方可见的位置，不能在给出分数之后才暴露金属/辅因子的缺失。
 
-    v0.22 起上传**只保存文件**（用户要求"不要一上传就处理文件"），因此：
-    上传响应只有 `path`（无解析结果）；只有用户主动「校验文件」（`/api/uploads/inspect`）
-    或真正开始运行时，才做现场准备并把 `dropped_hetatm` / 共晶配体 / 提示回传。
+    v0.22 起上传只负责保存文件，上传响应只有 `path`，不含解析结果；调用方主动校验文件
+    （`/api/uploads/inspect`）或真正开始运行时才做现场准备，并回传 `dropped_hetatm`、
+    共晶配体与提示信息。
     """
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -364,7 +364,7 @@ def test_upload_response_reports_chemistry(receptor_pdb) -> None:
 
 
 def test_prepared_pdbqt_keeps_chemistry_provenance(receptor_pdb):
-    """下游往往只拿到 .pdbqt：sidecar 必须把化学溯源带过去，否则信息就丢了。"""
+    """下游通常只拿到 .pdbqt：sidecar 要把化学溯源一并带过去，否则信息会丢失。"""
     from docking_agent.core.receptors import read_receptor_file
 
     spec = read_receptor_file(receptor_pdb)
@@ -377,7 +377,7 @@ def test_prepared_pdbqt_keeps_chemistry_provenance(receptor_pdb):
 
 
 def test_docking_via_prepared_pdbqt_reports_chemistry_in_notes(receptor_pdb):
-    """用「已准备的 PDBQT」对接时，丢弃金属/辅因子的事实仍要出现在 notes 里。"""
+    """用「已准备的 PDBQT」对接时，丢弃金属/辅因子的事实仍出现在 notes 里。"""
     from docking_agent.core.docking import dock_library
     from docking_agent.core.receptors import read_receptor_file
 
@@ -390,10 +390,10 @@ def test_docking_via_prepared_pdbqt_reports_chemistry_in_notes(receptor_pdb):
 
 
 def test_keep_hetatm_works_on_prepared_pdbqt_receptor(receptor_pdb):
-    """用户上传的常是「已准备好的 PDBQT」，其中的杂原子在上传时就被剔除了。
+    """上传的受体常是「已准备好的 PDBQT」，其中的杂原子在准备阶段已被剔除。
 
-    此时若 Agent 要求保留，实现必须**回到 sidecar 记录的原始 PDB 重新准备**，
-    否则「金属/辅因子被剔除」只能干瞪眼（真实 agent 运行里就遇到过这一情形）。
+    Agent 要求保留杂原子时，实现要回到 sidecar 记录的原始 PDB 重新准备；
+    否则金属/辅因子被剔除的事实无法在后续对接中恢复。
     """
     from docking_agent.core.receptors import prepare_user_receptor, read_receptor_file
 
@@ -408,7 +408,7 @@ def test_keep_hetatm_works_on_prepared_pdbqt_receptor(receptor_pdb):
 
 
 def test_docking_can_keep_metal_via_prepared_pdbqt(receptor_pdb):
-    """对接工具层面同样要能生效：传已准备的 PDBQT + keep_hetatm=ZN 后金属真的进了受体。"""
+    """对接工具层面同样生效：传已准备的 PDBQT 加 keep_hetatm=ZN 后金属进入受体。"""
     from docking_agent.core.docking import dock_library
     from docking_agent.core.receptors import prepare_user_receptor
 
@@ -423,11 +423,11 @@ def test_docking_can_keep_metal_via_prepared_pdbqt(receptor_pdb):
 # --------------------------------------------------------------------------- #
 # 4. 特殊配位结构（金属配合物）：先尽力生成 3D，再如实报失败原因
 # --------------------------------------------------------------------------- #
-_MANCOZEB = "S=C([S-])NCCN/C1[S-]->[Mn+2]/[SH]=1" # 的真实失败分子
+_MANCOZEB = "S=C([S-])NCCN/C1[S-]->[Mn+2]/[SH]=1" # 会触发嵌入失败的代森锰分子
 
 
 def test_metal_coordination_complex_gets_random_coords_retry() -> None:
-    """ETKDG 距离几何对金属配合物无解 → 必须再试随机坐标，而不是直接判失败。"""
+    """ETKDG 距离几何对金属配合物无解时改试随机坐标，而不是直接判定失败。"""
     from docking_agent.core import ligands
 
     pdbqt = ligands.smiles_to_pdbqt(_MANCOZEB)
@@ -436,7 +436,7 @@ def test_metal_coordination_complex_gets_random_coords_retry() -> None:
 
 
 def test_embed_failure_hint_names_the_metal_and_stays_actionable() -> None:
-    """真嵌入不了时必须点名金属并给出可操作建议（不再出现空原因/无下一步）。"""
+    """嵌入确实失败时点名金属并给出可操作建议，不返回空原因或无后续步骤的结果。"""
     from rdkit import Chem
 
     from docking_agent.core import ligands

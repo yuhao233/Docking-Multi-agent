@@ -1,26 +1,26 @@
 """结合口袋预测与「对接盒子」确定。
 
-为什么需要它：原先的位点盒只有三个来源 —— 注册表里人工标注的已知位点、共晶配体质心、
-以及**整个蛋白质的质心**（最后这个基本等于把盒子放错地方）。本模块引入成熟的口袋预测工具，
+引入本模块的原因：先前的位点盒只有三个来源，即注册表里人工标注的已知位点、共晶配体质心、
+以及整个蛋白质的质心（最后一种基本等于把盒子放错地方）。本模块引入口袋预测工具，
 把「盒子放哪、放多大」变成有依据、可追溯的计算结果。
 
-引擎（按可靠性排序，`engine="auto"` 时依次尝试）：
+引擎（按可靠性排序，`engine="auto"` 时按此顺序逐个试算）：
 
-1. **p2rank** —— 成熟的机器学习口袋预测工具（随机森林 + 溶剂可及表面特征），
+1. p2rank：机器学习口袋预测工具（随机森林 + 溶剂可及表面特征），
    本地部署在 `assets/tools/p2rank/`（或 `P2RANK_HOME` / `PATH`）。
-2. **geometric** —— 内置几何法：网格埋藏度 + 原子密度聚类（fpocket 的 alpha-sphere 思路的简化实现），
-   无需任何外部依赖，保证「一键启动」也有工具可用。
-3. **known_site** —— 受体注册表 / 共晶配体推断的实验位点。
-4. **centroid** —— 蛋白质心（最差兜底，会在结果里明确标注为不可靠）。
+2. geometric：内置几何法，网格埋藏度 + 原子密度聚类（fpocket 的 alpha-sphere 思路的简化实现），
+   无需任何外部依赖，「一键启动」场景下也有可用引擎。
+3. known_site：受体注册表或共晶配体推断的实验位点。
+4. centroid：蛋白质心（最差兜底，会在结果里标注为不可靠）。
 
 盒子决策规则（`select_site`，有文档、有测试）：
 
-- 用户显式指定的盒子**永远优先**（表单/指令/口袋 Agent 的选择）；
-- 有**实验位点**（共晶配体或注册表标注）时：用工具预测做**独立验证**，
+- 使用者显式指定的盒子优先级最高（表单/指令/口袋 Agent 的选择）；
+- 有实验位点（共晶配体或注册表标注）时：用工具预测做独立验证，
   一致（相距 ≤ `agree_radius`）则采用实验位点并把一致性写进溯源；
   不一致则仍采用实验位点，但记录警告（供独立复核与人工判断）；
-- 只有**低可信兜底位点**（蛋白质心）时：改用工具预测的 top 口袋；
-- 完全没有参考位点时：用工具预测的 top 口袋；
+- 只有低可信兜底位点（蛋白质心）时：改用工具预测的 top 口袋；
+- 没有参考位点时：用工具预测的 top 口袋；
 - 工具不可用时逐级回退，并把「实际使用的来源」写进 `source`。
 """
 from __future__ import annotations
@@ -52,18 +52,18 @@ DEFAULT_MAX_SIZE = 30.0
 DEFAULT_TOP_N = 10
 
 # ---- C 方案：库级配体感知下限 + 超限分子分组 ----
-# 为什么需要：Vina 分数对盒子大小**敏感且非单调**（见 docs/architecture.md §15.7b 的 B0 表，
-# 同一配体在 18³/22³/28³/34³ 间最大差 1.34 kcal/mol），所以**绝不能逐分子自适应盒子**。
-# 折中方案：同一运行里主组共用同一个盒子（一致性第一），只有明显超出主盒的大配体才另起一组，
+# 采用该方案的原因：Vina 分数对盒子大小敏感且非单调（见 docs/architecture.md §15.7b 的 B0 表，
+# 同一配体在 18³/22³/28³/34³ 间最大差 1.34 kcal/mol），因此不逐分子自适应盒子。
+# 折中做法：同一运行里主组共用一个盒子（一致性第一），只有明显超出主盒的大配体才另起一组，
 # 用该组自己的盒子重跑，并在结果里如实标注 box_group。
 DEFAULT_BOX_SPAN_SAMPLE = 200        # 抽样分子数 K（按重原子数降序取前 K）
 BOX_SPAN_SAMPLE_MIN = 20
 BOX_SPAN_SAMPLE_MAX = 1000
 # 库级下限 / 超限判据共用的「每侧 5 Å」余量 = 2×5 Å
 DEFAULT_SPAN_MARGIN = 10.0
-DEFAULT_BOX_GROUP_MARGIN = 10.0      # 超限判据：跨度 + 该值 > 主盒对应边 → large 组
+DEFAULT_BOX_GROUP_MARGIN = 10.0      # 超限判据：跨度 + 该值 > 主盒对应边即划入 large 组
 DEFAULT_BOX_LARGE_PADDING = 12.0     # 大配体组盒子：组内最大跨度 + 该值
-# 大配体组允许超过主盒的 MAX（否则「分组」没有意义），但仍设一个硬上限防止荒唐大盒
+# 大配体组允许超过主盒的 MAX（否则「分组」没有意义），但仍设一个硬上限，避免出现过大盒子
 BOX_LARGE_MAX_SIZE = 60.0
 _SPAN_SEED = 42
 
@@ -71,7 +71,7 @@ _SPAN_SEED = 42
 # --------------------------------------------------------------------------- #
 # 受体原子读取（PDB / PDBQT）
 # --------------------------------------------------------------------------- #
-# AutoDock 原子类型 → 元素（PDBQT 的第 77-78 列是 AD 类型而不是元素）
+# AutoDock 原子类型到元素的映射（PDBQT 的第 77-78 列是 AD 类型而不是元素）
 _AD_ELEMENT = {
     "A": "C", "C": "C", "N": "N", "NA": "N", "OA": "O", "O": "O", "SA": "S", "S": "S",
     "H": "H", "HD": "H", "HS": "H", "F": "F", "Cl": "Cl", "CL": "Cl", "Br": "Br",
@@ -159,8 +159,8 @@ def distance(a: Sequence[float], b: Sequence[float]) -> float:
 def ligand_span(pdbqt: str) -> List[float]:
     """配体 PDBQT 的 3D 跨度（各轴 max-min，Å）。
 
-    这是全项目**唯一**的跨度实现：对接时的盒适配检查、库级下限、超限分组都用它，
-    避免三处各写一遍导致口径漂移。空输入/解析失败返回 []（调用方按「未知」处理）。
+    这是全项目唯一的跨度实现：对接时的盒适配检查、库级下限、超限分组都用它，
+    避免三处各写一遍导致口径漂移。空输入或解析失败返回 []（调用方按「未知」处理）。
     """
     xs, ys, zs = [], [], []
     for line in str(pdbqt or "").splitlines():
@@ -177,7 +177,7 @@ def ligand_span(pdbqt: str) -> List[float]:
 
 
 def _span_from_smiles(smiles: str, *, seed: int = _SPAN_SEED) -> List[float]:
-    """SMILES → 3D → 跨度（与对接使用同一随机种子，保证跨度描述的就是被对接的构象）。"""
+    """SMILES 转 3D 后取跨度（与对接使用同一随机种子，跨度描述的就是被对接的构象）。"""
     from docking_agent.core.ligands import smiles_to_pdbqt  # noqa: PLC0415  # 重依赖 rdkit/meeko
 
     return ligand_span(smiles_to_pdbqt(smiles, seed=seed))
@@ -192,7 +192,7 @@ _SPAN_WORKERS_MAX = 8
 def _span_max_worker(smiles: str, *, seed: int = _SPAN_SEED) -> float:
     """子进程任务：单个分子的最大跨度；失败返回 0.0（由调用方按「失败样本」统计）。
 
-    必须是**模块级**函数才可被 pickle 送进进程池。
+    该函数需为模块级函数才能被 pickle 送入进程池。
     """
     try:
         span = _span_from_smiles(smiles, seed=seed)
@@ -203,16 +203,16 @@ def _span_max_worker(smiles: str, *, seed: int = _SPAN_SEED) -> float:
 
 def _span_max_many(smiles_list: Sequence[str], *, seed: int = _SPAN_SEED,
                    parallel_min: Optional[int] = None) -> List[float]:
-    """批量算跨度：库大时多进程（真算 3D 很慢），任何异常都退回串行，绝不因此失败。
+    """批量算跨度：库大时用多进程（实际生成 3D 很慢），异常时退回串行，不因跨度计算失败。
 
-    为什么必须并发：单个大分子 ETKDG+MMFF 可要数秒，120 个大分子串行要 ~5 分钟，
-    这段时间用户只能看到「正在抽样」；并发后降到几十秒（结果按库内容缓存）。
+    采用并发的原因：单个大分子 ETKDG+MMFF 需要数秒，120 个大分子串行需要 ~5 分钟，
+    这段时间使用者只能看到「正在抽样」；并发后降到几十秒（结果按库内容缓存）。
     """
     items = list(smiles_list)
     threshold = _SPAN_PARALLEL_MIN if parallel_min is None else int(parallel_min)
     if len(items) < threshold:
         return [_span_max_worker(s, seed=seed) for s in items]
-    # 用**部署机器实际可用的核**（cgroup 配额 / 亲和性都算在内），避免容器里超订
+    # 使用部署机器实际可用的核数（cgroup 配额 / 亲和性都算在内），避免容器里超订
     from docking_agent.core.docking import machine_profile  # 局部导入避免循环依赖
 
     workers = max(1, min(_SPAN_WORKERS_MAX, len(items), machine_profile()["budget"]))
@@ -226,7 +226,7 @@ def _span_max_many(smiles_list: Sequence[str], *, seed: int = _SPAN_SEED,
 
 
 def box_span_enabled() -> bool:
-    """库级配体感知下限开关（默认 on；off 时完全退回旧行为）。"""
+    """库级配体感知下限开关（默认 on；off 时退回未启用该下限的行为）。"""
     return env_bool("BOX_SPAN_ENABLED", True)
 
 
@@ -249,8 +249,8 @@ def box_large_padding() -> float:
 def _percentile_nearest_rank(values: Sequence[float], fraction: float) -> float:
     """最近秩分位数（`ceil(fraction×n)` 位，1-based）。
 
-    小样本（n≤20）时 P95 就等于最大值；样本较大时才排除最高的约 5%。
-    这样既抗单个异常值，又不会在库很小时低估大配体。
+    小样本（n≤20）时 P95 等于最大值；样本较大时才排除最高的约 5%。
+    该口径既抗单个异常值，又不会在库很小时低估大配体。
     """
     vals = sorted(float(v) for v in values)
     if not vals:
@@ -298,14 +298,14 @@ def library_span_bound(molecules: Sequence[Dict[str, Any]], *,
                        sample: Optional[int] = None,
                        enabled: Optional[bool] = None,
                        use_cache: bool = True) -> Dict[str, Any]:
-    """库级配体感知的盒子**下限**：`max(min_size, P95(库内配体 3D 最大跨度) + 10 Å)`。
+    """库级配体感知的盒子下限：`max(min_size, P95(库内配体 3D 最大跨度) + 10 Å)`。
 
-    成本控制（必须）：**不为全库生成 3D**。先用便宜的 2D 描述符（重原子数）降序取前 K 个
+    成本控制：不为全库生成 3D。先用便宜的 2D 描述符（重原子数）降序取前 K 个
     （`BOX_SPAN_SAMPLE`，默认 200，夹在 20–1000；库小于 K 时全算），只为这 K 个生成 3D；
     取 P95（最近秩，抗单个异常值）+ 10 Å。结果按「库 SMILES 哈希」缓存到 `cache_dir()`。
 
-    降级保证：抽样/3D 生成失败时返回 `min_size` 并 `logger.warning`，
-    **绝不让对接因为算跨度而失败**。
+    降级行为：抽样或 3D 生成失败时返回 `min_size` 并 `logger.warning`，
+    对接不因跨度计算失败而中断。
 
     返回：`{enabled, bound, p95_span, sample_n, library_n, k, cached, message}`。
     """
@@ -327,7 +327,7 @@ def library_span_bound(molecules: Sequence[Dict[str, Any]], *,
     if use_cache and cache_file.is_file():
         try:
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            # 缓存只存「库的 P95 跨度」；下限每次都按**当前** min_size 重算，
+            # 缓存只存「库的 P95 跨度」；下限每次都按当前的 min_size 重算，
             # 否则改了 POCKET_MIN_SIZE 后会命中旧下限（缓存键只含库内容与 K）。
             p95 = cached.get("p95_span")
             bound = (max(float(min_size), round(float(p95) + DEFAULT_SPAN_MARGIN, 1))
@@ -342,8 +342,8 @@ def library_span_bound(molecules: Sequence[Dict[str, Any]], *,
 
     # 按重原子数降序取前 K（大配体最可能决定跨度上限，优先算它们）
     ranked = sorted(library, key=lambda s: -_heavy_atom_count(s))[:k]
-    # 抽样要真的算 3D 构象，大库首次可能耗时几十秒；先报一条日志，
-    # 否则这段时间「什么日志都没有」，看起来像卡死（注意：120 个大分子库）。
+    # 抽样需要实际生成 3D 构象，大库首次可能耗时几十秒；先报一条日志，
+    # 否则这段时间没有任何日志输出，看起来像卡死（120 个大分子库即属此类）。
     logger.info("库级配体感知下限：开始抽样 %s 个分子的 3D 跨度（最多 %s 个，首次较慢，结果会缓存）",
                 len(ranked), k)
     started = time.time()
@@ -414,15 +414,15 @@ def cocrystal_ligand(pdb_path: Optional[str], *, min_atoms: int = 6) -> Optional
 
 
 # --------------------------------------------------------------------------- #
-# 引擎一：P2Rank（成熟工具）
+# 引擎一：P2Rank（外部工具）
 # --------------------------------------------------------------------------- #
 def cocrystal_ligand_smiles(pdb_path: Optional[str],
                             ligand: Optional[Dict[str, Any]] = None) -> str:
     """解出共晶配体的 SMILES（用于「是否作为阳性对照」的询问）。
 
     做法：按 `chain:resid:resname` 取出该配体的 HETATM/ATOM 记录与它自己的 CONECT 记录，
-    拼成最小 PDB 块交给 RDKit（proximity bonding + 标准化）；解析不出来返回空串 ——
-    宁可**不询问**（并在结果里说明原因），也不给用户一个错误的对照结构。
+    拼成最小 PDB 块交给 RDKit（proximity bonding + 标准化）；解析不出时返回空串，
+    此时不发起询问（并在结果里说明原因），避免给出错误的对照结构。
     """
     if not pdb_path or not ligand:
         return ""
@@ -479,7 +479,7 @@ def cocrystal_ligand_smiles(pdb_path: Optional[str],
 
 
 def p2rank_home() -> Optional[Path]:
-    """定位本地部署的 P2Rank（P2RANK_HOME → assets/tools/p2rank* → PATH）。"""
+    """定位本地部署的 P2Rank，依次查 `P2RANK_HOME`、`assets/tools/p2rank*`、`PATH`。"""
     env_home = env("P2RANK_HOME")
     if env_home:
         path = Path(env_home).expanduser()
@@ -542,15 +542,15 @@ def ensure_pdb_for_pockets(receptor_path: str, *, pdb_hint: str = "") -> str:
 
 def run_p2rank(pdb_path: str, *, top_n: int = DEFAULT_TOP_N,
                timeout: int = 900) -> Dict[str, Any]:
-    """运行 P2Rank 并解析其预测结果（真实调用外部工具）。"""
+    """运行 P2Rank 并解析其预测结果（调用外部进程）。"""
     command = p2rank_command()
     if command is None:
         return {"status": "unavailable", "engine": "p2rank", "pockets": [],
                 "message": "未找到本地 P2Rank（可用 P2RANK_HOME 指定，或放到 assets/tools/）"}
     out_dir = cache_dir() / "pockets" / "p2rank_out"
     out_dir.mkdir(parents=True, exist_ok=True)
-    # 注意：P2Rank 的启动脚本自己解析相对路径，**不要**改 cwd（改到安装目录会失败）；
-    # 因此这里统一传绝对路径。线程数默认留一半 CPU，避免把对接服务饿死。
+    # P2Rank 的启动脚本自行解析相对路径，因此不修改 cwd（改到安装目录会失败），
+    # 这里统一传绝对路径。线程数默认留一半 CPU，避免占用对接服务的资源。
     abs_pdb = str(Path(pdb_path).resolve())
     threads = env("P2RANK_THREADS") or str(max(1, (os.cpu_count() or 4) // 2))
     cmd = command + ["predict", "-f", abs_pdb, "-o", str(out_dir.resolve()),
@@ -673,28 +673,28 @@ def detect_geometric(atoms: Sequence[Dict[str, Any]], *, top_n: int = DEFAULT_TO
                      max_span: float = 20.0, min_points: int = 15) -> Dict[str, Any]:
     """内置几何口袋检测（无需外部工具）。
 
-    算法（fpocket 的 alpha-sphere 思路的简化实现，已用共晶配体客观标定）：
+    算法（fpocket 的 alpha-sphere 思路的简化实现，已用共晶配体标定）：
 
       1. 在受体包围盒内铺网格，取「第一溶剂层」上的点（与最近原子距离在 probe_min~probe_max），
-         也就是真正贴着蛋白表面的候选位点，而不是蛋白内部或自由溶剂；
-      2. 对每个候选点算三个真实可解释的特征：
-         - 埋藏度 burial：8 Å 内的重原子数（口袋比平坦表面更"被包围"）；
-         - 包封度 enclosure：26 个方向中，10 Å 内有原子的方向数（凹坑 vs 凸面）；
+         即贴着蛋白表面的候选位点，而不是蛋白内部或自由溶剂；
+      2. 对每个候选点算三个可解释的特征：
+         - 埋藏度 burial：8 Å 内的重原子数（口袋比平坦表面更「被包围」）；
+         - 包封度 enclosure：26 个方向中，10 Å 内有原子的方向数（凹坑与凸面的区分）；
          - 疏水接触 hydrophobic_contacts：5 Å 内的碳/硫原子数（可成药口袋偏疏水）。
       3. 打分 score = (enclosure/26)² × (burial/45) × (0.4 + 疏水/8)，三个因子都单调、不封顶；
-      4. 按分数从高到低做**贪心球聚类**（半径 cluster_radius），再按中心距离与范围上限
+      4. 按分数从高到低做贪心球聚类（半径 cluster_radius），再按中心距离与范围上限
          合并同一口袋的碎片（避免把整片表面串联成一个巨块）；
       5. 按分数排序，输出中心 / 范围 / 近似体积 / 附近残基。
 
-    在凝血酶（1DWC，共晶配体 MIT 中心 31.5/13.74/24.36）上实测（`detect_geometric`
+    凝血酶（1DWC，共晶配体 MIT 中心 31.5/13.74/24.36）上的标定数据（`detect_geometric`
     直接调用，共晶配体取自 `assets/receptors/structures/thrombin.pdb`）：
 
     | 网格间距 spacing | top-1 距共晶配体 | top-2 | top-3 | 耗时 |
     | --- | --- | --- | --- | --- |
-    | **1.0 Å（默认）** | **2.6 Å** | 2.97 Å | 16.5 Å | ≈0.9 s |
+    | 1.0 Å（默认） | 2.6 Å | 2.97 Å | 16.5 Å | ≈0.9 s |
     | 1.5 Å（测试用粗网格） | 3.60 Å | 22.8 Å | 34.3 Å | ≈0.3 s |
 
-    注意：**精度与网格间距强相关**，引用数字时必须同时说明 spacing（测试为了速度用 1.5 Å，
+    精度与网格间距强相关，引用数字时需同时说明 spacing（测试为速度使用 1.5 Å，
     因此那里的阈值放宽到 ≤8 Å，见 `tests/test_pockets.py` 的永久质量门）。
     """
     import numpy as np
@@ -770,7 +770,7 @@ def detect_geometric(atoms: Sequence[Dict[str, Any]], *, top_n: int = DEFAULT_TO
             union = np.concatenate([slot, members])
             if (distance(layer[slot].mean(axis=0), layer[members].mean(axis=0)) <= merge_radius
                     and _span(union) <= max_span):
-                merged[slot_index] = union     # 注意：不能用 list.index（numpy 数组比较是逐元素）
+                merged[slot_index] = union     # 不使用 list.index（numpy 数组比较是逐元素）
                 placed = True
                 break
         if not placed:
@@ -873,7 +873,7 @@ def detect_pockets(receptor_path: str, *, engine: str = "auto", top_n: int = DEF
 
 
 # --------------------------------------------------------------------------- #
-# 口袋 → 盒子
+# 口袋转对接盒子
 # --------------------------------------------------------------------------- #
 def pocket_to_box(pocket: Dict[str, Any], *, padding: float = DEFAULT_PADDING,
                   min_size: float = DEFAULT_MIN_SIZE,
@@ -915,12 +915,12 @@ def known_site_from_spec(spec: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
         return None
     source = str(site.get("source") or "")
     size = spec.get("size") or site.get("size") or []
-    # 可信度判定：**共晶配体**质心是实验证据（可信）；只有「蛋白质/受体原子质心」这类
-    # 无位点信息时的兜底才算低可信（此时应当改用工具预测的口袋）。
+    # 可信度判定：共晶配体质心属实验证据（可信）；只有「蛋白质/受体原子质心」这类
+    # 无位点信息时的兜底才算低可信（此时改用工具预测的口袋）。
     fallback_marks = ("蛋白质质心", "受体原子质心", "蛋白质心", "未找到位点", "centroid")
     experimental_marks = ("共晶", "配体", "注册表", "已知位点", "实验", "用户")
     if not source.strip():
-        # 没有标注来源 = 不知道盒子怎么来的：必须按低可信处理（交给工具预测），
+        # 未标注来源表示盒子来源未知：按低可信处理（交给工具预测），
         # 否则会重演「盒子放在蛋白质心却当成实验位点」的问题
         low_trust = True
         source = "未标注来源的位点盒（按低可信处理）"
@@ -972,18 +972,18 @@ def validate_pocket(pocket: Dict[str, Any], reference: Optional[Dict[str, Any]])
 
 def apply_box_floor(size: Sequence[float], box_floor: Optional[Dict[str, Any]], *,
                     max_size: float) -> Tuple[List[float], Optional[Dict[str, Any]], List[str]]:
-    """把**库级配体感知下限**应用到已有盒子上：只抬高、只夹到 `max_size`，绝不缩小。
+    """把库级配体感知下限应用到已有盒子上：只抬高、只夹到 `max_size`，不缩小。
 
-    公式 `size_i = clamp(extent_i + 2×padding, lib_lower_bound, max_size)`；已有盒子一定
+    公式 `size_i = clamp(extent_i + 2×padding, lib_lower_bound, max_size)`；已有盒子都
     ≤ `max_size`（口袋路径已夹过），因此等价于 `max(size_i, min(bound, max_size))`。
-    返回 `(size, floor_info, notes)`：`floor_info` 为 `None` 表示没生效（开关关闭或无下限），
-    仍不改变原尺寸。**唯一实现**：自动定盒（`select_site`）与「口袋 Agent 提交的盒子」共用。
+    返回 `(size, floor_info, notes)`：`floor_info` 为 `None` 表示未生效（开关关闭或无下限），
+    此时不改变原尺寸。本函数是该下限的唯一实现，自动定盒（`select_site`）与「口袋 Agent 提交的盒子」共用。
     """
     current = [float(s) for s in size]
     if not box_floor:
         return current, None, []
     if box_floor.get("enabled") is False:
-        # 开关关闭：完全不影响盒子，但仍如实记一条「本可以抬到多少」便于复算与排查
+        # 开关关闭：不改动盒子，但仍记一条「本可以抬到多少」便于复算与排查
         return current, {**box_floor, "raised": False,
                          "size_before": [round(x, 2) for x in current],
                          "size_after": [round(x, 2) for x in current]}, []
@@ -1012,11 +1012,11 @@ def select_site(spec: Dict[str, Any], *, engine: str = "auto", top_n: int = DEFA
                 max_size: float = DEFAULT_MAX_SIZE, use_cache: bool = True,
                 override: Optional[Dict[str, Any]] = None,
                 box_floor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """确定该受体的对接盒子，返回带**溯源**的结果。
+    """确定该受体的对接盒子，返回带溯源的结果。
 
-    override: 显式指定的盒子（用户表单 / 指令 / 口袋分析 Agent 的选择），永远优先。
-    box_floor: 库级配体感知下限（`library_span_bound()` 的返回），把**服务端算出的**盒子
-               按 `max(size, min(bound, max_size))` 抬高；**用户显式指定的盒子不受影响**
+    override: 显式指定的盒子（使用者表单 / 指令 / 口袋分析 Agent 的选择），优先级最高。
+    box_floor: 库级配体感知下限（`library_span_bound()` 的返回），把服务端算出的盒子
+               按 `max(size, min(bound, max_size))` 抬高；使用者显式指定的盒子不受影响
                （显式优先是不变量）。抬高时把原因写进 `warnings` 与 `source`。
     """
     reference = known_site_from_spec(spec)

@@ -1,16 +1,16 @@
-"""「没算任何东西」的运行不得产出规范报告。
+"""未执行任何计算的运行不产出规范报告。
 
-注意：用户只发了一句「你好」，受理层 `decision=reject`、
-零工具调用，落盘层却照样写出 11 KB 全是空表格的报告 + 4 张空图 + 328 KB PDF，
-网页还把这份 no-op 运行当成「规范报告（report.md · 唯一权威版）」挂在对话气泡上 ——
-报告里出现「本次输入 0 个分子全部成功对接」「图 1 图片加载失败」这类噪声。
+调用方只发了一句「你好」时，受理层 `decision=reject`、零工具调用，落盘层却仍写出
+11 KB 全空表格的报告、4 张空图与 328 KB PDF，网页还把这次 no-op 运行当成
+「规范报告（report.md · 唯一权威版）」挂在对话气泡上，报告里出现
+「本次输入 0 个分子全部成功对接」「图 1 图片加载失败」这类噪声。
 
 约定：
-- 只在**真的算过东西**（分子库 / 理化性质 / 对接行 / 口袋分析 / 排序）时才写
+- 只有实际算过东西（分子库 / 理化性质 / 对接行 / 口袋分析 / 排序）时才写
   排序 CSV、图表、`report.md`、PDF；
-- 否则只留运行记录 + 协调 Agent 的对话原文（`agent_report.md`）+ `result.json`，
-  并在 `run.json` 里写 `no_report_reason` 说明为什么没有报告；
-- 正常的真实对接流程**必须照旧**产出报告（防止把门禁做过头）。
+- 否则只留运行记录、协调 Agent 的对话原文（`agent_report.md`）与 `result.json`，
+  并在 `run.json` 里写 `no_report_reason` 说明没有报告的原因；
+- 正常的对接流程照旧产出报告，门禁不扩大到有结果的运行。
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _tool_msg(name: str, payload: Dict[str, Any]) -> Any:
 
 
 def test_greeting_run_writes_no_report(tmp_path: Any) -> None:
-    """「你好」→ 零工具输出 + decision=reject：不产报告/图表/PDF，但保留对话原文。"""
+    """「你好」加零工具输出与 decision=reject：不产报告、图表与 PDF，但保留对话原文。"""
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
 
@@ -46,7 +46,7 @@ def test_greeting_run_writes_no_report(tmp_path: Any) -> None:
 
     assert run.data.get("no_report_reason"), "run.json 必须说明为什么没有报告"
     assert "reject" in run.data["no_report_reason"]
-    # 状态必须如实标成 no_op（历史列表显示 [ SKIP ]），不能是「成功但什么都没有」的 ok
+    # 状态如实标成 no_op（历史列表显示 [ SKIP ]），不写成「成功但什么都没有」的 ok
     assert result.get("no_op") is True and result.get("status") == "no_op", result.get("status")
     # 报告产物登记也不能出现（否则页面仍会显示「报告」页签有内容）
     names = {a.get("name") for a in (run.data.get("artifacts") or [])}
@@ -55,7 +55,7 @@ def test_greeting_run_writes_no_report(tmp_path: Any) -> None:
 
 
 def test_accepted_but_empty_run_also_skips_report(tmp_path: Any) -> None:
-    """受理通过但一个工具都没调起来（例如模型直接回答）→ 同样不产报告。"""
+    """受理通过但未调起任何工具（例如模型直接回答）时不产报告。"""
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
 
@@ -68,7 +68,7 @@ def test_accepted_but_empty_run_also_skips_report(tmp_path: Any) -> None:
 
 
 def test_real_work_still_writes_report(tmp_path: Any) -> None:
-    """有真实对接结果时，规范报告必须照旧产出（门禁不能做过头）。"""
+    """有实际对接结果时，规范报告照旧产出（门禁不扩大到有结果的运行）。"""
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
 
@@ -97,7 +97,7 @@ def test_real_work_still_writes_report(tmp_path: Any) -> None:
 
 @pytest.mark.parametrize("decision", ["reject", "unsupported", ""])
 def test_no_report_reason_mentions_decision(tmp_path: Any, decision: str) -> None:
-    """reason 文案要把受理决策带上（便于从 run.json 直接看出为什么没报告）。"""
+    """reason 文案带上受理决策，便于从 `run.json` 直接看出没有报告的原因。"""
     from docking_agent.agents.persistence import persist_agent_run
     from docking_agent.runs import Run
 
@@ -116,10 +116,10 @@ def test_no_report_reason_mentions_decision(tmp_path: Any, decision: str) -> Non
 # 回归（Phase 2 收尾）：流水线删除后暴露的两处 Agent 路径缺口
 # --------------------------------------------------------------------------- #
 def test_inline_text_with_commas_is_parsed_as_smiles_not_csv() -> None:
-    """「名称:SMILES,名称:SMILES」必须解析出分子。
+    """「名称:SMILES,名称:SMILES」需解析出分子。
 
-    真实回归：逗号让格式嗅探判成 CSV，`normalize_ligand_text` 返回 0 条；删掉流水线后
-    Agent 路径成了唯一入口，用户这样写就什么都跑不了。现在解析不到时回退行内 SMILES 解析。
+    逗号会被格式嗅探判成 CSV，`normalize_ligand_text` 返回 0 条；流水线删除后
+    Agent 路径成为唯一入口，这种写法此前跑不出任何结果。解析不到时回退行内 SMILES 解析。
     """
     from docking_agent.core.normalize import normalize_ligand_text
 
@@ -127,14 +127,14 @@ def test_inline_text_with_commas_is_parsed_as_smiles_not_csv() -> None:
     assert [(m["name"], m["smiles"]) for m in mols] == [("乙醇", "CCO"), ("甲醇", "CO")]
     assert meta["format"] == "smi"
 
-    # 真正的 CSV（有表头）仍按 CSV 解析，不能被回退逻辑改口径
+    # 真正的 CSV（有表头）仍按 CSV 解析，不受回退逻辑影响
     csv_mols, csv_meta = normalize_ligand_text("name,smiles\n乙醇,CCO")
     assert csv_meta["format"] == "csv"
     assert [(m["name"], m["smiles"]) for m in csv_mols] == [("乙醇", "CCO")]
 
 
 def test_docking_tool_passes_save_poses_and_max_ligands(monkeypatch: pytest.MonkeyPatch) -> None:
-    """表单里的「保存对接位姿」「最大分子数」必须传到对接层（此前 Agent 路径忽略它们）。"""
+    """表单里的「保存对接位姿」「最大分子数」需传到对接层（此前的 Agent 路径忽略它们）。"""
 
     from docking_agent.tools import docking as TD
 

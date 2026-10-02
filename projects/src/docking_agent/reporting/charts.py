@@ -1,4 +1,4 @@
-"""报告图表：由真实计算结果绘制的对比图（返回 PNG 字节）。"""
+"""报告图表：由计算结果绘制的对比图，返回 PNG 字节。"""
 from __future__ import annotations
 
 import io
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# 中文字体优先级：分子名与图例可能是中文，缺字体会渲染成方块
+# 中文字体优先级：分子名与图例可能为中文，缺少字体时渲染成方块
 _CJK_FONTS = [
     "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK TC",
     "Source Han Sans SC", "WenQuanYi Zen Hei", "WenQuanYi Micro Hei",
@@ -25,7 +25,7 @@ _CJK_FONTS = [
 
 
 def _recommend_top_n() -> int:
-    """推荐排行的展示条数（设置项 RECOMMEND_TOP_N，默认 10）。"""
+    """推荐排行的展示条数，取自设置项 RECOMMEND_TOP_N，默认 10 条。"""
     try:
         from docking_agent.config import env_int
 
@@ -42,7 +42,7 @@ def _configure_fonts() -> List[str]:
     chosen = [name for name in _CJK_FONTS if name in available]
     rcParams["font.sans-serif"] = chosen + ["DejaVu Sans"]
     rcParams["font.family"] = "sans-serif"
-    rcParams["axes.unicode_minus"] = False  # 避免负号在中文字体下变成方块
+    rcParams["axes.unicode_minus"] = False  # 负号在中文字体下会显示为方块，故关闭该选项
     if not chosen:
         logger.warning("未找到中文字体，图表中的中文可能显示为方块；"
                        "可安装 fonts-noto-cjk 后重试")
@@ -51,8 +51,8 @@ def _configure_fonts() -> List[str]:
 
 CJK_FONT = _configure_fonts()
 
-# 大库图表策略：分子数超过 BAR_MAX 时，横向条形图改为「Top-N」，并另出分布直方图，
-# 否则上万个柱子既不可读也无法渲染。
+# 大库图表策略：分子数超过 BAR_MAX 时，横向条形图改为 Top-N，并另出分布直方图；
+# 上万个柱子既不可读，也无法渲染。
 BAR_MAX = env_int("CHART_BAR_MAX", 50)
 TOP_N = env_int("CHART_TOP_N", 20)
 
@@ -66,9 +66,9 @@ def _to_png(fig) -> bytes:
 
 def docking_bar_chart(molecules: List[Dict[str, Any]], pos_control: Dict[str, Any],
                       top_n: int = 0) -> bytes:
-    """对接亲和力横向对比图（含阳性对照参考线）。
+    """对接亲和力横向对比图，含阳性对照参考线。
 
-    分子数超过 BAR_MAX 时自动只画亲和力最优的 Top-N，避免上万柱子不可读。
+    分子数超过 BAR_MAX 时只绘制亲和力最优的 Top-N 个，避免上万柱子不可读。
     """
     total = len(molecules)
     if total > BAR_MAX:
@@ -107,7 +107,7 @@ def docking_bar_chart(molecules: List[Dict[str, Any]], pos_control: Dict[str, An
 
 def _ranked_bar_chart(molecules: List[Dict[str, Any]], pos_control: Dict[str, Any],
                       title: str, color: str = "#4C72B0") -> bytes:
-    """通用横向条形图（分子已按需排序）。"""
+    """通用横向条形图，入参分子已按需排序。"""
     labels = [m.get("name") or m.get("smiles") for m in molecules]
     values = [m["affinity_kcal_mol"] for m in molecules]
     pc_aff = (pos_control or {}).get("affinity_kcal_mol")
@@ -131,7 +131,7 @@ def _ranked_bar_chart(molecules: List[Dict[str, Any]], pos_control: Dict[str, An
 
 
 def affinity_histogram(molecules: List[Dict[str, Any]], pos_control: Dict[str, Any]) -> bytes:
-    """亲和力分布直方图（大库场景的主图）：含阳性对照参考线与均值/中位数。"""
+    """亲和力分布直方图，大库场景的主图；含阳性对照参考线、均值与中位数。"""
     import statistics
 
     values = [float(m["affinity_kcal_mol"]) for m in molecules
@@ -163,7 +163,7 @@ def affinity_histogram(molecules: List[Dict[str, Any]], pos_control: Dict[str, A
 
 
 def similarity_chart(molecules: List[Dict[str, Any]]) -> bytes:
-    """与阳性对照的指纹相似度图（大库时只画 Top-N）。"""
+    """与阳性对照的指纹相似度图，大库时只绘制 Top-N。"""
     if len(molecules) > BAR_MAX:
         ordered = sorted(molecules,
                          key=lambda m: m.get("similarity_to_positive_control") or 0.0,
@@ -193,15 +193,15 @@ def _similarity_bars(molecules: List[Dict[str, Any]], title: str) -> bytes:
 
 
 def _top_property_points(points: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
-    """理化性质空间图要画的点：优先按综合分（推荐排行），没有综合分时按亲和力取前 limit 个。
+    """理化性质空间图要绘制的点：优先按综合分（推荐排行），无综合分时按亲和力取前 limit 个。
 
-    单独抽成函数是为了**可测**：用户明确要求"只展示 top 的分子（与排序相同），不然太乱了"，
-    这个集合必须与报告第 3.1 节的排行口径一致（同一批 top N）。
+    该集合与报告第 3.1 节的排行口径一致，取同一批 top N；
+    该函数独立出来便于单独测试。
     """
     if limit <= 0 or len(points) <= limit:
         return list(points)
     if any(m.get("composite") is not None for m in points):
-        # 综合分**降序**（最高分在前）；没有综合分时按亲和力升序（越负越强）
+        # 综合分降序（最高分在前）；无综合分时按亲和力升序（越负越强）
         ranked = sorted(points, key=lambda m: (
             float(m.get("composite") or 0.0),
             m.get("affinity_kcal_mol") if isinstance(m.get("affinity_kcal_mol"), (int, float)) else 0.0,
@@ -213,11 +213,11 @@ def _top_property_points(points: List[Dict[str, Any]], limit: int) -> List[Dict[
 
 
 def property_scatter_chart(molecules: List[Dict[str, Any]], top_only: bool = False) -> bytes:
-    """理化性质空间图：分子量 vs logP，点大小表示亲和力强度。
+    """理化性质空间图：横轴为分子量，纵轴为 logP，点大小表示亲和力强度。
 
-    `top_only=True` 时只画**推荐排行前 N 个**分子（与第 3 节排序同一集合）：
-    整库散点在大库（几百上千个）时点与标注互相覆盖，图上什么也读不出来 ——
-    设计取舍：理化性质空间只展示 top 的分子，否则图面过于杂乱。
+    `top_only=True` 时只绘制推荐排行前 N 个分子，与第 3 节排序为同一集合。
+    整库散点在大库（几百上千个）下点与标注互相覆盖，图面难以阅读，
+    因此理化性质空间只展示 top 的分子。
     """
     pts = [m for m in molecules
            if isinstance(m.get("molecular_weight"), (int, float)) and isinstance(m.get("logP"), (int, float))]
@@ -248,10 +248,10 @@ def property_scatter_chart(molecules: List[Dict[str, Any]], top_only: bool = Fal
 
 
 # --------------------------------------------------------------------------- #
-# 结合模式相关图（会直接嵌入报告）
+# 结合模式相关图（直接嵌入报告）
 # --------------------------------------------------------------------------- #
 def _draw_molecule_png(smiles: str, width: int = 260, height: int = 200) -> bytes:
-    """用 RDKit 画单个分子（不加 legend —— RDKit 字体会丢弃中文）。"""
+    """用 RDKit 绘制单个分子；不添加 legend，RDKit 字体会丢弃中文。"""
     from rdkit import Chem
     from rdkit.Chem.Draw import rdMolDraw2D
 
@@ -270,7 +270,7 @@ def _draw_molecule_png(smiles: str, width: int = 260, height: int = 200) -> byte
 
 def structure_grid(molecules: List[Dict[str, Any]], pos_control: Optional[Dict[str, Any]] = None,
                    top_n: int = 12, cols: int = 4) -> Optional[bytes]:
-    """候选分子结构网格图（RDKit 画结构 + matplotlib 加中文标注，含阳性对照对照格）。"""
+    """候选分子结构网格图：RDKit 绘制结构，matplotlib 添加中文标注，含阳性对照格。"""
     import io
     import math
 
@@ -317,10 +317,10 @@ def structure_grid(molecules: List[Dict[str, Any]], pos_control: Optional[Dict[s
 
 def recommendation_structure_grid(rows: List[Dict[str, Any]], top_n: int = 0,
                                   cols: int = 5) -> Optional[bytes]:
-    """推荐化合物排行对应的 **2D 结构图**（每格：名称 / 综合分 / 亲和力 / 等级）。
+    """推荐化合物排行对应的 2D 结构图，每格为名称 / 综合分 / 亲和力 / 等级。
 
-    这是 PDF 报告里"看得见分子长什么样"的那张图：2D 结构由 RDKit 真实绘制，
-    数值来自同一次运行的综合分计算，格内文字用 matplotlib（RDKit 字体会丢中文）。
+    2D 结构由 RDKit 绘制，数值取自同一次运行的综合分计算；
+    格内文字用 matplotlib 渲染，RDKit 字体会丢失中文。
     """
     import io
     import math
@@ -358,7 +358,7 @@ def recommendation_structure_grid(rows: List[Dict[str, Any]], top_n: int = 0,
     return _to_png(fig)
 
 
-#: 相互作用类型 → 颜色（2D/3D 图与图例共用一份，保证两种图解释一致）
+#: 相互作用类型与颜色的对应关系，2D/3D 图与图例共用一份，两种图的解释保持一致
 INTERACTION_COLORS = {
     "氢键": "#1f77b4",
     "盐桥": "#d62728",
@@ -378,10 +378,10 @@ def _interaction_color(kinds) -> str:
 
 def _anchor_atoms(analysis: Dict[str, Any], pose_path: str,
                   smiles: str) -> List[Dict[str, Any]]:
-    """相互作用残基 → 2D 图上的锚点（0-based SMILES 原子下标）。
+    """相互作用残基在 2D 图上的锚点，取值为 0-based SMILES 原子下标。
 
-    靠位姿文件里的 `REMARK SMILES IDX`（PDBQT 原子序号 → SMILES 原子序号）对齐：
-    名字不同、顺序不同都能对上，**不靠猜**。拿不到映射时返回空 dict（图上退化为只列残基）。
+    对齐依据是位姿文件里的 `REMARK SMILES IDX`，即 PDBQT 原子序号与 SMILES 原子序号的映射，
+    原子名与顺序不同也能对上。取不到映射时返回空值，图上退化为只列残基。
     """
     from docking_agent.core import interactions as I
 
@@ -397,7 +397,7 @@ def _anchor_atoms(analysis: Dict[str, Any], pose_path: str,
     out: List[Dict[str, Any]] = []
     for residue in analysis.get("residues") or []:
         for item in residue.get("detail") or []:
-            # 位姿里的原子名会重复（所有碳都叫 C）→ 优先用唯一序号
+            # 位姿里的原子名可能重复（所有碳都记为 C），优先使用唯一序号
             serial = item.get("ligand_serial")
             if serial is None:
                 serial = name_to_serial.get(str(item.get("ligand_atom") or ""))
@@ -414,17 +414,17 @@ def _anchor_atoms(analysis: Dict[str, Any], pose_path: str,
 def binding_interaction_map_2d(analysis: Dict[str, Any], *, pose_path: str = "",
                                smiles: str = "", title: str = "",
                                width: int = 900, height: int = 700) -> Optional[bytes]:
-    """**2D** 结合分析图：配体结构式 + 相互作用残基（虚线指向对应原子，按类型着色）。
+    """2D 结合分析图：配体结构式与相互作用残基，虚线指向对应原子并按类型着色。
 
-    结构式由 RDKit 画（用的是位姿文件里记录的 SMILES，即对接实际使用的化学形式），
-    残基标签与虚线由 matplotlib 叠加 —— 这样中文字不会丢，原子位置也精确。
+    结构式由 RDKit 绘制，使用位姿文件里记录的 SMILES，即对接实际使用的化学形式；
+    残基标签与虚线由 matplotlib 叠加，中文字不会丢失，原子位置也精确。
     """
     import io
     import math as _math
 
     import matplotlib.image as mpl_image
     from rdkit import Chem
-    from rdkit.Chem import AllChem  # noqa: F401  (保证 rdDepictor 可用)
+    from rdkit.Chem import AllChem  # noqa: F401  (rdDepictor 由该导入加载)
     from rdkit.Chem.Draw import rdMolDraw2D
 
     from docking_agent.core import interactions as I
@@ -444,7 +444,7 @@ def binding_interaction_map_2d(analysis: Dict[str, Any], *, pose_path: str = "",
     opts.minFontSize = 12
     opts.maxFontSize = 18
     highlight_atoms = sorted({a["atom_idx"] for a in anchors if 0 <= a["atom_idx"] < mol.GetNumAtoms()})
-    # RDKit 的高亮色要 (r, g, b) 浮点元组，不是十六进制串
+    # RDKit 的高亮色需要 (r, g, b) 浮点元组，不接受十六进制串
     def _rgb(hex_color: str) -> Tuple[float, float, float]:
         text = hex_color.lstrip("#")
         return tuple(int(text[i:i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
@@ -463,8 +463,8 @@ def binding_interaction_map_2d(analysis: Dict[str, Any], *, pose_path: str = "",
     ax.set_axis_off()
     cx = sum(p[0] for p in coords.values()) / len(coords) if coords else width / 2
     cy = sum(p[1] for p in coords.values()) / len(coords) if coords else height / 2
-    # 按方向角排序后沿左右两侧均匀铺开标签：**每个残基一条**（多个残基可以指向同一个原子 ——
-    # LigPlot 也是这么画的；用 setdefault 合并会丢掉"同一原子被多个残基接触"的信息）。
+    # 按方向角排序后沿左右两侧均匀铺开标签，每个残基一条；多个残基可指向同一个原子，
+    # 与 LigPlot 的画法一致。按原子合并会丢失「同一原子被多个残基接触」的信息。
     anchored = [a for a in anchors if a["atom_idx"] in coords]
     anchored.sort(key=lambda a: _math.atan2(coords[a["atom_idx"]][1] - cy,
                                             coords[a["atom_idx"]][0] - cx))
@@ -503,9 +503,9 @@ def binding_pose_3d(receptor_pdbqt: str, pose_path: str, analysis: Dict[str, Any
                     title: str = "", box_center: Optional[Sequence[float]] = None,
                     box_size: Optional[Sequence[float]] = None,
                     radius: float = 9.0) -> Optional[bytes]:
-    """**3D** 结合分析图：口袋内的真实位姿（受体近邻原子 + 配体骨架 + 相互作用虚线 + 对接盒）。
+    """3D 结合分析图：口袋内的实际位姿，含受体近邻原子、配体骨架、相互作用虚线与对接盒。
 
-    坐标全部来自 PDBQT，等比例显示；相互作用线与 2D 图同色，便于对照着看。
+    坐标全部取自 PDBQT，按等比例显示；相互作用线与 2D 图同色，便于对照。
     """
     import itertools
 
@@ -521,7 +521,7 @@ def binding_pose_3d(receptor_pdbqt: str, pose_path: str, analysis: Dict[str, Any
     near = [a for a in rec if I.distance(a["xyz"], lig_center) <= radius]
     if not near:
         return None
-    # 标签错开尺度：用配体包围盒（真实结构里两个残基的接触原子常常挨得很近，不错开会叠字）
+    # 标签错开尺度取自配体包围盒；两个残基的接触原子常常挨得很近，不错开会叠字
     label_span = max(1.0, max(max(a["xyz"][i] for a in lig) - min(a["xyz"][i] for a in lig)
                               for i in range(3)))
 
@@ -540,7 +540,7 @@ def binding_pose_3d(receptor_pdbqt: str, pose_path: str, analysis: Dict[str, Any
                    s=14, c=color, alpha=0.55, depthshade=False,
                    label=f"受体 {element}（{len(points)}）")
 
-    # 配体骨架：PDBQT 没有键表，用键长判据（≤1.8 Å）连出来
+    # 配体骨架：PDBQT 不含键表，按键长判据（≤1.8 Å）连接
     segments = [[a["xyz"], b["xyz"]] for a, b in itertools.combinations(lig, 2)
                 if I.distance(a["xyz"], b["xyz"]) <= 1.8]
     if segments:
@@ -548,7 +548,7 @@ def binding_pose_3d(receptor_pdbqt: str, pose_path: str, analysis: Dict[str, Any
     ax.scatter([a["xyz"][0] for a in lig], [a["xyz"][1] for a in lig], [a["xyz"][2] for a in lig],
                s=42, c="#2ca02c", depthshade=False, label=f"配体（{len(lig)} 个重原子）")
 
-    # 相互作用虚线：按原子名 + 残基回到真实坐标
+    # 相互作用虚线：按原子名与残基号取回原子坐标
     lig_by_name: Dict[str, List[float]] = {}
     for atom in lig:
         lig_by_name.setdefault(atom["name"], atom["xyz"])
@@ -573,7 +573,7 @@ def binding_pose_3d(receptor_pdbqt: str, pose_path: str, analysis: Dict[str, Any
                     color=color, linestyle="--", linewidth=1.6)
             if residue.get("residue") not in drawn:
                 drawn.append(str(residue.get("residue")))
-                # 标签轻微错开（真实结构里两个残基的接触原子常常挨得很近，不错开就会叠字）
+                # 标签轻微错开：接触原子常常挨得很近，不错开就会叠字
                 shift = 0.025 * label_span * len(drawn)
                 ax.text(rec_xyz[0], rec_xyz[1], rec_xyz[2] + shift,
                         " " + str(residue.get("residue")), fontsize=8.5, color=color)
@@ -611,9 +611,9 @@ def binding_pose_3d(receptor_pdbqt: str, pose_path: str, analysis: Dict[str, Any
 
 def binding_scatter(molecules: List[Dict[str, Any]], pos_control: Optional[Dict[str, Any]] = None,
                     top_n: int = 300) -> Optional[bytes]:
-    """结合模式散点图：横轴=与阳性对照的相似度（Morgan），纵轴=对接亲和力。
+    """结合模式散点图：横轴为与阳性对照的相似度（Morgan），纵轴为对接亲和力。
 
-    点按「是否与对照共享锚定基团（anchor_match）」着色；无相似度数据时返回 None。
+    点按是否与对照共享锚定基团（`anchor_match`）着色；无相似度数据时返回 None。
     """
     pts = [m for m in molecules
            if isinstance(m.get("affinity_kcal_mol"), (int, float))
@@ -634,7 +634,7 @@ def binding_scatter(molecules: List[Dict[str, Any]], pos_control: Optional[Dict[
                    [m["affinity_kcal_mol"] for m in anchored],
                    s=44, c="#C44E52", marker="D", edgecolor="white", linewidth=.5,
                    label="共享脒基/胍基锚定基团", zorder=4)
-    # 标注亲和力最优的前 8 个
+    # 标注亲和力最优的前 8 个分子
     for m in sort_by_affinity(pts)[:8]:
         ax.annotate(str(m.get("name") or "")[:14],
                     (m["similarity_to_positive_control"], m["affinity_kcal_mol"]),

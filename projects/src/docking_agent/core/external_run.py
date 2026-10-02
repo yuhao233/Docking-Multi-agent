@@ -1,6 +1,6 @@
-"""外部对接引擎的**执行适配**：把已登记的外部 CLI 真的跑起来，并把结果解析成项目的结果行。
+"""外部对接引擎的执行适配：调用已登记的外部 CLI，并把结果解析成项目的结果行。
 
-与 `external_tools.py` 的分工（那是"登记与探测"，这是"执行"）：
+与 `external_tools.py` 的分工（前者负责"登记与探测"，本模块负责"执行"）：
 
 | 模块 | 职责 |
 | --- | --- |
@@ -9,12 +9,12 @@
 
 已接入执行适配的类型：
 
-* `autodock-gpu`：需要 `autogrid4` 预先生成的 `.maps.fld` + `.map`（本模块负责生成），
+* `autodock-gpu`：需要 `autogrid4` 预先生成的 `.maps.fld` 与 `.map`（由本模块生成），
   输出 AD4 格式 `.dlg`，能量项与内置 AutoDock4 路径同口径；
 * `vina-cpu`：官方 CPU CLI，`--out` 写位姿 PDBQT，再用 `--score_only` 取能量分解。
 
-`unidock` / `vina-gpu` 目前**只登记不执行**：本机没有这两类二进制可验证输出格式，
-按项目「不猜、不静默」的口径直接报错，而不是硬猜参数。
+`unidock` / `vina-gpu` 只登记不执行：本机没有这两类二进制可验证输出格式，
+按项目「不猜、不静默」的口径直接报错，而不是推测参数。
 """
 from __future__ import annotations
 
@@ -32,14 +32,14 @@ logger = logging.getLogger(__name__)
 #: 格点间距（Å）：AutoDock 官方推荐值，写进 GPF 与 npts 计算
 GRID_SPACING = 0.375
 
-#: 配体侧格点类型（AutoDock 标准集）：格点图按**会话内共享**生成，必须覆盖本次可能出现的配体
+#: 配体侧格点类型（AutoDock 标准集）：格点图按会话内共享生成，需要覆盖本次可能出现的配体
 #: 原子类型，而不是只按某一个配体的类型生成（否则换一个含 S/卤素的配体就对不上图）。
-#: 受体一侧用其 PDBQT 里真实出现的类型（autogrid4 需要据此算能量)。
+#: 受体一侧用其 PDBQT 里出现的类型（autogrid4 需要据此算能量)。
 #:
-#: 下面是本机 autogrid4（conda-forge autogrid 4.2.9）**实测可用**的类型全集：
-#: 多极性氢 `HD`（meeko 准备的配体一律带 HD，缺图会让 AutoDock-GPU 直接判任务失败）、
+#: 下列为本机 autogrid4（conda-forge autogrid 4.2.9）可用的类型全集：
+#: 多极性氢 `HD`（meeko 准备的配体一律带 HD，缺图时 AutoDock-GPU 直接判任务失败）、
 #: 卤素与磷、以及常见金属。Cu/Hg/Se/Na/K 被 autogrid4 参数库判为 unknown 类型，故不列入；
-#: 配体里真出现这类原子时由 `DockingSession` 按需扩展格点图并给出明确报错（不静默）。
+#: 配体里出现这类原子时由 `DockingSession` 按需扩展格点图并给出明确报错（不静默）。
 STANDARD_LIGAND_TYPES = ("A", "C", "HD", "H", "N", "NA", "OA", "S", "SA",
                          "F", "Cl", "Br", "I", "P", "Fe", "Mg", "Mn", "Zn", "Ca", "B", "Si")
 
@@ -47,9 +47,9 @@ STANDARD_LIGAND_TYPES = ("A", "C", "HD", "H", "N", "NA", "OA", "S", "SA",
 def parse_dlg_energies(dlg_path: str | Path) -> Dict[str, Optional[float]]:
     """解析 AD4 格式 DLG 的能量行（内置 AutoDock4 与 AutoDock-GPU 的输出格式相同）。
 
-    `--nrun N`（本项目把 `n_poses` 映射到它）会让 DLG 里出现 N 组结果，**第一组不一定是最好的一组**；
-    因此这里逐组解析、取「Estimated Free Energy of Binding」最低的那一组，并用文件末尾
-    `CLUSTERING HISTOGRAM` 的最低结合能交叉校验（存在时以直方图为准 —— 那是 AD4 自己聚类后的最优解）。
+    `--nrun N`（本项目把 `n_poses` 映射到它）会在 DLG 里产生 N 组结果，第一组未必最优；
+    因此这里逐组解析，取「Estimated Free Energy of Binding」最低的那一组，并用文件末尾
+    `CLUSTERING HISTOGRAM` 的最低结合能交叉校验（存在时以直方图为准，它是 AD4 聚类后的最优解）。
     """
     est = inter = internal = torsional = None
     best: Dict[str, Optional[float]] = {}
@@ -107,13 +107,13 @@ def parse_dlg_energies(dlg_path: str | Path) -> Dict[str, Optional[float]]:
 
 def extract_best_pose_pdbqt(dlg_path: str | Path, out_path: str | Path,
                             *, energy: Optional[float] = None) -> str:
-    """从 AD4 / AutoDock-GPU 的 DLG 里抽出**最优那一组**的位姿，写成标准 PDBQT。
+    """从 AD4 / AutoDock-GPU 的 DLG 里抽出最优那一组的位姿，写成标准 PDBQT。
 
-    为什么需要：`--nrun N`（由 `n_poses` 映射）时 DLG 内含 N 组结果，而下游的位姿分析、
-    报告与下载都按 **PDBQT** 读（`core/interactions.read_pdbqt`）。此前外部适配只把 `.dlg`
-    原样留档 → `analyze_pose_pocket` 读不出 → 报告整段"未产生可读取的位姿文件"，
-    2845 个真实位姿等于白算（已知故障）。这里把最优组的 `DOCKED:` 载荷
-    （ROOT/BRANCH/ATOM/TORSDOF）剥掉前缀后原样写出，等于 AD4 原生位姿转成 PDBQT。
+    `--nrun N`（由 `n_poses` 映射）时 DLG 内含 N 组结果，而下游的位姿分析、报告与下载
+    都按 PDBQT 读（`core/interactions.read_pdbqt`）。若只把 `.dlg` 原样留档，
+    `analyze_pose_pocket` 读不出，报告会写"未产生可读取的位姿文件"，2845 个位姿无法使用。
+    这里把最优组的 `DOCKED:` 载荷（ROOT/BRANCH/ATOM/TORSDOF）剥掉前缀后原样写出，
+    相当于把 AD4 原生位姿转成 PDBQT。
 
     返回写出的路径；DLG 里找不到可解析的位姿时抛 `ExternalEngineError`（不静默产出空文件）。
     """
@@ -184,7 +184,7 @@ def _first_float_after_equals(line: str) -> Optional[float]:
 
 
 def _grid_points(box: Sequence[float]) -> list:
-    """格点数：按间距换算成**奇数**（AutoDock 要求网格中心落在格点上）。"""
+    """格点数：按间距换算成奇数（AutoDock 要求网格中心落在格点上）。"""
     points = []
     for size in box:
         n = int(float(size) // GRID_SPACING)
@@ -198,8 +198,8 @@ def build_grid_maps(receptor_pdbqt: str, center: Sequence[float], size: Sequence
                     ligand_types: Sequence[str] = STANDARD_LIGAND_TYPES) -> str:
     """用 `autogrid4` 生成格点能量图，返回描述文件（`.maps.fld`）路径。
 
-    AutoDock-GPU 与内置 AutoDock4 都吃这份图；同一受体 + 同一盒子只生成一次（调用方缓存）。
-    受体/配体的原子类型从 PDBQT 正文读取，不猜。
+    AutoDock-GPU 与内置 AutoDock4 都读取这份图；同一受体与同一盒子只生成一次（由调用方缓存）。
+    受体与配体的原子类型从 PDBQT 正文读取，不做推测。
     """
     from docking_agent.core.docking import _pdbqt_atom_types  # 延迟导入：避免循环依赖
 
@@ -254,7 +254,7 @@ def dock_ligand_external(*, flavor: str, binary: str, ligand_pdbqt: str, workdir
                          engine_version: str = "") -> Dict[str, Any]:
     """调用外部二进制对接单个配体，返回与内置引擎同形的结果行。
 
-    `flavor` 决定调用形状与输出解析；未接入执行适配的类型直接报错（不猜参数）。
+    `flavor` 决定调用形状与输出解析；未接入执行适配的类型直接报错（不推测参数）。
     """
     if flavor not in ("autodock-gpu", "vina-cpu"):
         raise ExternalEngineError(
@@ -393,7 +393,7 @@ def _round_or_nan(value: Optional[float]) -> float:
 
 
 def _autodock_bin(name: str) -> Optional[str]:
-    """定位 AD4 家族二进制（`AUTODOCK4_BIN` / `AUTOGRID4_BIN` → PATH），与内置路径同一口径。"""
+    """定位 AD4 家族二进制（先查 `AUTODOCK4_BIN` / `AUTOGRID4_BIN`，再查 PATH），与内置路径同一口径。"""
     from docking_agent.core.docking import _autodock_bin as _impl  # 延迟导入：避免循环依赖
 
     return _impl(name)

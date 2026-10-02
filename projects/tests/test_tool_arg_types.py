@@ -1,13 +1,13 @@
-"""小参数类型化（P1）：坐标与枚举的 schema + 向后兼容。
+"""小参数类型化（P1）：坐标与枚举的 schema 与向后兼容。
 
-口径（用户已确认）：**只类化小参数**（位点盒坐标 / 引擎枚举），
+口径：只类化小参数（位点盒坐标 / 引擎枚举），
 `molecules_json` / `*_file` 的「路径即总线」契约保持字符串不变。
 
 覆盖：
-1. `floats_to_text` 的规范化与严格性（个数不符/脏数据 → 空串，绝不产出半个盒子）；
-2. 工具 schema 里坐标是 **array(number)** 而不是 string（模型看到的是结构化类型）；
+1. `floats_to_text` 的规范化与口径一致性（个数不符或脏数据返回空串，不产出半个盒子）；
+2. 工具 schema 里坐标是 array(number) 而不是 string（模型看到的是结构化类型）；
 3. 旧调用方传字符串仍然工作（不破坏 CLI / 既有提示词 / 测试）；
-4. 非法坐标会得到**如实的提示**，而不是被静默当成"没给位点"。
+4. 非法坐标会得到如实的提示，而不是被静默当成"没给位点"。
 """
 from __future__ import annotations
 
@@ -47,8 +47,8 @@ def test_site_fields_are_array_typed_in_schema(tool_name: str, field: str) -> No
               "molecular_docking": "docking_agent.tools.docking",
               "set_docking_site": "docking_agent.tools.pockets"}[tool_name]
     tool = getattr(importlib.import_module(module), tool_name)
-    # 注意：这些工具带注入的 ToolRuntime，`get_input_jsonschema()` 会因 dataclass 里的
-    # 可调用字段报 PydanticInvalidForJsonSchema；模型侧真正的 schema 是 tool_call_schema
+    # 这些工具带注入的 ToolRuntime，`get_input_jsonschema()` 会因 dataclass 里的
+    # 可调用字段报 PydanticInvalidForJsonSchema；模型侧 schema 取自 tool_call_schema
     prop = tool.tool_call_schema.model_json_schema()["properties"][field]
     variants = prop.get("anyOf") or [prop]
     assert any(v.get("type") == "array" and v.get("items", {}).get("type") == "number"
@@ -67,7 +67,7 @@ def test_engine_enums_are_literal_in_schema() -> None:
 
 
 def test_run_docking_accepts_both_array_and_legacy_string(monkeypatch: pytest.MonkeyPatch) -> None:
-    """旧调用方传字符串、新调用方传数组，最终发给子 Agent 的坐标文本完全一致。"""
+    """旧调用方传字符串、新调用方传数组时，发给子 Agent 的坐标文本一致。"""
     from docking_agent.agents import dispatch
 
     seen: List[str] = []
@@ -86,8 +86,8 @@ def test_run_docking_accepts_both_array_and_legacy_string(monkeypatch: pytest.Mo
 
     assert len(seen) == 2
     for msg in seen:
-        # 下发给子 Agent 的坐标用**数组形态**（子 Agent 走 schema 校验，字符串会被拒）：
-        # 现在坐标在结构化参数块里，直接解析 JSON 断言（不再用正则反解散文）
+        # 下发给子 Agent 的坐标用数组形态（子 Agent 走 schema 校验，字符串会被拒）：
+        # 坐标位于结构化参数块内，直接解析 JSON 断言，不再用正则反解散文
         params = parse_agent_params(msg)
         assert params["site_center"] == [31.5, 13.74, 24.36], params
         assert params["site_size"] == [22.0, 22.0, 22.0], params
@@ -105,7 +105,7 @@ def test_run_docking_warns_on_unparseable_coordinates(monkeypatch: pytest.Monkey
     dispatch.run_docking.func(molecules_json='[{"name":"A","smiles":"CCO"}]',
                               site_center="1,2")
     assert "无法解析为 3 个坐标" in seen[0], seen[0]
-    # 解析不出的坐标**不得**进入参数块（否则子 Agent 会拿一个半个盒子去对接）
+    # 解析不出的坐标不进入参数块，否则子 Agent 会在坐标缺失时仍执行对接
     params = parse_agent_params(seen[0])
     assert "site_center" not in params and "site_size" not in params, params
 
@@ -134,7 +134,7 @@ def test_set_docking_site_accepts_array_and_string(monkeypatch: pytest.MonkeyPat
             return {}
 
     board = _Board()
-    # 工具现在通过 active_blackboard(runtime) 取黑板（没有 runtime 时回退 ContextVar）
+    # 工具通过 active_blackboard(runtime) 取黑板（没有 runtime 时回退 ContextVar）
     monkeypatch.setattr(pockets, "active_blackboard", lambda runtime=None: board)
 
     out_array = _json.loads(pockets.set_docking_site.func(center=[1.0, 2.0, 3.0], size=[10.0, 11.0, 12.0],
@@ -150,9 +150,9 @@ def test_set_docking_site_accepts_array_and_string(monkeypatch: pytest.MonkeyPat
 def test_form_save_poses_and_max_ligands_reach_run_docking(monkeypatch: pytest.MonkeyPatch) -> None:
     """表单的「保存位姿 / 最大分子数」必须一路传到 run_docking 的参数块。
 
-    注意：`sp` 要求协调 Agent「原样传给 run_docking」，但 `run_docking` 曾经**没有**这两个参数
-    （LangChain 对多余 kwargs 静默忽略），受理层也从不渲染它们 → 用户勾掉保存位姿仍会写位姿文件、
-    设了「最大分子数」仍跑全库。这里把「表单 → 规约 → 参数块」整条链路钉住。
+    `sp` 要求协调 Agent「原样传给 run_docking」，而 `run_docking` 原先没有这两个参数
+    （LangChain 对多余 kwargs 静默忽略），受理层也不渲染它们，因此表单未勾选保存位姿时仍会写
+    位姿文件、限制最大分子数后仍跑全库。本用例覆盖「表单、规约、参数块」整条链路。
     """
     from docking_agent import intake
     from docking_agent.api.schemas import AgentRequest

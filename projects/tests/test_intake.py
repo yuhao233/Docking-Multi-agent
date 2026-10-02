@@ -1,11 +1,11 @@
 """任务受理层（intake）的回归测试。
 
-这一层是「输入 → 任务规约(JSON)」的可测试环节：确定性规则必须零模型、可复现；
-受理模型只能补白名单字段、绝不能编造分子或决定参数；任何失败都要退回确定性规约。
+受理层是「输入转任务规约(JSON)」的可测试环节：确定性规则不调用模型且可复现；
+受理模型只补白名单字段，不生成分子、不决定参数；任何失败都退回确定性规约。
 
-设计动机见 `src/docking_agent/intake.py` 文档：
-旧协调 Agent 把「受理」与「执行」两套价值观塞进同一个提示词，导致
-「含糊就先问用户」与「分子库非空就必须跑完、不得询问」在库有但意图含糊时直接矛盾。
+规约来源见 `src/docking_agent/intake.py`：旧协调 Agent 在同一提示词里同时承载
+受理与执行两套规则，「含糊就先问用户」与「分子库非空就必须跑完、不得询问」
+在库有数据而意图含糊时相互矛盾。
 拆分后「跑 / 问 / 拒」由受理层显式判定（decision），编排层只执行。
 """
 from __future__ import annotations
@@ -85,11 +85,11 @@ def test_positive_control_three_states():
 
 
 def test_missing_library_is_recorded_and_blocks() -> None:
-    """分子库是**必需项**：没给就只提问（零工具调用），并如实记进 missing。
+    """分子库是必需项：未提供时只提问（零工具调用），并如实记进 missing。
 
-    内置示例库/示例受体只在用户明确要求时使用；
-    契约已收紧为「必需信息不齐 → 只提问、零工具调用」：
-    必需项 = 受体 / 分子库 / 任务类型，因此缺分子库同样是 ask。
+    内置示例库与示例受体只在调用方明确要求时使用；
+    契约为「必需信息不齐时只提问、零工具调用」：
+    必需项 = 受体 / 分子库 / 任务类型，缺分子库同样判 ask。
     """
     spec = intake.build_task_spec(_req(ligands_text=""))
     assert spec["ligands"]["source"] == "library"
@@ -102,7 +102,7 @@ def test_missing_library_is_recorded_and_blocks() -> None:
 
 
 def test_explicit_example_library_counts_as_a_ligand_source() -> None:
-    """用户**明确同意**用示例库 = 分子库来源已确定 → 不因缺分子而 ask。"""
+    """调用方明确同意使用示例库时，分子库来源已确定，不因缺分子判 ask。"""
     spec = intake.build_task_spec(_req(ligands_text="", message="就用药物的示例分子库跑一遍"))
     assert spec["ligands"]["source"] == "library"
     assert intake._resolvable_ligands(spec) is True
@@ -130,18 +130,18 @@ def test_registry_receptor_named_in_message_is_recognized():
     default = intake.build_task_spec(_req(mode="chat", advanced=True,
                                           message="帮我筛选一下", ligands_text="A:CCO"))
     assert default["receptor"]["source"] == "default"
-    # 未指定受体 → 受理层只提问、不计算（已无任何「默认受体」兜底）
+    # 未指定受体时受理层只提问、不计算（不再有「默认受体」兜底）
     assert default["decision"] == "ask"
     assert not any("默认受体" in a for a in default["assumptions"])
     assert "receptor" in default["missing"]
 
 
 def test_chat_default_receptor_is_not_rendered_as_user_specified() -> None:
-    """缺陷回归：chat 折叠时受理层判定「未指定受体」并标了 source=default，
-    但渲染层却给出「受体：thrombin」的权威口吻，主管 Agent 于是把示例默认受体当成用户指定。
+    """回归：chat 折叠时受理层判定「未指定受体」并标了 source=default，
+    渲染层却给出「受体：thrombin」的权威口吻，主管 Agent 会把示例默认受体当成调用方指定。
 
-    修复后（用户明确要求：彻底删除默认受体回退）：未指定受体 → decision=ask，
-    渲染成「只提问、零工具调用」，且**任何预置受体名都不得出现在消息里**。"""
+    默认受体回退已删除：未指定受体时 decision=ask，渲染成「只提问、零工具调用」，
+    且消息里不出现任何预置受体名。"""
     spec = intake.build_task_spec(_req(mode="chat", advanced=False, ligands_text="",
                                        message="帮我筛一下这两个分子 CC(=O)O"))
     assert spec["receptor"]["source"] == "default"
@@ -153,7 +153,7 @@ def test_chat_default_receptor_is_not_rendered_as_user_specified() -> None:
     assert "不要调用任何计算工具" in msg
     assert "decision=ask" in msg
 
-    # 用户明确指定 trypsin 时：仍按用户指定渲染，行为不变
+    # 调用方明确指定 trypsin 时：仍按调用方指定渲染，行为不变
     user = intake.build_task_spec(_req(mode="chat", advanced=False, ligands_text="",
                                        message="用 trypsin 做一次筛选：A:CCO"))
     assert user["receptor"] == {"name": "trypsin", "file": "", "source": "user"}
@@ -162,10 +162,10 @@ def test_chat_default_receptor_is_not_rendered_as_user_specified() -> None:
 
 
 def test_unspecified_receptor_is_asked_not_defaulted(monkeypatch) -> None:
-    """未指定受体 → 停下来提问，**不得**替用户挑默认受体（旧行为已删除）。
+    """未指定受体时停下来提问，不替调用方挑默认受体（该回退已删除）。
 
-    旧实现把这个默认名还原成空串，交给对接工具回退内建默认受体并写「未指定受体，已默认使用…」的
-    note；用户明确要求彻底删除这条回退，因此现在：受理层判 ask，工具层直接拒绝执行。
+    早期实现把这个默认名还原成空串，交给对接工具回退内建默认受体并写
+    「未指定受体，已默认使用…」的 note；回退删除后，受理层判 ask，工具层直接拒绝执行。
     """
     from docking_agent.tools.docking import molecular_docking
 
@@ -179,7 +179,7 @@ def test_unspecified_receptor_is_asked_not_defaulted(monkeypatch) -> None:
     assert payload["status"] == "needs_user_input"
     assert payload.get("missing") == ["receptor"]
     assert "未指定受体" in payload["message"]
-    # 预置受体只供内部测试，不再作为用户可选来源下发
+    # 预置受体只供内部测试，不再作为调用方可选来源下发
     assert not payload.get("choices")
 
 def test_rendered_message_states_decision_and_role_boundary():
@@ -190,13 +190,13 @@ def test_rendered_message_states_decision_and_role_boundary():
     assert "decision=run" in msg
     assert "不得在中途停下来询问用户" in msg
     assert "不要重新解析用户语言" in msg
-    # 用户已经给了分子（manual + ligands_text）→ 不得再指示回退示例库
-    # （原先写的是 `msg.count("allow_example_fallback") >= 0`：恒真，什么也没守住）
+    # 调用方已给出分子（manual + ligands_text）时，不再指示回退示例库
+    # （早期写法为 `msg.count("allow_example_fallback") >= 0`：恒真，未起到约束作用）
     assert "allow_example_fallback=true" not in msg, "用户已给出分子，不得再指示回退示例库"
 
 
 def test_ask_decision_message_forbids_tool_calls():
-    # 只有在「用户没给出任何可识别分子」时 ask 才成立
+    # 只有在「调用方没给出任何可识别分子」时 ask 才成立
     spec = intake._finalize({**intake.build_task_spec(_req(ligands_text="")),
                              "needs_user_input": True, "missing": ["可识别的分子"]})
     msg = intake.render_agent_message(spec)
@@ -301,9 +301,9 @@ def test_llm_cannot_set_run_parameters(llm_spy, monkeypatch):
     })
     spec = intake.build_task_spec(_req(mode="chat", advanced=True, message="用 1DWC 做一次筛选"))
     refined = intake.refine_task_spec(spec)
-    # v0.26：留空(None) = 自动规划，不再把默认值当成"用户指定"
+    # v0.26：留空(None) = 自动规划，不再把默认值当成"调用方指定"
     assert refined["params"]["exhaustiveness"] is None, "参数只能来自表单/系统默认；未给值就是留空"
-    # v0.26：engine 留空("") = 跟随系统默认（不再把 "vina" 当成用户指定）
+    # v0.26：engine 留空("") = 跟随系统默认（不再把 "vina" 当成调用方指定）
     assert not str(refined["params"]["engine"]).strip()
     assert refined["site"]["center"] == []
     assert refined["positive_control"]["provided_by"] == "none"
@@ -323,10 +323,10 @@ def test_llm_out_of_scope_becomes_reject(llm_spy, monkeypatch):
 
 
 def test_llm_missing_alone_does_not_block_the_run(llm_spy, monkeypatch):
-    """回归：模型把「缺什么」写进 missing 只是**记录**，不得改变受理层的判定。
+    """回归：模型把「缺什么」写进 missing 只作记录，不改变受理层的判定。
 
-    （必需项缺失由确定性规则判：`_can_ask` 只看受体来源与分子来源，从不读 `missing`。
-    实时评估（scripts/intake_eval.py --live）曾抓到模型用 missing 让 5 个应跑的用例变成 ask。）
+    （必需项缺失由确定性规则判：`_can_ask` 只看受体来源与分子来源，不读 `missing`。
+    实时评估（scripts/intake_eval.py --live）曾出现模型用 missing 使 5 个应跑的用例变成 ask。）
     """
     monkeypatch.setenv("INTAKE_LLM", "on")
     llm_spy["install"]({"missing": ["候选分子库", "目标受体文件"],
@@ -337,16 +337,16 @@ def test_llm_missing_alone_does_not_block_the_run(llm_spy, monkeypatch):
     assert spec["decision"] == "run", "missing 只是记录，不能阻断"
     assert spec["receptor"]["source"] == "user"
     assert spec["missing"], "如实保留模型记录的缺失项"
-    # 缺陷回归：decision=run 时**不得**把「缺少 / 待向用户确认」下发给编排层。
-    # 现场：模型把「用户点名了分子但没给 SMILES」记进 missing 并附「请提供候选分子库」，
-    # 渲染层原样转述 → 主管 Agent 当场问一遍分子库，随后又让用户选结构（同轮两次提问）。
+    # 回归：decision=run 时不把「缺少 / 待向用户确认」下发给编排层。
+    # 情形：模型把「点名了分子但没给 SMILES」记进 missing 并附「请提供候选分子库」，
+    # 渲染层原样转述，主管 Agent 当场问一遍分子库，随后又问结构（同轮两次提问）。
     msg = intake.render_agent_message(spec)
     assert "待向用户确认" not in msg and "请问用哪个受体？" not in msg
     assert "缺少：" not in msg
 
 
 def test_llm_explicit_needs_user_input_becomes_ask(llm_spy, monkeypatch):
-    """只有模型明确要求补充、且用户没给出任何可识别分子来源时才 ask。"""
+    """只有模型明确要求补充、且调用方没给出任何可识别分子来源时才 ask。"""
     monkeypatch.setenv("INTAKE_LLM", "on")
     llm_spy["install"]({"needs_user_input": True,
                         "questions": ["请问您想分析哪个分子？（可给名称或 SMILES）"]})
@@ -359,7 +359,7 @@ def test_llm_explicit_needs_user_input_becomes_ask(llm_spy, monkeypatch):
 
 
 def test_needs_user_input_is_ignored_when_ligands_are_known(llm_spy, monkeypatch):
-    """用户已经给了分子/文件时，即使模型要求补充也必须跑（不能凭空阻断）。"""
+    """调用方已经给了分子/文件时，即使模型要求补充也必须跑（不能凭空阻断）。"""
     monkeypatch.setenv("INTAKE_LLM", "on")
     llm_spy["install"]({"needs_user_input": True,
                         "mentioned_molecules": ["阿司匹林"]})
@@ -417,7 +417,7 @@ def test_intake_is_registered_as_a_role():
 # 端到端可观测性：受理结论要进运行记录 / 报告 / start 事件
 # --------------------------------------------------------------------------- #
 def test_task_spec_is_visible_in_report_and_result():
-    """受理结论必须落进报告与运行结果（否则没人知道任务被理解成了什么）。"""
+    """受理结论要落进报告与运行结果，否则无法确认任务被理解成什么。"""
     from docking_agent.reporting import build_markdown_report
 
     spec = {"task_type": "docking_only", "authority": "chat+advanced", "decision": "ask",
@@ -449,7 +449,7 @@ def test_start_event_payload_shape_has_task_spec():
 
 
 # --------------------------------------------------------------------------- #
-# 流程控制权：服务端不再接管补齐 / 复核（回归：这几项曾被误删或反复引入）
+# 流程控制权：服务端不再接管补齐与复核，以下用例看护这两项不被重新引入
 # --------------------------------------------------------------------------- #
 def test_server_no_longer_takes_over_the_flow():
     """控制权归主管 Agent：服务端不应再有「自动补齐」与「独立复核」的接管点。"""
@@ -457,8 +457,8 @@ def test_server_no_longer_takes_over_the_flow():
 
     root = Path(__file__).resolve().parent.parent
     api_dir = root / "src/docking_agent/api"
-    # 第 2 波拆分后，SSE 心跳（_interleave）在 api/agent_flow.py，路由在 routers/*，
-    # 因此扫**整个 api 包**而不是单个文件。
+    # SSE 心跳（_interleave）在 api/agent_flow.py，路由在 routers/*，
+    # 因此扫描整个 api 包，而不是单个文件。
     src = "\n".join(
         p.read_text(encoding="utf-8")
         for p in sorted([api_dir / "app.py", api_dir / "support.py", api_dir / "agent_flow.py"]
@@ -475,7 +475,7 @@ def test_verification_module_is_gone():
 
     root = Path(__file__).resolve().parent.parent
     assert not (root / "src/docking_agent/verification.py").exists()
-    # 报告模板第 2 波已按章节拆到多个模块，因此扫**整个 reporting 包**而不是单个文件
+    # 报告模板已按章节拆到多个模块，因此扫描整个 reporting 包，而不是单个文件
     reporting_dir = root / "src/docking_agent/reporting"
     report = "\n".join(p.read_text(encoding="utf-8") for p in sorted(reporting_dir.glob("*.py")))
     assert "## 8. 独立复核" not in report
@@ -486,7 +486,7 @@ def test_verification_module_is_gone():
 
 
 def test_completeness_is_recorded_but_not_enforced(client=None):
-    """完整性只作为**记录**保留（信息），不再驱动服务端行为。"""
+    """齐全度只作为记录保留，不再驱动服务端行为。"""
     from docking_agent.api.app import _completeness
     from docking_agent.runs import Run
     import tempfile
@@ -504,7 +504,7 @@ def test_completeness_is_recorded_but_not_enforced(client=None):
 
 
 # --------------------------------------------------------------------------- #
-# 指令里直接写了分子：必须用用户的分子，绝不能静默回退示例库
+# 指令里直接写了分子：使用指令中的分子，不静默回退示例库
 # --------------------------------------------------------------------------- #
 _PROSE_WITH_MOLECULES = ("用这个受体筛一下这两个分子，帮我看看结合情况："
                          "华法林 CC(=O)CC(c1ccccc1)c1c(O)c2ccccc2oc1=O；"
@@ -512,9 +512,9 @@ _PROSE_WITH_MOLECULES = ("用这个受体筛一下这两个分子，帮我看看
 
 
 def test_molecules_written_in_prose_are_used_not_example_library():
-    """真实踩过的坑：用户在指令里写了名称+SMILES，但表单没填分子，
-    系统于是静默退回**示例分子库**，用户看到的却是别人的分子（benzamidine…）被对接。
-    现在必须确定性抽取指令中的 SMILES 并直接使用。"""
+    """回归：调用方在指令里写了名称与 SMILES，但表单未填分子时，
+    早期实现会静默退回示例分子库，导致别人的分子（benzamidine…）被对接；
+    当前行为是从指令中确定性抽取 SMILES 并直接使用。"""
     spec = intake.build_task_spec(_req(mode="manual", message=_PROSE_WITH_MOLECULES,
                                        ligands_text=""))
     assert spec["ligands"]["source"] == "message", spec["ligands"]
@@ -531,7 +531,7 @@ def test_molecules_written_in_prose_are_used_not_example_library():
 
 
 def test_prose_without_any_molecule_does_not_auto_use_example_library() -> None:
-    """没有任何分子信息时：**只提问**（分子库是必需项），且绝不自动使用示例库。"""
+    """没有任何分子信息时只提问（分子库是必需项），不自动使用示例库。"""
     spec = intake.build_task_spec(_req(mode="manual", message="帮我看看这个受体的成药性",
                                        ligands_text=""))
     assert spec["ligands"]["source"] == "library"
@@ -540,7 +540,7 @@ def test_prose_without_any_molecule_does_not_auto_use_example_library() -> None:
 
 
 def test_explicit_example_library_request_is_honored() -> None:
-    """用户**明确**要求用示例库时，渲染的指令必须让它传 allow_example_fallback=true。"""
+    """调用方明确要求使用示例库时，渲染的指令带上 allow_example_fallback=true。"""
     spec = intake.build_task_spec(_req(mode="chat", advanced=False,
                                        message="用示例库筛一下", ligands_text=""))
     assert intake.user_requested_example_library("用示例库筛一下") is True
@@ -557,12 +557,12 @@ def test_chat_mode_prose_molecules_also_extracted():
 
 
 # --------------------------------------------------------------------------- #
-# 用例集脚本本身必须是被看护的（曾静默失效：期望值停在旧默认 6，只剩 13/14 通过）
+# 用例集脚本本身要纳入看护（期望值曾停在旧默认 6，仅 13/14 通过）
 # --------------------------------------------------------------------------- #
 def test_intake_eval_script_passes_all_its_cases() -> None:
-    """`scripts/intake_eval.py` 是受理层的人工取证脚本 —— 它**不在自动门禁里**，
-    因此期望值会悄悄过期（注意：折叠表单那条一直期望 `exhaustiveness=6`，
-    而系统默认 v0.24 起已是 16，脚本只报「未命中 1 项」，没人发现）。
+    """`scripts/intake_eval.py` 是受理层的人工取证脚本，不在自动门禁里，
+    因此期望值会过期（折叠表单那条期望 `exhaustiveness=6`，
+    而系统默认 v0.24 起已是 16，脚本只报「未命中 1 项」）。
     """
     import subprocess
 
@@ -573,18 +573,18 @@ def test_intake_eval_script_passes_all_its_cases() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 界面点选（多组分分子的「代表结构」）必须确定性续跑
+# 界面点选（多组分分子的「代表结构」）需要确定性续跑
 #
-# 注意：点选只把选项文案当普通消息发回，
-# 后端于是按名称重新查询、又是多组分 → 把同一个问题再问一次；追问若丢了受体还会被判 ask。
+# 点选只把选项文案当普通消息发回，后端按名称重新查询时仍为多组分，
+# 同一个问题会被再问一次；追问若丢了受体还会被判 ask。
 # --------------------------------------------------------------------------- #
 _MANCOZEB = "C(CNC(=S)[S-])NC(=S)[S-].C(CNC(=S)[S-])NC(=S)[S-].[Mn+2].[Zn+2]"
 
 
 def test_selected_representative_structure_is_deterministic() -> None:
     """带 `molecule_choice` 时：直接按该结构导入，不再查询/不再询问，且能判 run。"""
-    # 注意：chat 模式下 `receptor` 表单字段**不是**权威来源（预填值不算用户意图），
-    # 受体要么写在指令里、要么由多轮继承 —— 这里按真实追问的写法带上 accession。
+    # chat 模式下 `receptor` 表单字段不是权威来源（预填值不算调用方意图），
+    # 受体写在指令里或由多轮继承；此处按追问的写法带上 accession。
     spec = intake.build_task_spec(_req(
         mode="chat", advanced=False, message="用 Q9SJQ6 继续", ligands_text="",
         molecule_choice=_MANCOZEB, molecule_choice_decision="raw-mixture",
@@ -601,7 +601,7 @@ def test_selected_representative_structure_is_deterministic() -> None:
 
 
 def test_selected_structure_without_receptor_is_still_ask() -> None:
-    """底线不变：分子已选定但受体仍缺失 → 只提问、零计算（不能拿默认受体开跑）。"""
+    """分子已选定但受体仍缺失时只提问、零计算（不使用默认受体开跑）。"""
     spec = intake.build_task_spec(_req(
         mode="chat", advanced=False, message="代森锰锌 · 原始多组分结构", ligands_text="",
         receptor="",
@@ -612,10 +612,10 @@ def test_selected_structure_without_receptor_is_still_ask() -> None:
 
 
 def test_followup_inherits_receptor_named_earlier_by_gene_symbol() -> None:
-    """多轮续跑：上一轮用户只写了「拟南芥ROS1」（没有 酶/蛋白/受体 后缀）也要能继承受体。
+    """多轮续跑：上一轮只写了「拟南芥ROS1」（无 酶/蛋白/受体 后缀）时也要能继承受体。
 
-    注意：`_NAMED_RECEPTOR_RE` 只认带后缀的名字，于是「拟南芥ROS1」既不算「点名了受体」，
-    也让多轮继承拿不到上一轮已解析出的 accession/PDB → 用户点选分子代表结构后的追问被判 ask。
+    `_NAMED_RECEPTOR_RE` 只认带后缀的名字，「拟南芥ROS1」既不算「点名了受体」，
+    多轮继承也拿不到上一轮已解析出的 accession/PDB，点选代表结构后的追问会被判 ask。
     """
     prior = [
         {"role": "user", "content": "把拟南芥ROS1和小分子代森锰锌对接"},

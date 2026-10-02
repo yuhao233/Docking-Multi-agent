@@ -1,13 +1,13 @@
 """同一物质的两种 SMILES 写法必须只算一个分子。
 
-注意：
-「就一个分子，怎么对接出来两个？」
+触发场景：点选的代表结构与在线查询返回的写法是同一物质的不同 SMILES 拼写
+（`C(CNC(=S)[S-])NC(=S)[S-]…` 与 `S=C([S-])NCCNC(=S)[S-]…`，
+canonical SMILES 与 InChIKey `CHNQZRKUZPNOOH-UHFFFAOYSA-J` 相同）。
 
-复盘：用户点选的代表结构与在线查询回来的写法是**同一物质的不同 SMILES 拼写**
-（`C(CNC(=S)[S-])NC(=S)[S-]…` 与 `S=C([S-])NCCNC(=S)[S-]…`，canonical SMILES 与
-InChIKey `CHNQZRKUZPNOOH-UHFFFAOYSA-J` 完全相同）。而黑板里 `add_molecules` 用**规范**
-SMILES 做键、`set_properties`/`set_docking`/`set_binding` 用**原始** SMILES 做键 ——
-同一物质于是各占一个键，黑板里出现两个「分子」，对接与排行也就出现两行（分数还一模一样）。
+黑板里 `add_molecules` 以规范 SMILES 做键，
+而 `set_properties`/`set_docking`/`set_binding` 以原始 SMILES 做键，
+同一物质因此各占一个键，黑板里出现两个「分子」，
+对接与排行也随之出现两行且分数相同。
 """
 from __future__ import annotations
 
@@ -74,6 +74,6 @@ def test_dedupe_molecules_helper_reports_what_it_dropped() -> None:
     kept, dropped = dedupe_molecules(mols)
     assert dropped == 1 and len(kept) == 2, (kept, dropped)
     assert kept[0]["smiles"] == THIONE and kept[1]["smiles"] == "CCO"
-    # 空清单与不可解析项不炸
+    # 空清单与不可解析项不抛异常
     assert dedupe_molecules([]) == ([], 0)
     assert dedupe_molecules([{"name": "x", "smiles": ""}])[0] == []

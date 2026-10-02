@@ -1,9 +1,9 @@
-"""理化性质与结合模式相似度（全部为真实 RDKit 计算）。
+"""理化性质与结合模式相似度（基于 RDKit 计算，结果可复现）。
 
-结合模式分析由三部分构成，均基于真实计算、可复现：
-  1. **双指纹相似度**：Morgan(radius=2, 2048bit) 与 MACCS keys 的 Tanimoto 相似度；
-  2. **药效团锚定基团**：SMARTS 匹配脒基/胍基/羧酸等关键基团（丝氨酸蛋白酶 S1 口袋锚定特征）；
-  3. **理化性质差异**：分子量 / logP / TPSA 相对阳性对照的差值。
+结合模式分析由三部分构成：
+  1. 双指纹相似度：Morgan(radius=2, 2048bit) 与 MACCS keys 的 Tanimoto 相似度；
+  2. 药效团锚定基团：SMARTS 匹配脒基/胍基/羧酸等关键基团（丝氨酸蛋白酶 S1 口袋锚定特征）；
+  3. 理化性质差异：分子量 / logP / TPSA 相对阳性对照的差值。
 综合以上给出 `structural_consistency`（高/中/低）与 `binding_mode_hint`。
 """
 from __future__ import annotations
@@ -47,17 +47,17 @@ def _to_mol(smiles: str):
 # --------------------------------------------------------------------------- #
 def compute_properties(smiles: str, protonation: Optional[str] = None,
                        ph: Any = None) -> Dict[str, Any]:
-    """计算分子真实物化性质与类药性指标。
+    """计算分子的物化性质与类药性指标。
 
     `protonation` 为运行级质子化策略（见 `core.protonation.apply_protonation`），
     `ph` 为 `ph` 策略下的目标 pH（缺省 7.4）。
-    **与对接同口径**：对接用的是中和后的形式，性质就必须按同一形式算，
-    否则报告里 MW/logP 与对接结果属于两种化学形式，排序会失去可比性。
+    与对接同口径：对接使用中和后的形式，性质按同一形式计算，
+    否则报告里的 MW/logP 与对接结果分属两种化学形式，排序失去可比性。
 
-    **主键纪律**：返回的 `smiles` 始终是**传入的原始 SMILES**（合并/排序/去重都以它为主键），
+    主键纪律：返回的 `smiles` 始终是传入的原始 SMILES（合并/排序/去重都以它为主键），
     实际用于计算的形式放在 `protonated_smiles`（仅当与原始不同时出现），
-    溯源放在 `protonation`。注意（e2e 回归）：若把 `smiles` 换成中和后的形式，
-    这些分子就与对接行（主键是原始 SMILES）**对不上**，排序表里的分子量/logP 整列变空。
+    溯源放在 `protonation`。若把 `smiles` 换成中和后的形式，
+    这些分子就与对接行（主键是原始 SMILES）对不上，排序表里的分子量/logP 整列变空。
     """
     from docking_agent.core.ligands import apply_protonation
 
@@ -107,7 +107,7 @@ def compute_properties(smiles: str, protonation: Optional[str] = None,
 # 指纹与相似度
 # --------------------------------------------------------------------------- #
 def morgan_fingerprint(smiles: str, radius: int = 2, n_bits: int = 2048):
-    """Morgan 指纹（RDKit 2026 推荐 MorganGenerator，旧版本回退 AllChem 接口）。"""
+    """Morgan 指纹（优先 RDKit 2026 的 MorganGenerator，不可用时回退 AllChem 接口）。"""
     mol = _to_mol(smiles)
     try:
         from rdkit.Chem import rdFingerprintGenerator  # type: ignore
@@ -177,7 +177,7 @@ def _hint(morgan_sim: float, anchor_match: bool, has_anchor: bool) -> str:
 
 def binding_mode_profile(name: str, smiles: str, control_smiles: str,
                          control_props: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """单分子 vs 阳性对照的结合模式分析（真实计算，字段完整）。"""
+    """单分子与阳性对照的结合模式分析（RDKit 计算，包含全部方法学字段）。"""
     props = compute_properties(smiles)
     ctrl = control_props or compute_properties(control_smiles)
 
@@ -203,8 +203,8 @@ def binding_mode_profile(name: str, smiles: str, control_smiles: str,
         "aromatic_rings": props.get("aromatic_rings"),
         "rotatable_bonds": props.get("rotatable_bonds"),
         "pharmacophore": flags,
-        # 逐行**不再重复**对照药效团：它只与对照有关，已由 report 顶层的
-        # `control_pharmacophore` 给一次（逐分子重复会让载荷按分子数线性膨胀）
+        # 逐行不重复对照药效团：该字段只与对照有关，已由 report 顶层的
+        # `control_pharmacophore` 给出一次（逐分子重复会按分子数线性增大载荷）
         "anchor_match": bool(flags.get("cationic_anchor") and ctrl_flags.get("cationic_anchor")),
         "mw_delta": _delta("molecular_weight"),
         "logp_delta": _delta("logP"),

@@ -2,14 +2,14 @@
 
 覆盖规范改造的每一项，避免以后回退：
 
-1. 协调 Agent 的 `state_schema` 必须继承 `langchain.agents.AgentState`
-   —— 只继承 `langgraph.graph.MessagesState` 时 `response_format` 结构化输出永远无法终止
-   （实测 GraphRecursionError）；继承正确基类后编译图里会有 `structured_response` / `jump_to` 通道。
-2. 5 个 Agent 图都必须有**显式图名**（默认名会退化成 `'LangGraph'`，Studio / 回调归属无法区分）。
+1. 协调 Agent 的 `state_schema` 需要继承 `langchain.agents.AgentState`；
+   只继承 `langgraph.graph.MessagesState` 时 `response_format` 结构化输出无法终止
+   （会触发 GraphRecursionError）；继承正确基类后编译图里有 `structured_response` / `jump_to` 通道。
+2. 5 个 Agent 图都需要显式图名；默认名会退化成 `'LangGraph'`，Studio 与回调归属无法区分。
 3. checkpointer 用规范名 `InMemorySaver`（`MemorySaver` 只是向后兼容别名）。
 4. `agents/prompts.py` 用显式拼接（不再 `globals()[name] = ...` 改写），并提供 `COORDINATOR_SP` 兜底。
-5. 工具的 `args_schema` 必须与函数签名一致；docstring 里按 `- 参数名:` 写的条目必须是真参数
-   （注意：`molecular_property_assessment` 的 docstring 曾写了并不存在的 `protonation_ph`）。
+5. 工具的 `args_schema` 需要与函数签名一致；docstring 里按 `- 参数名:` 写的条目必须是真参数
+   （`molecular_property_assessment` 的 docstring 曾写出并不存在的 `protonation_ph`）。
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
 
 class _FakeToolModel(GenericFakeChatModel):
-    """最小假模型：`create_agent` 会调用 `bind_tools`，这里原样返回自己（零网络）。"""
+    """最小假模型：`create_agent` 会调用 `bind_tools`，此处原样返回自身，不使用网络。"""
 
     def bind_tools(self, *args: Any, **kwargs: Any) -> "_FakeToolModel":  # noqa: D102
         return self
@@ -38,9 +38,9 @@ def _fake_model() -> _FakeToolModel:
 def test_coordinator_state_schema_extends_langchain_agent_state() -> None:
     from docking_agent.agents.coordinator import AgentState
 
-    # TypedDict 不支持 issubclass/isinstance，且 __mro__ 不体现基类；但继承来的键会并入
-    # __annotations__。`structured_response` / `jump_to` 只有 langchain.agents.AgentState 提供：
-    # 只继承 langgraph.graph.MessagesState 时这两个键不存在（那正是结构化输出无法终止的版本）。
+    # TypedDict 不支持 issubclass/isinstance，且 __mro__ 不体现基类，但继承来的键会并入
+    # __annotations__。`structured_response` / `jump_to` 只由 langchain.agents.AgentState 提供：
+    # 只继承 langgraph.graph.MessagesState 时这两个键不存在，结构化输出因而无法终止。
     annotations = set(AgentState.__annotations__)
     assert {"messages", "structured_response", "jump_to"} <= annotations, annotations
 
@@ -84,10 +84,10 @@ def test_checkpointer_uses_inmemorysaver() -> None:
 
 
 def test_sub_agent_calls_are_stateless_by_design() -> None:
-    """子 Agent 是**无状态执行器**（P1 明确保留的既定设计，不是缺陷）。
+    """子 Agent 为无状态执行器，这是 P1 明确保留的既定设计。
 
-    同一轮对话里反复调用同一子 Agent 时，必须拿到**不同的 thread_id**（看不到自己上一次的输出），
-    以防两次筛选任务之间上下文串扰；跨步骤共享信息只走运行产物文件与共享黑板。
+    同一轮对话里反复调用同一子 Agent 时，需要拿到不同的 thread_id，
+    否则会看到自己上一次的输出，两次筛选任务之间产生上下文串扰；跨步骤共享信息只走运行产物文件与共享黑板。
     """
     from langchain_core.messages import AIMessage
     from docking_agent.agents.workers import invoke_worker
@@ -113,14 +113,14 @@ def test_sub_agent_calls_are_stateless_by_design() -> None:
 # 2) 工具契约：args_schema 与签名一致 + docstring 不漂移
 # --------------------------------------------------------------------------- #
 def _all_tools() -> List[Any]:
-    """收集项目里所有真正的 `@tool` 对象。
+    """收集项目里所有 `@tool` 对象。
 
-    用 `isinstance(obj, BaseTool)` 判定，而不是 `hasattr(obj, "args")` —— 后者会把
-    `functools.partial`、类成员描述符之类的对象也算进来（真实踩到过：TypeError）。
+    判定用 `isinstance(obj, BaseTool)` 而非 `hasattr(obj, "args")`；后者会把
+    `functools.partial` 与类成员描述符之类的对象也算进来，曾引发 TypeError。
     """
     from langchain_core.tools import BaseTool
 
-    # dispatch（协调 Agent 的分发工具）第 2 波已移到 agents/ 层；其余仍在 tools/
+    # dispatch（协调 Agent 的分发工具）已移到 agents/ 层；其余工具仍在 tools/
     from docking_agent.agents import dispatch
     from docking_agent.tools import (binding, docking, online, pockets, pose,
                                      properties, recommend, report)
@@ -138,14 +138,14 @@ def test_every_tool_args_schema_matches_signature() -> None:
     assert len(tools) >= 15, f"工具数量异常：{len(tools)}"
     drift = {}
     for tool in tools:
-        # `runtime` 是 LangGraph 注入参数（ToolRuntime）：不在模型可见 args 里，但确实在函数签名上
+        # `runtime` 是 LangGraph 注入参数（ToolRuntime），不在模型可见的 args 里，但存在于函数签名
         params = set(inspect.signature(tool.func).parameters) - {"runtime"}
         if set(tool.args) != params:
             drift[tool.name or tool.func.__name__] = sorted(set(tool.args) ^ params)
     assert not drift, f"args_schema 与函数签名不一致：{drift}"
 
 
-#: docstring 里按「- 名称:」列出、但属于**返回字段**而非入参的名字（人工核对过的白名单）
+#: docstring 里按「- 名称:」列出、但属于返回字段而非入参的名字（人工核对的白名单）
 _RESULT_FIELDS_IN_DOC = {
     "check_binding_consistency": {"affinity_strong_low_similarity", "similar_but_weak_docking",
                                   "consistent"},
@@ -154,7 +154,7 @@ _RESULT_FIELDS_IN_DOC = {
 
 
 def test_tool_docstrings_do_not_document_phantom_params() -> None:
-    """docstring 里写的入参必须真实存在（`molecular_property_assessment` 曾漂移出 `protonation_ph`）。"""
+    """docstring 里写的入参必须存在；`molecular_property_assessment` 曾漂移出 `protonation_ph`。"""
     problems: Dict[str, List[str]] = {}
     for tool in _all_tools():
         doc = tool.description or ""
@@ -177,22 +177,22 @@ def test_prompts_compose_explicitly_and_offer_coordinator_fallback() -> None:
     assert "COORDINATOR_SP" in P.__all__
     assert isinstance(P.COORDINATOR_SP, str) and len(P.COORDINATOR_SP) > 200
     assert P.COORDINATOR_SP.endswith(P.DATA_HANDOFF_COORDINATOR)
-    # 每个角色的「数据交接」块必须只点名**该角色真的拥有**的工具（注意：共用一份块时
-    # pocket Agent 拿到的是 4 个它根本没有的工具名，property/binding 也有 3/4 不相干）
+    # 每个角色的「数据交接」块只点名该角色拥有的工具；共用一份块时
+    # pocket Agent 会拿到 4 个它没有的工具名，property 与 binding 也有 3/4 不相干
     expected = {
         "PROPERTY_SP": P.DATA_HANDOFF_PROPERTY,
         "DOCKING_SP": P.DATA_HANDOFF_DOCKING,
         "BINDING_SP": P.DATA_HANDOFF_BINDING,
-        "POCKET_SP": "",                     # 口袋 Agent 的工具不接收文件 → 不拼该块
+        "POCKET_SP": "",                     # 口袋 Agent 的工具不接收文件，因此不拼接该块
     }
     for name, handoff in expected.items():
         base = getattr(P, f"_{name}_BASE")
         value = getattr(P, name)
         assert value == base + handoff + P.PARAMS_CONTRACT + P.OUTPUT_ECONOMY, \
             f"{name} 必须由「基础提示词 + 该角色自己的数据交接纪律 + 参数来源契约 + 输出经济性」显式拼成"
-        # 参数契约必须真的写进每个子 Agent 提示词（否则模型不会去读 JSON 块）
+        # 参数契约需要写进每个子 Agent 提示词，否则模型不会读取 JSON 块
         assert "任务参数(JSON)" in value, name
-    # 每个角色只应看到自己的工具名；不得出现别的角色的工具名
+    # 每个角色只看到自己的工具名，不出现其他角色的工具名
     role_tools = {
         "PROPERTY_SP": ("molecular_property_assessment",),
         "DOCKING_SP": ("molecular_docking",),
@@ -210,10 +210,10 @@ def test_prompts_compose_explicitly_and_offer_coordinator_fallback() -> None:
 
 
 def test_every_subagent_carries_output_economy() -> None:
-    """每个子 Agent 都必须带「输出经济性」：它的输出会被主管 Agent 直接消费。
+    """每个子 Agent 都带「输出经济性」契约：其输出由主管 Agent 直接消费。
 
-    只靠提示词要求模型少写是不可靠的，所以另有 `reports.py` 的 `agent_note` 校验把
-    「一句话」变成机制（见 `tests/test_structured_worker_output.py`）。
+    仅靠提示词要求模型少写并不可靠，因此另有 `reports.py` 的 `agent_note` 校验
+    把「一句话」变成机制（见 `tests/test_structured_worker_output.py`）。
     """
     from docking_agent.agents import prompts as P
 
@@ -224,16 +224,16 @@ def test_every_subagent_carries_output_economy() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3b) 提示词里点名 `tool(param=...)` 时，param 必须是**该工具真的有的参数**
+# 3b) 提示词里点名 `tool(param=...)` 时，param 必须是该工具确实存在的参数
 # --------------------------------------------------------------------------- #
-#: 提示词里出现、但属于「返回字段 / JSON 块键」而非工具入参的名字（人工核对过的白名单）
+#: 提示词里出现、但属于返回字段或 JSON 块键而非工具入参的名字（人工核对的白名单）
 _PROMPT_NON_PARAM_HINTS = {
     "run": {"data"},          # `run.data[...]` 之类的说明性写法
 }
 
 
 def _prompt_texts() -> Dict[str, str]:
-    """所有**模型可见的提示词文本**（配置 sp / prompts 常量 / 受理层提示词 / 各工具说明）。"""
+    """所有模型可见的提示词文本：配置 sp、prompts 常量、受理层提示词与各工具说明。"""
     import json as _json
     from pathlib import Path
 
@@ -255,14 +255,14 @@ def _prompt_texts() -> Dict[str, str]:
         raw = cfg.read_text(encoding="utf-8")
         try:
             out["config.agent_llm_config.sp"] = _json.loads(raw).get("sp") or ""
-        except Exception:                                     # 允许静默：配置坏了由 test_docs_consistency 负责报错
+        except Exception:                                     # 允许静默：配置损坏由 test_docs_consistency 负责报错
             pass
     return out
 
 
 def _phantom_prompt_params(texts: Dict[str, str],
                            known: Dict[str, Set[str]]) -> "tuple[Dict[str, List[str]], int]":
-    """抽出「提示词点名了工具没有的参数」；返回 (问题表, 扫描到的参数写法数)。"""
+    """抽出提示词中点名了工具没有的参数；返回 (问题表, 扫描到的参数写法数)。"""
     mention_re = re.compile(r"([a-z_][a-z_0-9]{3,})\(([^()`]{0,200})")
     key_re = re.compile(r"(?:^|[\s,(])([a-z_][a-z_0-9]*)\s*=")
     problems: Dict[str, List[str]] = {}
@@ -271,7 +271,7 @@ def _phantom_prompt_params(texts: Dict[str, str],
         for name, args in mention_re.findall(text):
             tool_args = known.get(name)
             if tool_args is None:
-                continue                                       # 不是工具名（正文示例/函数名）
+                continue                                       # 不是工具名（正文示例或函数名）
             for key in set(key_re.findall(args)):
                 scanned += 1
                 allowed = tool_args | _PROMPT_NON_PARAM_HINTS.get(name, set())
@@ -281,11 +281,11 @@ def _phantom_prompt_params(texts: Dict[str, str],
 
 
 def test_prompt_tool_calls_only_mention_real_parameters() -> None:
-    """提示词里 ``tool(param=...)`` 的 param 必须真实存在。
+    """提示词里 ``tool(param=...)`` 的 param 必须存在。
 
-    注意：兜底协调提示词写了 ``run_property_assessment(molecules_file=...)``，
-    而该 dispatch 工具**没有**这个参数（它自己把本次运行的产物路径交给子 Agent）——
-    模型照着传会拿到 args_schema 校验错误，白烧一轮往返。
+    兜底协调提示词写了 ``run_property_assessment(molecules_file=...)``，
+    而该 dispatch 工具没有这个参数，它把本次运行的产物路径交给子 Agent；
+    模型照着传会拿到 args_schema 校验错误，并多消耗一轮往返。
     """
     known = {tool.name: set(tool.args) for tool in _all_tools()}
     problems, scanned = _phantom_prompt_params(_prompt_texts(), known)
@@ -296,7 +296,7 @@ def test_prompt_tool_calls_only_mention_real_parameters() -> None:
 
 
 def test_prompt_param_guard_rejects_a_planted_phantom_parameter() -> None:
-    """负向回归：守卫必须真的能抓到「点名不存在的参数」，否则它只是装饰。"""
+    """负向回归：守卫能抓到「点名不存在的参数」，否则该守卫没有作用。"""
     known = {"run_property_assessment": {"molecules_json"},
              "run_docking": {"molecules_file"}}
     bad = {"x": "请调用 `run_property_assessment(molecules_file=...)` 评估；"
@@ -311,7 +311,7 @@ def test_prompt_param_guard_rejects_a_planted_phantom_parameter() -> None:
 
 
 def test_coordinator_uses_config_prompt_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """配置里有 `sp` 时优先用配置；为空时退到 COORDINATOR_SP（不能出现空系统提示词）。"""
+    """配置里有 `sp` 时优先使用配置，为空时退到 COORDINATOR_SP，不出现空系统提示词。"""
     from docking_agent.agents import coordinator
     from docking_agent.agents.prompts import COORDINATOR_SP
 
@@ -330,7 +330,7 @@ def test_coordinator_uses_config_prompt_when_present(monkeypatch: pytest.MonkeyP
                                                                        "config": {"model": "m"}})
     coordinator.build_agent(None)
     assert seen["system_prompt"] == "配置里的提示词"
-    # 动态系统提示词中间件必须真的挂上（否则条件纪律段就是死代码 / 或纪律被抽掉没人补）
+    # 动态系统提示词中间件需要挂上；否则条件纪律段成为死代码，或纪律被移除后无人补回
     names = [type(m).__name__ for m in seen["middleware"]]
     assert "conditional_discipline" in names, f"条件提示词中间件没挂上：{names}"
 

@@ -1,9 +1,10 @@
-"""步数预算：跑满递归上限要**自动放宽并继续**，到顶则用现有结果收尾 —— 绝不把错误抛给用户。
+"""步数预算：跑满递归上限时自动放宽并继续，到达上限则用现有结果收尾，不把错误交给调用方。
 
-产品准则（用户明确要求）：系统尽可能自动处理，**只有影响对接本身的问题**才需要用户决定。
-「跑满步数」是执行细节 → 自动放宽（120 → 240 → 480），到顶让主管 Agent 收尾，用已有结果落盘。
+产品准则：系统自动处理可自行决定的问题，只有影响对接本身的问题才交由调用方决定。
+跑满步数属于执行细节，处理方式为按 120、240、480 逐级自动放宽，到达上限后由主管 Agent
+收尾并用已有结果落盘。
 
-真实报错（修复前）：
+修复前的真实报错：
 
     Recursion limit of 60 reached without hitting a stop condition.
 """
@@ -66,7 +67,7 @@ def test_limit_event_wording() -> None:
 
 
 def test_streaming_runner_auto_escalates_instead_of_erroring() -> None:
-    """真实图回归：一个需要 12 步的循环图，起始上限只有 4 → 必须自动放宽后跑完，且无 error 事件。"""
+    """真实图回归：一个需要 12 步的循环图，起始上限只有 4，应自动放宽后跑完，且不出现 error 事件。"""
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, START, StateGraph
     from typing_extensions import TypedDict
@@ -102,7 +103,7 @@ def test_streaming_runner_auto_escalates_instead_of_erroring() -> None:
 
 
 def test_streaming_runner_stops_gracefully_at_the_ceiling(monkeypatch: Any) -> None:
-    """到顶（天花板）时不再放宽：如实发一条 limit 事件并**正常结束**，不发 error。"""
+    """到达上限（天花板）后不再放宽：发出一条 limit 事件并正常结束，不发 error。"""
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, START, StateGraph
     from typing_extensions import TypedDict
@@ -157,7 +158,7 @@ def test_worker_invocation_auto_escalates(monkeypatch: Any) -> None:
 
 
 def test_worker_reports_step_limit_instead_of_raising(monkeypatch: Any) -> None:
-    """到顶后如实返回 `agent_step_limit`（可由主管 Agent 决策），而不是把异常抛给运行。"""
+    """到达上限后返回 `agent_step_limit`，由主管 Agent 决策，而不是把异常抛给运行。"""
     from langgraph.errors import GraphRecursionError
 
     from docking_agent.agents import workers as W
@@ -174,6 +175,6 @@ def test_worker_reports_step_limit_instead_of_raising(monkeypatch: Any) -> None:
 
 
 def test_wrap_up_note_is_a_system_message_not_user_prose() -> None:
-    """收尾提示写进 SystemMessage：不进用户可见的对话正文（`_recent_prior_turns` 只读 human/ai）。"""
+    """收尾提示写进 SystemMessage，不进入使用者可见的对话正文（`_recent_prior_turns` 只读 human/ai）。"""
     assert "收尾" in WRAP_UP_NOTE and "不要臆造" in WRAP_UP_NOTE
-    assert isinstance(HumanMessage("x"), HumanMessage)  # 语义提示：本提示不用 HumanMessage 注入
+    assert isinstance(HumanMessage("x"), HumanMessage)  # 本提示按语义不用 HumanMessage 注入

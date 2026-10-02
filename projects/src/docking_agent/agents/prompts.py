@@ -1,7 +1,7 @@
-"""多 Agent 系统提示词（集中管理，便于审阅与迭代）。
+"""多 Agent 系统提示词，集中定义便于审阅与版本管理。
 
-- COORDINATOR_SP 是兜底协调提示词（首选 config/agent_llm_config.json 的 `sp` 字段，可由用户调整）；
-- 三个子 Agent 的提示词在此定义：严格「只调用工具并原样返回结果」，避免模型编造数据。
+- `COORDINATOR_SP` 是兜底协调提示词，优先使用 `config/agent_llm_config.json` 的 `sp` 字段（可由使用者调整）；
+- 三个子 Agent 的提示词在此定义，要求只调用工具并原样返回结果，避免模型编造数据。
 """
 from __future__ import annotations
 
@@ -126,12 +126,12 @@ _POCKET_SP_BASE = """# 角色定义
  "center":[...],"size":[...]},"validation":{"status":"…","distance_angstrom":…,
  "shared_residues":[...]},"pocket_explanation":"2–4 句中文","agent_note":"…"}"""
 
-#: 所有子 Agent 共享的「参数来源」契约：**参数只从指令末尾的 JSON 块里读**。
+#: 所有子 Agent 共享的「参数来源」契约：参数只从指令末尾的 JSON 块读取。
 #:
-#: 为什么单列一条：协调层曾把参数写进散文（`exhaustiveness=16, n_poses=1`、
-#: `site_center=[…]`、`molecule_file=**/path**`），模型"照指令传参"要理解自然语言，
-#: 测试也只能用正则反解散文 —— 任何措辞/标点微调都会静默失配。
-#: 现在参数有唯一形态：`任务参数(JSON)：{...}`，**键就是工具参数名**。
+#: 协调层把参数写进散文时（`exhaustiveness=16, n_poses=1`、`site_center=[…]`、
+#: `molecule_file=…`），模型需要理解自然语言才能照指令传参，测试只能用正则
+#: 反解散文，措辞或标点的微调会导致静默失配。
+#: 参数因此只有一种形态：`任务参数(JSON)：{...}`，键名与工具参数名一致。
 PARAMS_CONTRACT = (
     "\n\n## 参数来源（固定契约，务必遵守）\n"
     "- 每次分发的指令末尾都有一行 `任务参数(JSON)：{...}`：**那一行的 JSON 就是你调用工具时要用的参数**，\n"
@@ -142,11 +142,11 @@ PARAMS_CONTRACT = (
 )
 
 def _data_handoff_rule(examples: str) -> str:
-    """拼「数据交接」纪律；`examples` 只列**该角色真的拥有**的「工具(文件参数)」写法。
+    """拼「数据交接」纪律；`examples` 只列该角色实际拥有的「工具(文件参数)」写法。
 
-    注意：这段原先是所有角色共用一份、里面写死了 4 个子 Agent 工具名 ——
-    对 pocket Agent 而言 4 个它一个都没有（它的工具不接收文件），等于让它去调不存在的工具；
-    对 property/binding 也是 3/4 不相干。按角色参数化后既不再误导，也顺带省 token。
+    共用一份纪律会写死 4 个子 Agent 的工具名：pocket Agent 的工具不接收文件参数，
+    列出的工具名与它都不相关，会引导模型调用不存在的工具；property 与 binding
+    也各有 3/4 项不相关。按角色参数化后，提示词与各角色工具集一致，token 占用也更少。
     """
     return (
         "\n\n## 数据交接（务必遵守）\n"
@@ -158,13 +158,13 @@ def _data_handoff_rule(examples: str) -> str:
     )
 
 
-#: 所有子 Agent 共享的「输出经济性」契约：**只输出契约 JSON，不复述、不解释**。
+#: 所有子 Agent 共享的「输出经济性」契约：只输出契约 JSON，不复述、不解释。
 #:
-#: 为什么单列一条：子 Agent 的输出会被主管 Agent 直接消费（也是报告第 8 节的原文），
-#: 多一句解释、多抄一遍明细数值，都要在主管的上下文里再付一次 token，还容易被原样写进报告。
-#: 结构化输出工具只取 JSON，所以契约之外的文字本来就是被丢弃的 —— 与其让模型白写，不如明确禁止。
-#: 「正文不倒数据」纪律：**主管与子 Agent 共用同一份**（注意：模型把工具返回的
-#: 口袋/配体 JSON 原样粘进气泡，正文被几万字符占满；提示词不是保证，前端另有确定性折叠兜底）。
+#: 子 Agent 的输出由主管 Agent 直接消费（也是报告第 8 节的原文），
+#: 多一句解释或多抄一遍明细数值，都要在主管的上下文里再付一次 token，还容易被原样写进报告。
+#: 结构化输出工具只取 JSON，契约之外的文字会被丢弃，因此明确禁止比放任书写更省开销。
+#: 「正文不倒数据」纪律由主管与子 Agent 共用：模型会把工具返回的
+#: 口袋或配体 JSON 原样粘进气泡，正文被几万字符占满；提示词不构成保证，前端另有确定性折叠兜底。
 NO_DATA_DUMP_RULE = ("\n- 正文只写结论/关键数字/风险/下一步，不抄工具 JSON、notes 与逐分子明细（明细给产物路径）。")
 
 OUTPUT_ECONOMY = (
@@ -177,10 +177,10 @@ OUTPUT_ECONOMY = (
 )
 
 
-#: 兜底协调提示词用：只列**协调层自己的 dispatch 工具**，且**只列它们真的有的参数**。
-#: `run_property_assessment` 没有 `molecules_file` 参数（它自己把本次运行的产物路径交给子 Agent），
-#: 所以这里点名它会话会让模型传一个不存在的 kwargs —— 由 `test_agent_conventions` 的
-#: 参数存在性守卫兜住。
+#: 兜底协调提示词用：只列协调层自己的 dispatch 工具，且只列这些工具实际具有的参数。
+#: `run_property_assessment` 没有 `molecules_file` 参数（产物路径由它自己交给子 Agent），
+#: 在此处列出该参数会引导模型传入不存在的 kwargs，
+#: 该情形由 `test_agent_conventions` 的参数存在性守卫拦截。
 DATA_HANDOFF_COORDINATOR = _data_handoff_rule(
     "`run_docking(molecules_file=...)`、`run_binding_mode_analysis(molecules_file=...)`"
     "（`run_property_assessment` **留空即可**，它自己按文件交接）")
@@ -190,8 +190,8 @@ DATA_HANDOFF_BINDING = _data_handoff_rule(
     "`binding_mode_analysis(molecules_file=...)`、`check_binding_consistency(docking_file=...)`")
 
 
-#: 协调 Agent 的**兜底**系统提示词：`config/agent_llm_config.json` 的 `sp` 缺失/为空时使用。
-#: 正常情况下 `sp` 生效（用户可在配置里调整），这里保证「配置丢了也不至于没有系统提示词」。
+#: 协调 Agent 的兜底系统提示词：`config/agent_llm_config.json` 的 `sp` 缺失或为空时使用。
+#: 常规情况下 `sp` 生效（使用者可在配置里调整），该常量保证配置缺失时仍有系统提示词可用。
 COORDINATOR_SP = """# 角色定义
 你是分子筛选与优化协作系统的「整体协调 Agent」，统筹 4 个子 Agent（口袋分析 / 分子属性评估 /
 Docking 执行 / 结合模式检测），对用户的小分子库完成真实、可追溯的筛选与优化。
@@ -218,14 +218,14 @@ Docking 执行 / 结合模式检测），对用户的小分子库完成真实、
 若你调用了 `customize_report`：在回复里用一两句说明「报告按你的要求做了哪些定制」，
 并如实说明被拒/覆盖率不足的项（工具返回的 rejected / coverage 就是依据）。""" + DATA_HANDOFF_COORDINATOR
 
-#: 子 Agent 提示词 = 基础提示词 + **该角色自己的**数据交接纪律 + 参数来源契约。
-#: 用**显式拼接**而不是 `globals()[name] = ...` 改写——后者会破坏静态分析与 IDE 跳转。
+#: 子 Agent 提示词由基础提示词、该角色自己的数据交接纪律与参数来源契约拼接而成。
+#: 采用显式拼接而不是 `globals()[name] = ...`，后者会破坏静态分析与 IDE 跳转。
 PROPERTY_SP = _PROPERTY_SP_BASE + DATA_HANDOFF_PROPERTY + PARAMS_CONTRACT + OUTPUT_ECONOMY
 DOCKING_SP = _DOCKING_SP_BASE + DATA_HANDOFF_DOCKING + PARAMS_CONTRACT + OUTPUT_ECONOMY
 BINDING_SP = _BINDING_SP_BASE + DATA_HANDOFF_BINDING + PARAMS_CONTRACT + OUTPUT_ECONOMY
 # pocket Agent 的工具（predict_binding_pockets / compare_pocket_with_experiment /
-# set_docking_site / list_pocket_engines）**不接收文件参数**（输入走任务参数与共享黑板），
-# 因此不给它拼「数据交接」块 —— 拼了只会让它去调自己根本没有的工具。
+# set_docking_site / list_pocket_engines）不接收文件参数（输入走任务参数与共享黑板），
+# 因此不拼接「数据交接」块，避免引导它调用不存在的工具。
 POCKET_SP = _POCKET_SP_BASE + PARAMS_CONTRACT + OUTPUT_ECONOMY
 
 __all__ = ["COORDINATOR_SP", "PROPERTY_SP", "DOCKING_SP", "BINDING_SP", "POCKET_SP",

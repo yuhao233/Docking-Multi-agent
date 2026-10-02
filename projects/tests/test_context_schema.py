@@ -1,12 +1,12 @@
 """P1 ④：LangGraph 规范化运行上下文（`context_schema` + `Runtime`，双读期）。
 
 覆盖：
-1. `AgentContext` 与 `active_*()` 的**优先/回退**语义（有 runtime 用之，没有才回退 ContextVar）；
+1. `AgentContext` 与 `active_*()` 的优先与回退语义（有 runtime 时用它，没有才回退 ContextVar）；
 2. 两个 Agent 图都声明了 `context_schema`，并且 `graph.invoke(..., context=...)` 能把上下文
-   一路送到**工具内部**（用真实 `create_agent` + 假模型发起 tool_call 验证，不是纸面配置）；
-3. 所有 `@tool` 都接受注入的 `runtime` 但**不把它暴露给模型**（schema 里没有 runtime）；
-4. 图调用方（流式 / CLI / API）确实把 context 透传下去；
-5. 没有 context 时行为不变（CLI 直调 / 单测路径继续靠 ContextVar 兜底）。
+   一路送到工具内部（用真实 `create_agent` 与假模型发起 tool_call 验证，不是纸面配置）；
+3. 所有 `@tool` 都接受注入的 `runtime` 但不把它暴露给模型（schema 里没有 runtime）；
+4. 图调用方（流式、CLI、API）确实把 context 透传下去；
+5. 没有 context 时行为不变（CLI 直调与单测路径继续靠 ContextVar 兜底）。
 """
 from __future__ import annotations
 
@@ -125,10 +125,10 @@ def test_context_reaches_tool_through_graph() -> None:
 
 
 def test_context_reaches_real_project_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """真实工具必须把 `runtime` 透传给**上下文感知**的助手，而不是丢掉它。
+    """真实工具必须把 `runtime` 透传给上下文感知的助手，而不是丢掉它。
 
-    历史：这里曾断言工具会调用 `active_request(runtime)` —— 但那行赋值的结果从未被读过
-    （死代码，已删除）。现在钉住真正被消费的入口：
+    此处曾断言工具会调用 `active_request(runtime)`，但那行赋值的结果从未被读取过
+    （死代码，已删除）。本用例钉住真正被消费的入口：
     按文件读分子时，工具必须把 runtime 透传给 `_coerce_molecule_list`。
     """
     from docking_agent.tools import properties
@@ -211,8 +211,8 @@ def test_project_graph_callers_pass_context() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "src" / "docking_agent"
-    # 第 2 波把 api/app.py 拆成 routers/* + support.py + agent_flow.py，
-    # 因此扫**整个 api 包**（图调用点现在分布在 routers/agent.py 与 routers/legacy.py）。
+    # api/app.py 已拆成 routers/* + support.py + agent_flow.py，
+    # 因此扫描整个 api 包（图调用点分布在 routers/agent.py 与 routers/legacy.py）。
     api_dir = root / "api"
     app = "\n".join(
         p.read_text(encoding="utf-8")

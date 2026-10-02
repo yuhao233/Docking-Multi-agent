@@ -1,15 +1,15 @@
 """报告版式：推荐排行逐个分子附「2D 结构 + 关键指标」卡片，备注精简成一句话。
 
-两点：
-  1. 推荐化合物排行里的分子「长什么样」看不到（只有一张排在后面的网格图），
-     希望结构图**就在数据旁边**，数据用表格整理整齐；
-  2. 备注太长：网页里汇总表塞了一整段、PDF 里整页都是备注。
-
 约定：
   - `charts/recommend_card_NN.png`（左结构 + 右指标表）由 `write_report_charts` 生成并登记，
-    报告第 3.1 节用 `figure_by_rel` 逐分子内嵌 —— 网页 / PDF / 整包 ZIP 三处一致；
-  - 报告里的运行笔记、推荐理由、推进建议、规则提示一律先过 `_brief()`（一句话），
-    条数也有上限；完整原文仍在 run.json / result.json 里。
+    报告第 3.1 节用 `figure_by_rel` 逐分子内嵌，网页 / PDF / 整包 ZIP 三处一致；
+  - 报告里的运行笔记、推荐理由、推进建议、规则提示先过 `_brief()`（一句话），
+    条数也有上限；原文仍保留在 run.json / result.json 里。
+
+覆盖范围：
+  - 每个推荐分子在 3.1 节内嵌 `recommend_card_NN` 结构卡，不再内嵌整张网格图；
+  - 汇总表按表格整理，长备注与长理由被压缩，报告里不出现原文全段；
+  - 卡片登记为产物，可在「中间数据」页签下载并进入整包 ZIP。
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ def test_report_notes_and_reasons_are_briefed(tmp_path: Path) -> None:
 def test_brief_keeps_first_clause_and_marks_truncation() -> None:
     assert _brief("") == ""
     assert _brief("短句") == "短句"
-    # 只有超长才会断句：给一个小 limit 验证「去掉加粗 + 取第一个分句」
+    # 只有超长才会断句：用一个小 limit 验证「去掉强调标记 + 取第一个分句」
     assert _brief("**重点**：甲；乙；丙", limit=6) == "重点：甲"
     assert _brief("**重点**：甲；乙；丙") == "重点：甲；乙；丙"
     long_text = "甲" * 200
@@ -133,10 +133,10 @@ def test_cards_registered_as_artifacts_and_in_zip(tmp_path: Path) -> None:
 
 
 def test_report_states_receptor_provenance_itself(tmp_path: Path) -> None:
-    """§1.2 必须自己写明「哪个结构、从哪来」——不能只靠协调 Agent 在结论里复述。
+    """§1.2 写明「哪个结构、从哪来」，不依赖协调 Agent 在结论里复述。
 
-    审计背景：accession/物种/结构来源原先只出现在 `fetch_protein_structure` 的返回与 Agent 的
-    「实际执行」小节里；结论节按「只留结论/风险」精简后，这份溯源会从报告里消失。
+    accession/物种/结构来源若仅见于 `fetch_protein_structure` 的返回与 Agent 的
+    「实际执行」小节里，结论节按「只留结论/风险」精简后，这份溯源会从报告里消失。
     """
     from docking_agent.reporting import build_markdown_report
 
@@ -153,6 +153,6 @@ def test_report_states_receptor_provenance_itself(tmp_path: Path) -> None:
         assert needle in text, f"{needle} 应写进受体来源：{text}"
     assert "植物去甲基化酶ROS1" in text, "检索词与结构号不同时应一并保留（可追溯）"
 
-    # 没有溯源（未走在线解析 / 旧数据）→ 不出现该行，也不得崩溃
+    # 没有溯源（未走在线解析或旧数据）：该行不出现，且不抛异常
     plain = build_markdown_report({"ranking": [], "receptors": []}, kind="agent", run_id="T")
     assert "- 受体来源：" not in plain

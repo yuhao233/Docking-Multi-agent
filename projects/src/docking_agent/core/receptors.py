@@ -1,4 +1,4 @@
-"""蛋白质受体：注册表（已知结合位点）、用户受体现场准备与受体解析。
+"""蛋白质受体：注册表（已知结合位点）、调用方提供受体的现场准备与受体解析。
 
 受体与「已知结合位点」由 `config/receptors.json` 声明，新增受体无需改代码：
 ```json
@@ -26,17 +26,17 @@ DEFAULT_BOX_SIZE: List[float] = [22.0, 22.0, 22.0]
 
 
 # --------------------------------------------------------------------------- #
-# 受体文件扩展名（**只在这里定义一份**：上传端点与受体解析链共用，避免两处漂移）
+# 受体文件扩展名（仅在此处定义一份：上传端点与受体解析链共用，避免两处漂移）
 # --------------------------------------------------------------------------- #
 # 需要现场准备为 PDBQT 的「结构文件」。`.ent` 是 PDB 的另一种常见后缀
-# （RCSB 下载的坐标文件就叫 *.ent）。历史上只有上传端点认它、解析链不认，
-# 于是 `.ent` 落到「未识别受体 → 回退默认 thrombin」（已知缺陷）。
+# （RCSB 下载的坐标文件名为 *.ent）。先前的实现只有上传端点认它、解析链不认，
+# 因此 `.ent` 会落入「未识别受体，回退默认 thrombin」的分支。
 RECEPTOR_STRUCTURE_EXTS = frozenset({".pdb", ".ent", ".pdb1", ".cif", ".mmcif"})
 # 已经是受体成品的扩展名：无需现场准备，直接包装为受体 spec
 RECEPTOR_PDBQT_EXTS = frozenset({".pdbqt"})
 # 上传端点接受 / 解析链认同的受体扩展名全集
 RECEPTOR_EXTS = RECEPTOR_STRUCTURE_EXTS | RECEPTOR_PDBQT_EXTS
-# 已知「不是受体结构」的扩展名：即使文件存在也不去猜它是蛋白（猜错会把小分子库当受体）
+# 已知「不是受体结构」的扩展名：文件存在也不按蛋白结构处理（误判会把小分子库当成受体）
 RECEPTOR_NON_STRUCTURE_EXTS = frozenset({
     ".sdf", ".sd", ".smi", ".smiles", ".mol", ".mol2", ".csv", ".tsv", ".txt",
     ".json", ".xml", ".html", ".htm", ".yaml", ".yml", ".toml", ".ini", ".log", ".env",
@@ -44,7 +44,7 @@ RECEPTOR_NON_STRUCTURE_EXTS = frozenset({
     ".zip", ".gz", ".tar", ".tgz", ".py", ".js", ".sh",
 })
 
-# mmCIF（含 .cif/.mmcif）不是 PDB 文本格式，meeko 的 `--read_pdb` 读不了；
+# mmCIF（含 .cif/.mmcif）不是 PDB 文本格式，meeko 的 `--read_pdb` 无法读取；
 # gemmi 随 meeko 一起装（无需新增依赖），因此这里先转成 PDB 再做标准准备流程。
 _CIF_EXTS = frozenset({".cif", ".mmcif"})
 
@@ -55,13 +55,13 @@ def receptor_ext(path: str) -> str:
 
 
 def is_structure_source(source: str) -> bool:
-    """该来源是否应按「用户提供的结构文件」走 `prepare_user_receptor`。
+    """该来源是否应按「调用方提供的结构文件」走 `prepare_user_receptor`。
 
-    判定顺序（宁可尝试后在准备阶段如实报错，也不要静默回退默认受体）：
-      1. http(s) URL → 是（下载后按内容准备）；
-      2. 扩展名在 `RECEPTOR_STRUCTURE_EXTS`（.pdb/.ent/.pdb1/.cif/.mmcif）→ 是；
-      3. 扩展名是 `.pdbqt` 或落在已知「非结构」名单里 → 否；
-      4. 文件确实存在且后缀不在名单里 → 也尝试（结构文件后缀五花八门）。
+    判定顺序（无法判定时按结构文件处理，由准备阶段如实报错，而不是静默回退默认受体）：
+      1. http(s) URL：是（下载后按内容准备）；
+      2. 扩展名在 `RECEPTOR_STRUCTURE_EXTS`（.pdb/.ent/.pdb1/.cif/.mmcif）：是；
+      3. 扩展名是 `.pdbqt` 或落在已知「非结构」名单里：否；
+      4. 文件存在且后缀不在名单里：按结构文件处理（结构文件后缀不统一）。
     """
     text = str(source or "").strip()
     if text.startswith(("http://", "https://")):
@@ -71,7 +71,7 @@ def is_structure_source(source: str) -> bool:
         return True
     if ext in RECEPTOR_PDBQT_EXTS or ext in RECEPTOR_NON_STRUCTURE_EXTS:
         return False
-    # 后缀未知：只有文件确实存在才尝试（相对路径按 cwd 与工作区根各查一次，
+    # 后缀未知：仅在文件确实存在时按结构文件处理（相对路径按 cwd 与工作区根各查一次，
     # 与 core.files._fetch_file 的查找口径一致）。
     if os.path.isfile(os.path.expanduser(text)):
         return True
@@ -81,8 +81,8 @@ def is_structure_source(source: str) -> bool:
 def convert_mmcif_to_pdb(source: str) -> str:
     """把 mmCIF 结构转换为同目录下的 PDB 文本，返回新路径；失败时抛异常（由上层如实报错）。
 
-    为什么不静默跳过：`.cif/.mmcif` 与 `.ent` 一样是用户明确给出的结构文件，
-    必须要么真的用上它，要么在 note 里说清为什么用不上。
+    不静默跳过的原因：`.cif/.mmcif` 与 `.ent` 一样是调用方明确给出的结构文件，
+    要么实际使用它，要么在 note 里写明未能使用的原因。
     """
     import gemmi  # 随 meeko 安装，非新增依赖
 
@@ -157,12 +157,12 @@ def list_receptors() -> List[Dict[str, Any]]:
 
 
 def _parse_unmatched_residues(text: str) -> List[str]:
-    """从 meeko 输出里解析「没有化学模板被跳过的残基名」。
+    """从 meeko 输出里解析「缺少化学模板而被跳过的残基名」。
 
     meeko 的报错形如：
       RuntimeError: unable to build rdkit mol for residue HEM corresponding to key A:102
       ... residues that don't match templates: HEM, NAD
-    两种都要覆盖；解析不出来就返回空列表（调用方会退化成"部分残基"的措辞）。
+    两种格式都要覆盖；解析不出时返回空列表（调用方会退化成「部分残基」的措辞）。
     """
     import re as _re
 
@@ -178,14 +178,14 @@ def _parse_unmatched_residues(text: str) -> List[str]:
 
 
 class ReceptorInputError(ValueError):
-    """用户提供的受体**不可用**：文件准备失败，或名称无法识别。
+    """调用方提供的受体不可用：文件准备失败，或名称无法识别。
 
-    产品底线：计算对象不可用 / 不明确时**绝不计算**，也绝不改用任何预置受体
-    （预置受体只用于内部测试，不是用户可选来源）。
+    行为约束：计算对象不可用或不明确时不执行计算，也不改用任何预置受体
+    （预置受体只用于内部测试，不是使用者可选来源）。
 
-    历史缺陷：这两种情况原先都「静默回退 凝血酶(thrombin) 继续跑完」，只在小字笔记里说明 ——
-    用户会拿到一份**以凝血酶为受体**的答非所问报告。现在改为硬错误：由调用方
-    （`tools/docking.py` / `tools/pockets.py`）转成 `needs_user_input`，把选择权交回用户。
+    先前的实现对这两种情况都静默回退凝血酶(thrombin)并继续跑完，仅在小字笔记里说明，
+    使用者会得到一份以凝血酶为受体的答非所问报告。现改为硬错误：由调用方
+    （`tools/docking.py` / `tools/pockets.py`）转成 `needs_user_input`，把选择权交回使用者。
 
     `payload` 是给调用方与界面用的结构化信息（`reason` / `options` / `file`）。
     """
@@ -199,11 +199,11 @@ class ReceptorInputError(ValueError):
 
 
 def guess_cocrystal_ligand(pdb_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """找共晶小分子配体（最大的一团非水/非添加剂 HETATM）。
+    """取共晶小分子配体（最大的一团非水、非添加剂 HETATM）。
 
-    委托给 `core.pockets.cocrystal_ligand`：它会按 (链:残基号:残基名) 分组、
+    具体识别由 `core.pockets.cocrystal_ligand` 完成：按 (链:残基号:残基名) 分组、
     过滤离子与常见结晶添加剂（SO4/GOL/EDO…）、按原子数取最大团。
-    直接对**所有** HETATM 求质心是错的 —— 金属离子、硫酸根、甘油会把中心带偏。
+    直接对所有 HETATM 求质心会把中心带偏：金属离子、硫酸根、甘油都会参与平均。
     """
     if not pdb_path or not os.path.exists(pdb_path):
         return None
@@ -256,17 +256,17 @@ def _find_mk_prepare_receptor() -> str:
     )
 
 
-# mk_prepare_receptor 的准备尝试顺序：交替构象（altloc）是最常见的失败点，
-# 仅 -a 不够，需要显式指定默认 altloc；最后再试不带该参数（干净结构）。
+# mk_prepare_receptor 的准备试算顺序：交替构象（altloc）是最常见的失败点，
+# 仅 -a 不足，需要显式指定默认 altloc；最后再试不带该参数（干净结构）。
 _PREP_ATTEMPTS: List[List[str]] = [["--default_altloc", "A"], ["--default_altloc", "B"],
                                    ["--default_altloc", "C"], []]
 
 
 def _write_prep_pdb(raw: str, prot: str, keep: set) -> Tuple[int, Dict[str, int], Dict[str, int]]:
-    """写「准备用」PDB：只保留 ATOM 记录 + 白名单内的 HETATM。
+    """写「准备用」PDB：只保留 ATOM 记录与白名单内的 HETATM。
 
     返回 (丢弃的水分子数, 丢弃的非水杂原子计数, 写出的非水杂原子计数)。
-    统计**必须**返回给上层：金属/辅因子被丢掉这件事不能是无声的。
+    统计结果返回给上层：金属与辅因子被丢弃这一事实不能无声传递。
     """
     waters = 0
     dropped: Dict[str, int] = {}
@@ -291,12 +291,12 @@ def _write_prep_pdb(raw: str, prot: str, keep: set) -> Tuple[int, Dict[str, int]
 
 
 def _run_mk_prepare(prot: str, out_base: str) -> Tuple[bool, str, List[str]]:
-    """跑 mk_prepare_receptor（按 _PREP_ATTEMPTS 依次尝试）。
+    """运行 mk_prepare_receptor（按 _PREP_ATTEMPTS 依次试算）。
 
     返回 `(是否成功, 错误摘要, meeko 丢弃的残基键)`。
 
-    `-a/--allow_bad_res` 会让 meeko **静默丢**掉模板不匹配的残基（8ZE2 这类结构里
-    残基间距离异常时很常见）；丢弃的残基必须如实上报，否则用户不会知道受体少了一段。
+    加上 `-a/--allow_bad_res` 后 meeko 会静默丢弃模板不匹配的残基（8ZE2 这类结构里
+    残基间距离异常时很常见）；丢弃的残基要如实上报，否则使用者不会知道受体少了一段。
     """
     import subprocess
     import sys as _sys
@@ -338,21 +338,21 @@ def prepare_user_receptor(source: str,
                           source_ext: str = "",
                           protonation: Optional[str] = None,
                           ph: Any = None) -> Dict[str, Any]:
-    """把用户提供的受体结构文件（.pdb/.ent/.pdb1/.cif/.mmcif，本地路径或 URL）
+    """把调用方提供的受体结构文件（.pdb/.ent/.pdb1/.cif/.mmcif，本地路径或 URL）
     现场准备为 PDBQT，并推算活性位点盒。
 
-    盒中心优先取用户传入 center；否则取共晶配体(HETATM)质心；再无则取蛋白质心。
+    盒中心优先取传入的 center；否则取共晶配体(HETATM)质心；两者都没有时取蛋白质心。
 
-    `protonation` / `ph`：受体质子化策略与目标 pH，**默认与配体同一口径**
+    `protonation` / `ph`：受体质子化策略与目标 pH，默认与配体同一口径
     （策略缺省 ph、pH 缺省 7.4）。策略为 ph 时走 `core/receptor_ph`（pdb2pqr + PROPKA）按 pH
     分配 HIS 互变异构与 ASP/GLU/LYS/CYS/TYR 的质子化态；失败或需要保留有机辅因子时
-    **回退**标准流程，并在 `receptor_protonation` 里写明原因（绝不假装做过）。
+    回退标准流程，并在 `receptor_protonation` 里写明原因，不标记为已按 pH 处理。
 
-    关于「标准流程去水去杂原子」：金属离子、血红素、NAD/FAD 等辅因子对结合可能至关重要，
-    因此本函数**不替用户做假设** —— 默认剔除，但把剔除的残基**逐条计数**返回
-    （`dropped_hetatm` / `dropped_waters`），并提供 `keep_hetatm` 白名单让上层明确要求保留。
-    保留时若某残基缺少 meeko 化学模板（HEM/NAD 等大辅因子常见），会**逐个剔除**直到准备成功，
-    并把剔除名单放进 `unsupported_hetatm` —— 既不静默丢弃，也不让整个对接直接失败。
+    关于「标准流程去水去杂原子」：金属离子、血红素、NAD/FAD 等辅因子对结合可能起决定作用，
+    因此本函数不替调用方做假设，默认剔除，但把剔除的残基逐条计数返回
+    （`dropped_hetatm` / `dropped_waters`），并提供 `keep_hetatm` 白名单供上层明确要求保留。
+    保留时若某残基缺少 meeko 化学模板（HEM/NAD 等大辅因子常见），会逐个剔除直到准备成功，
+    并把剔除名单放进 `unsupported_hetatm`：既不静默丢弃，也不会导致整个对接失败。
     """
     import hashlib as _hashlib
 
@@ -367,19 +367,19 @@ def prepare_user_receptor(source: str,
     base = os.path.splitext(os.path.basename(raw))[0] or "user_receptor"
     ext = (str(source_ext).strip().lower() or receptor_ext(raw))
     if ext in _CIF_EXTS:
-        # mmCIF 不是 PDB 文本格式：meeko 的 --read_pdb 会读到空结构。先用 gemmi 转 PDB
+        # mmCIF 不是 PDB 文本格式：meeko 的 --read_pdb 会读到空结构。先用 gemmi 转成 PDB，
         # 再走同一套标准准备流程（gemmi 随 meeko 安装，非新增依赖）。
         converted = convert_mmcif_to_pdb(raw)
         logger.info("受体 %s：mmCIF 已转换为 PDB %s", base, os.path.basename(converted))
         raw = converted
     keep = {str(x).strip().upper() for x in (keep_hetatm or []) if str(x).strip()}
 
-    # 准备产物一律**内容寻址**：文件名里带上「源文件内容 + keep 集」的哈希。
-    # 为什么必须这样：缓存目录是全局共享的，而文件名只取源文件 basename ——
+    # 准备产物一律按内容寻址：文件名里带上「源文件内容 + keep 集」的哈希。
+    # 采用该命名的技术原因：缓存目录全局共享，而文件名只取源文件 basename，
     # 两个并发的运行（或两个都叫 receptor.pdb 的上传）会写同一组
-    # `_prot.pdb` / `.pdbqt` / `.site.json`，彼此覆盖，结果里出现「请求保留 ZN，
-    # 拿回来的却是别人的 HEM+ZN 结果」这种串数据（实测可复现，见
-    # tests/test_receptor_race.py）。加上内容哈希后，不同输入天然落到不同文件。
+    # `_prot.pdb` / `.pdbqt` / `.site.json` 并彼此覆盖，结果里出现「请求保留 ZN，
+    # 拿回来的却是另一个运行的 HEM+ZN 结果」这类串数据（可复现用例见
+    # tests/test_receptor_race.py）。加上内容哈希后，不同输入落到不同文件。
     try:
         src_hash = _hashlib.sha1(Path(raw).read_bytes()).hexdigest()[:10]
     except OSError:
@@ -423,9 +423,9 @@ def prepare_user_receptor(source: str,
             "reason": ("策略为 " + prot_policy + "，未按目标 pH 处理受体"
                        if prot_policy != "ph" else "未知原因")}
 
-    # 缓存判定必须看「准备后 PDB 的内容」而不是时间戳：prot 每次都会重写，
-    # 时间戳比较会让缓存永远失效（每次都重跑 meeko）；而 keep_hetatm 变化时
-    # 内容哈希变化又必须重新准备。用哈希 sidecar 同时满足两点。
+    # 缓存判定依据「准备后 PDB 的内容」而不是时间戳：prot 每次都会重写，
+    # 时间戳比较会使缓存长期失效（每次都重跑 meeko）；keep_hetatm 变化时
+    # 内容哈希随之变化，又需要重新准备。哈希 sidecar 同时满足这两点。
     cached_hash = ""
     try:
         cached_hash = open(hash_file, encoding="utf-8").read().strip()
@@ -443,9 +443,9 @@ def prepare_user_receptor(source: str,
         if dropped_bad:
             receptor_protonation["dropped_bad_residues"] = dropped_bad
         if not ok and keep:
-            # meeko 需要每个残基都有化学模板。大辅因子（HEM/NAD/FAD）与部分离子（K/CU…）
-            # 要么没模板、要么会触发 meeko 内部错误。逐个剔除，找到**最大可用子集**：
-            # 能留的留下，留不下的记进 unsupported 交回 Agent 判断。
+            # meeko 要求每个残基都有化学模板。大辅因子（HEM/NAD/FAD）与部分离子（K/CU…）
+            # 缺少模板或会触发 meeko 内部错误。此时逐个剔除，取最大的可用子集：
+            # 能保留的保留，保留不了的记进 unsupported 交回 Agent 判断。
             current = sorted(keep)
             while not ok and current:
                 for cand in list(current):
@@ -473,7 +473,7 @@ def prepare_user_receptor(source: str,
                    "① 去掉 keep_hetatm 按标准流程重跑（会剔除水与杂原子）；"
                    "② 提供该残基的化学模板（meeko --add_templates 的 SDF）；"
                    "③ 直接提供已准备好的受体 PDBQT 文件。" if keep else "。"))
-        # 侧车哈希必须对应**最终**的 prot（可能已剔除若干残基），否则下次会误判缓存
+        # 侧车哈希要对应最终的 prot（可能已剔除若干残基），否则下次会误判缓存
         prot_hash = _hashlib.sha1(open(prot, "rb").read()).hexdigest()
 
     if not os.path.exists(out_pdbqt):
@@ -484,9 +484,9 @@ def prepare_user_receptor(source: str,
     except OSError as e:
         logger.warning("受体准备缓存标记写入失败：%s", e)
 
-    # 以**最终 PDBQT** 为准统计保留结果（缓存命中时同样正确）：
-    # 只有真的进了受体的杂原子才算 kept；因缺模板被跳过的记为 unmatched，
-    # 这样 `kept_hetatm` 不会出现「说保留了、其实没进对接」的假信息。
+    # 保留结果以最终 PDBQT 为准统计（缓存命中时同样正确）：
+    # 只有确实进入受体的杂原子才计入 kept；因缺模板被跳过的记为 unmatched，
+    # 这样 `kept_hetatm` 不会出现「标记为保留、实际未进入对接」的假信息。
     final_kept: Dict[str, int] = {}
     try:
         for line in open(out_pdbqt, encoding="utf-8", errors="ignore"):
@@ -511,7 +511,7 @@ def prepare_user_receptor(source: str,
     center = list(center) if center is not None else (guessed or _protein_centroid(prot))
     box_size = list(box_size) if box_size is not None else list(DEFAULT_BOX_SIZE)
     # 位点 sidecar：下游可能只拿到 .pdbqt（例如上传后按文件路径对接），
-    # 没有它就只能退化成「全蛋白质心」，会把盒子放到错误的位点。
+    # 缺少它就只能退化成「全蛋白质心」，会把盒子放到错误的位点。
     try:
         with open(os.path.join(cache_dir_path, stem + ".site.json"), "w", encoding="utf-8") as f:
             json.dump({"center": [float(x) for x in center],
@@ -520,16 +520,16 @@ def prepare_user_receptor(source: str,
                                   if lig_info else "蛋白质质心"),
                        "origin": os.path.basename(raw),
                        "origin_path": os.path.abspath(raw),
-                       # 化学溯源也要落到 sidecar：下游常常只拿到 .pdbqt，
-                       # 没有这些字段「丢了哪些金属/辅因子」就会被静默遗忘。
+                       # 化学溯源同样落到 sidecar：下游常常只拿到 .pdbqt，
+                       # 缺少这些字段时「丢了哪些金属/辅因子」会被静默遗忘。
                        "dropped_hetatm": dropped, "kept_hetatm": kept,
                        "dropped_waters": waters,
                        "unsupported_hetatm": sorted(set(unsupported) | set(unmatched)),
-                       # 共晶配体存**完整**信息（resname + chain:resid:resname 的 key + 原子数）：
-                       # 只存残基名时，下游拿 .pdbqt 就再也解不出 SMILES ——「是否把受体自带配体
-                       # 当阳性对照」的询问因此永远不会触发（已知缺陷）。
+                       # 共晶配体存全量信息（resname + chain:resid:resname 的 key + 原子数）：
+                       # 只存残基名时，下游拿到 .pdbqt 后无法再解出 SMILES，「是否把受体自带配体
+                       # 当阳性对照」的询问因此不会触发。
                        "cocrystal_ligand": lig_info or {},
-                       # 原始结构路径：.pdbqt 是**去配体**的，只有回到这里才能取回配体原子
+                       # 原始结构路径：.pdbqt 已去掉配体，只有回到这里才能取回配体原子
                        "source_pdb": os.path.abspath(raw),
                        "receptor_protonation": receptor_protonation},
                       f, ensure_ascii=False)
@@ -557,9 +557,9 @@ def resolve_receptor_specs(receptor_arg: Any = None,
     """把对接输入中的受体指定解析成受体清单（蛋白质库），并收集提示信息。
 
     receptor_arg 支持：
-      - None / "" / "default" ·············· 默认受体(thrombin)+提示
+      - None / "" / "default" ·············· 视为未指定受体，抛 `ValueError`
       - 注册表 key 或别名（thrombin/1DWC/trypsin/1PTU/...）
-      - PDB/PDBQT 文件路径 或 URL（用户自定义受体，现场准备）
+      - PDB/PDBQT 文件路径 或 URL（调用方自定义受体，现场准备）
       - 以上若干项组成的列表（蛋白质库：多受体 × 小分子库）
     """
     notes: List[str] = []
@@ -594,9 +594,9 @@ def resolve_receptor_specs(receptor_arg: Any = None,
     def _is_blank(v: Any) -> bool:
         """空值语义：None / 空串 / 纯空白 / 字面量 "default" 都表示「未指定受体」。
 
-        只保留 `None` 会出错：受理层「未指定受体」时会传空串，旧实现把 `""` 当成
-        「一个无法识别的受体名」，于是 specs 为空、既没有默认受体也没有提示，
-        对接直接落空。这里统一按文档承诺的空值回退处理。
+        只判断 `None` 会出错：受理层「未指定受体」时传空串，先前的实现把 `""` 当成
+        「一个无法识别的受体名」，于是 specs 为空、既没有受体也没有提示，
+        对接直接落空。这里统一按文档承诺的空值处理。
         """
         if v is None:
             return True
@@ -607,9 +607,9 @@ def resolve_receptor_specs(receptor_arg: Any = None,
 
     items = [it for it in _norm(receptor_arg) if not _is_blank(it)]
     if not items:
-        # 设计约束：**彻底删除「未指定受体就回退默认受体」**。
-        # 计算对象没给定时不能替用户挑一个靶点开跑（旧实现会静默用凝血酶），
-        # 这里直接报错；上层（对接工具）会把它转成「请用户指定受体」的提问与可选项。
+        # 设计约束：不保留「未指定受体就回退默认受体」的行为。
+        # 计算对象未给定时不替使用者挑靶点开跑（先前的实现会静默使用凝血酶），
+        # 这里直接报错；上层（对接工具）把它转成「请使用者指定受体」的提问与可选项。
         raise ValueError(
             "未指定受体：计算对象不明确，不能默认使用任何受体。"
             "请提供 PDB 编号 / UniProt accession、受体名称/基因名，"
@@ -639,7 +639,7 @@ def resolve_receptor_specs(receptor_arg: Any = None,
             notes.append(f"用户上传受体(PDBQT)已就绪：{os.path.basename(local)}")
             continue
         # .pdb / .ent / .pdb1 / .cif / .mmcif 以及「文件存在但后缀未知」的情况，
-        # 一律按用户提供的结构文件现场准备（`.ent` 只判断 `.pdb` 曾导致静默回退默认受体）。
+        # 一律按调用方提供的结构文件现场准备（先前的实现只判断 `.pdb`，`.ent` 会静默回退默认受体）。
         if is_structure_source(raw):
             try:
                 local = _fetch_file(raw, "receptor")
@@ -647,8 +647,8 @@ def resolve_receptor_specs(receptor_arg: Any = None,
                                                    source_ext=ext, protonation=prot_policy,
                                                    ph=prot_ph))
             except Exception as e:  # noqa: BLE001
-                # **绝不静默改用预置受体**（旧行为：回退 thrombin 跑完并出报告 —— 答非所问）。
-                # 原因可能很长（meeko 的完整 stderr），截断到可读长度，避免刷屏。
+                # 不静默改用预置受体（先前的行为是回退 thrombin 跑完并出报告，答非所问）。
+                # 错误原因可能很长（meeko 的 stderr 全文），截断到可读长度，避免刷屏。
                 detail = " ".join(str(e).split())
                 if len(detail) > 300:
                     detail = detail[:300] + "…"
@@ -666,7 +666,7 @@ def resolve_receptor_specs(receptor_arg: Any = None,
                 notes.append(f"用户上传受体({ext.lstrip('.') or '结构文件'})已现场准备："
                              f"{os.path.basename(local)}")
             continue
-        # 既不是注册表里的显式名字，也不是可读的结构文件 → 停下来问用户（不替用户挑靶点）
+        # 既不是注册表里的显式名字，也不是可读的结构文件：停下来问使用者，不替使用者挑靶点
         raise ReceptorInputError(
             f"受体 {it!r} 无法识别：它既不是 PDB 编号 / UniProt accession / 基因或蛋白名，"
             "也不是可读的结构文件（.pdb/.ent/.cif/.pdbqt）。本次**不执行任何计算**。"
@@ -683,11 +683,11 @@ def box_atom_stats(pdbqt_path: str, center: Sequence[float],
                    size: Sequence[float]) -> Dict[str, Any]:
     """统计「盒子范围内有多少受体原子」，以及最近原子到盒中心的距离（Å）。
 
-    **为什么必须有它**：Vina 在盒子内**没有任何受体原子**时不报错、不告警，而是返回
-    **全 0 能量**（`affinity_kcal_mol = 0.0`）。0.0 不是分数，是「什么都没算」。
-    注意：受体被回退成凝血酶、盒子却来自另一个蛋白（盒中心距受体最近原子 75 Å），
-    147 个分子跑了 7.5 分钟得到一堆 0.0，还差点被当成结果写进报告。
-    这里让调用方能在**调用引擎之前**识别出这种盒子。
+    该统计的用途：Vina 在盒子内没有任何受体原子时不报错、不告警，而是返回
+    全 0 能量（`affinity_kcal_mol = 0.0`）。0.0 不是分数，是「未执行任何计算」。
+    受体被回退成凝血酶、盒子却来自另一个蛋白时（盒中心距受体最近原子 75 Å），
+    147 个分子跑 7.5 分钟得到一堆 0.0，并可能被当成结果写进报告。
+    本函数用于在调用引擎之前识别出这种盒子。
 
     返回 `{"atoms": 盒内原子数, "nearest_angstrom": 最近距离, "nearest_atom": "残基/原子名",
     "center": [...], "size": [...]}`；读不到坐标时 `atoms` 为 `None`（不据此拒绝，交由引擎报错）。
@@ -737,7 +737,7 @@ def _pdbqt_centroid(pdbqt_path: str) -> List[float]:
             if line.startswith(("ATOM", "HETATM")):
                 try:
                     xs.append(float(line[30:38])); ys.append(float(line[38:46])); zs.append(float(line[46:54]))
-                except ValueError:  # 允许静默：同上
+                except ValueError:  # 允许静默：坏坐标行按无效行跳过，与上文一致
                     pass
     except OSError as e:  # 允许静默：文件读不到时由调用方按“无坐标”兜底
         logger.debug("读取受体坐标失败：%s", e)
@@ -760,10 +760,10 @@ def _file_sha1(path: str) -> str:
 
 
 def registry_site_for(local: str) -> Optional[Dict[str, Any]]:
-    """如果该 PDBQT 与注册表受体是同一个文件（路径相同或**内容哈希相同**），返回其已知位点。
+    """该 PDBQT 与注册表受体为同一文件时（路径相同或内容哈希相同），返回其已知位点。
 
-    内容哈希匹配用于覆盖「用户把预置受体复制/上传了一份」的常见场景：
-    路径不同但内容一致，理应沿用同一活性位点，而不是退化成全蛋白质心。
+    内容哈希匹配覆盖「使用者把预置受体复制或上传了一份」的常见场景：
+    路径不同但内容一致，沿用同一活性位点，而不是退化成全蛋白质心。
     """
     global _REGISTRY_HASHES
     try:
@@ -821,16 +821,16 @@ def _pdbqt_spec(local: str, keep_hetatm: Sequence[str] = (),
     center, size, source = None, None, ""
     chem: Dict[str, Any] = {}
     origin_path = ""
-    # pH 产物形如 `<base>_<src10><keep6>_ph7.4`：位点侧车挂在**基础名**上，
-    # 受体质子化溯源挂在**带 pH 后缀**的同名侧车上 —— 两份都要看。
+    # pH 产物形如 `<base>_<src10><keep6>_ph7.4`：位点侧车挂在基础名上，
+    # 受体质子化溯源挂在带 pH 后缀的同名侧车上，两份都要读取。
     ph_match = re.match(r"^(?P<base>.+)_ph(?P<ph>\d+(?:\.\d+)?)$", stem)
     sidecar = os.path.join(os.path.dirname(local), (ph_match.group("base") if ph_match else stem)
                            + ".site.json")
     ph_sidecar = (os.path.join(os.path.dirname(local), stem + ".site.json")
                   if ph_match else "")
-    # 只有 .pdbqt 而没有原始 PDB 时，keep_hetatm 是无从谈起的（杂原子在上传准备时就已剔除）。
-    # 上传准备会把自己的来源 PDB 写进 sidecar，因此这里可以**回到原始 PDB 重新准备**，
-    # 让 Agent 在「用户上传的是已准备好的 PDBQT」这种常见情形下依然能保留金属/辅因子。
+    # 只有 .pdbqt 而没有原始 PDB 时，keep_hetatm 不起作用（杂原子在上传准备时已被剔除）。
+    # 上传准备会把自己的来源 PDB 写进 sidecar，因此这里可以回到原始 PDB 重新准备，
+    # 「上传的是已准备好的 PDBQT」这一常见情形同样能保留金属/辅因子。
     if keep_hetatm:
         try:
             with open(sidecar, "r", encoding="utf-8") as f:
@@ -854,7 +854,7 @@ def _pdbqt_spec(local: str, keep_hetatm: Sequence[str] = (),
             if isinstance(raw_lig, dict) and raw_lig.get("resname"):
                 cocrystal = dict(raw_lig)
             elif raw_lig:
-                # 旧 sidecar 只存了残基名 → 回到原始结构把 key/原子数补回来
+                # 先前的 sidecar 只存了残基名：回到原始结构把 key 与原子数补回来
                 cocrystal = {"resname": str(raw_lig)}
             else:
                 cocrystal = {}
@@ -869,8 +869,8 @@ def _pdbqt_spec(local: str, keep_hetatm: Sequence[str] = (),
                     "unsupported_hetatm": info.get("unsupported_hetatm") or [],
                     "cocrystal_ligand": cocrystal,
                     # 受体质子化溯源也在 sidecar 里：这份 PDBQT 若是按目标 pH 准备的，
-                    # 必须把「确实按 pH 7.4 做过」带出来 —— 否则下游只看到 .pdbqt，
-                    # 会把一次**做过 pH 处理**的准备误报成「未按 pH 准备」（真实踩到过）。
+                    # 需要把「确实按 pH 7.4 做过」带出来，否则下游只看到 .pdbqt 时
+                    # 会把做过 pH 处理的准备误报成「未按 pH 准备」。
                     "receptor_protonation": info.get("receptor_protonation") or {}}
         except (OSError, ValueError, TypeError) as e:
             logger.warning("位点 sidecar 解析失败 %s：%s", sidecar, e)
@@ -912,15 +912,15 @@ def _pdbqt_spec(local: str, keep_hetatm: Sequence[str] = (),
 def read_receptor_file(source: str, keep_hetatm: Sequence[str] = (),
                        protonation: Optional[str] = None,
                        ph: Any = None) -> Dict[str, Any]:
-    """读取用户上传的蛋白质受体文件（结构文件/PDBQT 或 URL），返回受体 spec。
+    """读取调用方上传的蛋白质受体文件（结构文件/PDBQT 或 URL），返回受体 spec。
 
-    这是给「协调/对接子 Agent」与上传端点处理用户提供蛋白质文件的标准入口：
-      - .pdb / .ent / .pdb1 / .cif / .mmcif（含未知结构后缀）
-                              -> 提取蛋白并现场准备为 PDBQT（活性位点盒自动从共晶配体推断）
-      - .pdbqt              -> 直接作为受体使用（盒中心取原子质心，可用 box_size 覆盖）
+    这是「协调/对接子 Agent」与上传端点处理调用方提供蛋白质文件的标准入口：
+      - .pdb / .ent / .pdb1 / .cif / .mmcif（含未知结构后缀）：
+        提取蛋白并现场准备为 PDBQT（活性位点盒自动从共晶配体推断）
+      - .pdbqt：直接作为受体使用（盒中心取原子质心，可用 box_size 覆盖）
 
     扩展名集合与 `resolve_receptor_specs`、上传端点共用 `RECEPTOR_EXTS` 一份定义，
-    避免历史上「上传端点认 .ent、解析链不认」的两处漂移。
+    避免先前的实现中「上传端点认 .ent、解析链不认」的两处漂移。
     """
     from docking_agent.core.protonation import protonation_ph as _ph_value
     from docking_agent.core.protonation import protonation_policy as _policy
@@ -930,8 +930,8 @@ def read_receptor_file(source: str, keep_hetatm: Sequence[str] = (),
     local = _fetch_file(source, "receptor")
     ext = receptor_ext(local)
     if ext in RECEPTOR_PDBQT_EXTS:
-        # 若这份 PDBQT 是本流程按 pH 准备的，sidecar 里带着溯源 → 由 _pdbqt_spec 恢复；
-        # 没带（外来文件）时 _pdbqt_spec 会如实标注「无法确认是否与目标 pH 一致」。
+        # 若这份 PDBQT 是本流程按 pH 准备的，sidecar 里带着溯源，由 _pdbqt_spec 恢复；
+        # 未带溯源（外来文件）时 _pdbqt_spec 会标注「无法确认是否与目标 pH 一致」。
         return _pdbqt_spec(local, keep_hetatm=keep_hetatm, policy=prot_policy, ph_value=prot_ph)
     return prepare_user_receptor(local, keep_hetatm=keep_hetatm, source_ext=ext,
                                  protonation=protonation, ph=ph)
@@ -939,7 +939,7 @@ def read_receptor_file(source: str, keep_hetatm: Sequence[str] = (),
 def receptor_catalog() -> Dict[str, Any]:
     """受体目录（预置受体清单 + 默认受体名）：供各处工具输出统一的 JSON。
 
-    此前 `list_known_receptors`（受理/分发侧）与 `available_receptors`（对接侧）各写一遍，
+    先前的实现中 `list_known_receptors`（受理/分发侧）与 `available_receptors`（对接侧）各写一遍，
     两处一旦漂移，模型看到的清单与工具实际接受的受体就会不一致。
     """
     from docking_agent.core import DEFAULT_RECEPTOR, list_receptors
@@ -947,16 +947,16 @@ def receptor_catalog() -> Dict[str, Any]:
     return {"status": "ok", "default": DEFAULT_RECEPTOR, "receptors": list_receptors()}
 
 def receptor_unspecified(receptor: Any, run: Any = None, receptor_file: str = "") -> bool:
-    """用户是否**没有指定受体**（受理层判定 default，或压根没给来源）。
+    """调用方是否未指定受体（受理层判定 default，或未给出任何来源）。
 
     判定只看两件事：有没有上传受体文件、受理层的 `task_spec.receptor.source` 是不是 `default`，
-    以及传进来的受体来源是不是空的。预置受体注册表**仅供内部测试**，不再作为用户可选来源，
+    以及传进来的受体来源是不是空的。预置受体注册表仅供内部测试，不再作为使用者可选来源，
     因此这里不做任何「回退默认」的动作，只回答「是否未指定」。
 
-    为什么不再比对受体名：受理层判定「未指定」时 `task_spec.receptor.name` 已经是空串
-    （没有任何内建默认受体名了），而 `source == "default"` 本身就把「主管 Agent 习惯性
-    写上的默认受体名」拦住了。反过来，**没有 task_spec 的直调**（流水线/工具级调用）里
-    显式传入的受体名就是调用方的真实意图，不能再被当成「未指定」（否则 `thrombin` 这种
+    不再比对受体名的原因：受理层判定「未指定」时 `task_spec.receptor.name` 已经是空串
+    （没有任何内建默认受体名），而 `source == "default"` 本身就把「主管 Agent 习惯性
+    写上的默认受体名」拦住了。反过来，没有 task_spec 的直调（流水线/工具级调用）里
+    显式传入的受体名就是调用方的实际意图，不能再被当成「未指定」（否则 `thrombin` 这种
     合法受体名会被误判）。
     """
     if str(receptor_file or "").strip():

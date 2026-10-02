@@ -33,7 +33,7 @@ def _llm_settings_view() -> Dict[str, Any]:
         field = spec.path.split(".", 1)[1]
         raw = local_llm.get(field)
         if field == "extra_headers" and isinstance(raw, dict):
-            raw = S.mask_headers(raw)   # 敏感请求头只回显 ***
+            raw = S.mask_headers(raw)   # 敏感请求头只回显星号掩码
         values[spec.path] = None if spec.kind == "secret" else raw
         sources[spec.path] = ("界面设置" if raw not in (None, "")
                               else global_src.get(field, "内置默认"))
@@ -42,7 +42,7 @@ def _llm_settings_view() -> Dict[str, Any]:
             secret["api_key_set"] = bool(global_cfg.get("api_key"))
             secret["api_key_hint"] = _mask_secret(global_cfg.get("api_key"))
         elif field == "extra_headers":
-            # 生效值同样要掩码：否则「隐藏的明文」会从 effective 泄露出去
+            # 生效值同样要掩码：否则明文会从 effective 字段泄露出去
             effective[spec.path] = S.mask_headers(global_cfg.get(field) or {})
         else:
             effective[spec.path] = global_cfg.get(field)
@@ -66,7 +66,7 @@ def _llm_settings_view() -> Dict[str, Any]:
 
 
 def _settings_payload() -> Dict[str, Any]:
-    """设置页面的完整数据：字段规格 + 当前值 + 生效值 + 来源 + 元信息。"""
+    """设置页面的数据结构：字段规格、当前值、生效值、来源与元信息。"""
     from docking_agent import settings as S
 
     view = _llm_settings_view()
@@ -139,7 +139,7 @@ def _fetch_endpoint_models(timeout: float = 15.0) -> Dict[str, Any]:
         elif isinstance(item, str):
             models.append(item)
     # 不回显上游 base_url：本端点无鉴权，端点指纹属于不必要的信息暴露
-    # （用户自己的端点值在「设置」页可见，不需要这里再确认一次）。
+    # （调用方自己的端点值在「设置」页可见，无需在此再确认一次）。
     return {"status": "ok", "models": sorted(set(models))}
 
 
@@ -175,7 +175,7 @@ def _test_role_llm(role: str) -> Dict[str, Any]:
                 "error": _redact(f"{type(e).__name__}: {e}", 300),
                 "latency_ms": round((_time.time() - started) * 1000)}
     finally:
-        # 还原该角色的历史登记（测试用的临时实例不应污染溯源信息）
+        # 还原该角色原有的登记条目（测试用的临时实例不进入运行记录与报告的溯源信息）
         restore_registry_entry(role, saved)
 
 
@@ -213,11 +213,11 @@ async def api_settings_put(request: Request) -> Any:
     updates = body.get("settings") if isinstance(body, dict) and "settings" in body else body
     if not isinstance(updates, dict):
         # 标准 FastAPI 错误体是 {"detail": ...}；error_message 是旧字段，
-        # 保留它是为了让尚未升级的前端/脚本仍能读到同一句话。
+        # 保留该字段后，尚未升级的前端与脚本仍能读到同一句话。
         return JSONResponse(status_code=400, content={
             "detail": '请求体需要 {"settings": {...}}',
             "error_message": '请求体需要 {"settings": {...}}'})
-    # 只读项直接拒绝；请求头里的 *** 表示「保持原值」（前端看到的是掩码）
+    # 只读项直接拒绝；请求头里的星号占位表示「保持原值」（界面展示的是掩码）
     errors = S.reject_readonly(updates)
     current = S.load_local_settings()
     headers_in = (updates.get("llm") or {}).get("extra_headers") if isinstance(updates.get("llm"), dict) else None
@@ -270,7 +270,7 @@ async def api_settings_reset() -> Dict[str, Any]:
 
 @router.post("/api/settings/reload")
 async def api_settings_reload() -> Dict[str, Any]:
-    """重建 Agent 与模型实例：让模型/端点/提示词类改动的下一次运行生效。"""
+    """重建 Agent 与模型实例：模型、端点、提示词类改动在下一次运行生效。"""
     return await asyncio.to_thread(_reload_agents)
 
 
@@ -282,7 +282,7 @@ async def api_models() -> Dict[str, Any]:
 
 @router.post("/api/tools/probe")
 async def api_tools_probe() -> Dict[str, Any]:
-    """探测用户提供的外部工具（GPU 对接引擎 / P2Rank / pdb2pqr）。
+    """探测使用者提供的外部工具（GPU 对接引擎 / P2Rank / pdb2pqr）。
 
     与 `scripts/doctor.sh`、设置页「检测」共用同一份实现（`core.external_tools`），
     因此三处结论必然一致；返回 `ok=false` 时 `hint` 给出补齐方法。
@@ -303,7 +303,7 @@ async def api_tools_probe() -> Dict[str, Any]:
                        "hint": "" if p2rank else "bash scripts/fetch_tools.sh 或设置 P2RANK_HOME"},
             "pdb2pqr": {"ok": bool(pdb2pqr_bin()), "detail": pdb2pqr_bin() or "",
                         "hint": "" if pdb2pqr_bin() else "设置 PDB2PQR_BIN 指向可用的 pdb2pqr"},
-            # 配体质子化的专业 pKa 引擎：缺了会回退内置规则表（报告会注明）
+            # 配体质子化的外部 pKa 引擎：未安装时回退内置规则表（报告会注明）
             "pka": {"ok": bool(pka.get("available")),
                     "detail": (f"{pka.get('engine')} {pka.get('version')}"
                                if pka.get("available") else "未安装（回退内置 pKa 规则表）"),

@@ -1,11 +1,11 @@
-"""整体协调 Agent 的分发工具：分子库导入 + 向 4 个子 Agent 调度任务。
+"""整体协调 Agent 的分发工具：分子库导入，以及向 4 个子 Agent 调度任务。
 
-**模块位置**：本模块属 `agents/` 层（协调 Agent 的工具集，内部调用子 Agent），
-原先在 `tools/` 下 —— 那会让 `agents/dispatch.py` 反向 import `agents.workers`，
-把 `agents.workers ⇄ agents.dispatch` 依赖环做实（审计 SCC-3）。
+模块位置：本模块属 `agents/` 层（协调 Agent 的工具集，内部调用子 Agent）。
+若放在 `tools/` 下，`agents/dispatch.py` 会反向 import `agents.workers`，
+`agents.workers` 与 `agents.dispatch` 之间会形成依赖环（SCC-3）。
 
-每个工具内部通过调用真实子 Agent（create_agent 实例）完成任务，
-实现多 Agent 协作。遵守"@tool 内部不调用 @tool"约束——这里调用的是 Agent，而非 @tool。
+每个工具内部通过 create_agent 实例调用子 Agent 完成任务，构成多 Agent 协作。
+遵循「@tool 内部不调用 @tool」的约定：这里调用的是 Agent，而非 `@tool`。
 """
 from __future__ import annotations
 
@@ -38,22 +38,22 @@ from langchain.tools import ToolRuntime
 
 logger = logging.getLogger(__name__)
 
-#: 下发给子 Agent 的**结构化参数块**标记（协调层 ↔ 子 Agent 的唯一参数契约）。
+#: 下发给子 Agent 的结构化参数块标记（协调层与子 Agent 之间的唯一参数契约）。
 #:
-#: 为什么把参数从散文里挪出来：旧消息靠 `exhaustiveness=16, n_poses=1`、
-#: `site_center=[…]` 这类散文传递参数，一旦改标点就会静默失配 ——
-#: 真实模型"照指令传参"会跟着错，测试也只能用正则反解散文
-#: （`tests/support/fake_llm.py` 曾经就是如此，任何措辞微调都会先打坏测试）。
-#: 现在参数只有一种形态：**JSON 的键就是工具参数名**，散文只负责解释与告警。
+#: 参数改为结构化传递的原因：先前的消息靠 `exhaustiveness=16, n_poses=1`、
+#: `site_center=[…]` 这类散文传递参数，标点变化即导致静默失配，
+#: 模型照指令传参会跟着错，测试也只能用正则反解散文
+#: （`tests/support/fake_llm.py` 先前的实现就是如此，任何措辞微调都会先打坏测试）。
+#: 参数只有一种形态：JSON 的键就是工具参数名，散文只负责解释与告警。
 AGENT_PARAMS_MARKER = "任务参数(JSON)："
 
 
 def _agent_task_message(instruction: str, params: Dict[str, Any],
                         notes: Sequence[str] = ()) -> str:
-    """拼一条下发给子 Agent 的指令：自然语言说明 + 注意事项 + 结构化参数 JSON。
+    """拼一条下发给子 Agent 的指令：自然语言说明、补充说明与结构化参数 JSON。
 
-    `params` 里为 `None`/空串/空列表的键会被剔除（"未指定"就是不出现，
-    子 Agent 侧按"留空即读共享黑板"的既有约定处理）。
+    `params` 里为 `None`/空串/空列表的键会被剔除（「未指定」即不出现，
+    子 Agent 侧按「留空即读共享黑板」的既有约定处理）。
     """
     clean = {k: v for k, v in params.items() if v not in (None, "", [], {})}
     parts = [instruction.strip()]
@@ -75,7 +75,7 @@ def _coords(value: Any) -> Optional[List[float]]:
 
 
 def _normalization_digest(normalization: Dict[str, Any]) -> Dict[str, Any]:
-    """给模型的归一化摘要（有界）；完整明细落盘为 `input_normalization.json`。"""
+    """给模型的归一化摘要（字段有上限）；明细全量落盘为 `input_normalization.json`。"""
     if not normalization:
         return {}
     return {
@@ -108,7 +108,7 @@ _CORRECTION = ("\n\n[系统纠正] 你上一次的回复无法解析为 JSON 对
 
 
 def _keys_ok(parsed: dict, required: tuple, role: str) -> bool:
-    """校验子 Agent 返回是否含必要字段；docking 允许「完整 receptors」或「摘要 summary」。"""
+    """校验子 Agent 返回是否含必要字段；docking 角色满足 receptors 与 summary 之一即可。"""
     if role in _ANY_OF_KEYS:
         return any(k in parsed for k in required)
     return all(k in parsed for k in required)
@@ -116,10 +116,10 @@ def _keys_ok(parsed: dict, required: tuple, role: str) -> bool:
 
 def _invoke_checked(agent, message: str, thread_id: str, role: str,
                     runtime: Any = None) -> str:
-    """调用子 Agent 并**校验返回**：解析失败或缺少关键字段时带纠正提示重试一次。
+    """调用子 Agent 并校验返回：解析失败或缺少关键字段时带纠正提示重试一次。
 
-    两次都失败则返回显式的 `agent_output_invalid` 状态（而不是把垃圾文本丢给协调 Agent），
-    由协调 Agent 决定重试或如实上报——这是「Agent 级」的失败处理，比运行级兜底更细。
+    两次都失败则返回显式的 `agent_output_invalid` 状态（而不是把无法解析的文本交给协调 Agent），
+    由协调 Agent 决定重试或如实上报。这是「Agent 级」的失败处理，比运行级兜底更细。
     """
     required = _REQUIRED_KEYS.get(role, ())
     attempts = [(message, thread_id), (message + _CORRECTION.format(keys=list(required)),
@@ -160,21 +160,21 @@ def _load_positive_control() -> str:
 @tool
 def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
                             allow_example_fallback: bool = False, runtime: ToolRuntime[AgentContext] = None) -> str:
-    """导入起始分子库：从用户输入文本/JSON，或用户上传的小分子文件解析分子清单。
+    """导入起始分子库：从输入文本/JSON，或从上传的小分子文件解析分子清单。
 
     参数 query_or_text 为原始文本（可能包含 SMILES 列表或 JSON 数组）。
-        **若它其实是文件路径**（存在的文件、绝对/相对路径、或 .sdf/.smi/.csv/.mol2 后缀），
-        也会自动按文件读取 —— 模型把路径塞错参数时不会静默失败。
+        该参数为文件路径时（存在的文件、绝对/相对路径、或 .sdf/.smi/.csv/.mol2 后缀），
+        也会自动按文件读取，模型把路径填入该参数时不会静默失败。
     参数 molecule_file 为上传/提供的小分子文件，支持 SDF/SMILES/.smi/.csv/.mol2（本地路径或 URL）；
-        提供后优先从文件读取。**裸文件名会自动在上传/缓存目录里解析**
-        （`PGR.sdf` → `<时间戳>-<哈希>-PGR.sdf`），不要求模型写出完整路径。
-    参数 allow_example_fallback：仅当用户明确要求"使用示例分子库/示例库/演示"时才传 True，
+        提供后优先从文件读取。裸文件名会自动在上传/缓存目录里解析
+        （`PGR.sdf` 对应 `<时间戳>-<哈希>-PGR.sdf`），不要求模型写出全路径。
+    参数 allow_example_fallback：仅当使用者明确要求"使用示例分子库/示例库/演示"时才传 True，
         用于触发回退到内置示例分子库；默认 False。
 
     返回 JSON：
-    - 检测到分子 -> {"status":"ok","source":"file"/"input"/"input-json"/"example-library","molecules":[...]}
-    - 未检测到任何有效分子 -> {"status":"no_molecules","message":"...","attempted":[...],"molecules":[]}
-      `attempted` 逐条列出真实尝试过的路径与失败原因（便于如实上报，而不是让模型猜路径）。
+    - 检测到分子：{"status":"ok","source":"file"/"input"/"input-json"/"example-library","molecules":[...]}
+    - 未检测到任何有效分子：{"status":"no_molecules","message":"...","attempted":[...],"molecules":[]}
+      `attempted` 逐条列出实际查找过的路径与失败原因（便于如实上报，而不是由模型猜测路径）。
     """
     molecules = []
     source = "input"
@@ -182,23 +182,23 @@ def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
     ambiguous: List[str] = []
     normalization: Dict[str, Any] = {}
     # ① 归一化「文件来源」：molecule_file 优先；模型也可能把路径塞进 query_or_text。
-    # 注意：只给显示名 `PGR.sdf`，工具按裸文件名解析失败。
+    # 只给显示名 `PGR.sdf` 时，工具按裸文件名解析会失败。
     file_arg = (molecule_file or "").strip()
     text = (query_or_text or "").strip()
     if not file_arg and looks_like_molecule_path(text):
         file_arg, text = text, ""
 
     def _try_file(label: str, value: str) -> List[dict]:
-        """按文件读取 value；成功且解析出分子返回清单，否则把原因记进 attempted。
+        """按文件读取 value；成功且解析出分子时返回清单，否则把原因记进 attempted。
 
-        使用**统一输入归一化层**（内容嗅探 + 异构表头/编码 + gzip/zip + 逐行容错），
-        并把 normalization 摘要落盘 `input_normalization.json`。
+        读取走统一输入归一化层（内容嗅探 + 异构表头/编码 + gzip/zip + 逐行容错），
+        并把 normalization 摘要落盘为 `input_normalization.json`。
         """
         nonlocal ambiguous, normalization
         resolved, attempts, candidates = resolve_molecule_file(value)
         attempted.extend(attempts)
         if candidates:
-            # 歧义：多个候选命中同一后缀 → **不猜**，回传候选清单让上层报错/提问
+            # 歧义：多个候选命中同一后缀时不作猜测，回传候选清单供上层报错或提问
             ambiguous = candidates
             attempted.append(f"{label}={value}：匹配到 {len(candidates)} 个候选文件，"
                              "无法确定用哪一个，请用户明确指定完整路径")
@@ -249,8 +249,8 @@ def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
             parsed = parse_smiles_text(text)
             if parsed:
                 molecules = parsed
-    # ③ 兜底：本次运行请求里本就带着上传的分子库文件（对话附件）→ 直接用它。
-    #    「上传成功 = 对话里一定能用」：不依赖模型是否把附件路径抄进参数。
+    # ③ 兜底：本次运行请求里带着上传的分子库文件（对话附件）时直接使用。
+    #    「上传成功即可在对话里使用」：不依赖模型是否把附件路径抄进参数。
     if not molecules:
         run = active_run(runtime)
         request = (getattr(run, "data", None) or {}).get("request") or {}
@@ -260,7 +260,7 @@ def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
             if molecules:
                 source = "file"
     if not molecules:
-        # 仅在用户明确要求示例库时才回退；否则如实报告缺失，交由协调 Agent 决定
+        # 仅在使用者明确要求示例库时才回退；否则如实报告缺失，交由协调 Agent 决定
         if allow_example_fallback:
             molecules = load_library_file(DEFAULT_LIBRARY)
             source = "example-library"
@@ -286,13 +286,13 @@ def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
         from docking_agent.core.normalize import record_input_normalization
 
         record_input_normalization(normalization, kind="ligand")
-    # 完整清单落盘 + 小库照旧回全量；大库只回摘要（清单本身也会撑爆上下文：
+    # 清单全量落盘；小库照旧回全量，大库只回摘要（清单本身也会撑爆上下文：
     # 1 万条 ≈ 0.5 MB ≈ 13 万 tokens）
     tool_io.record("molecules", molecules, run=active_run(runtime))
-    # **写入共享黑板**：这样「子 Agent 工具留空参数即用黑板」的承诺才成立。
-    # 注意：此前全仓只有属性评估子 Agent 自己的 normalize 工具会写黑板，导入口从不写，
-    # 于是 `run_property_assessment` 按提示词留空 → 子 Agent 读到「黑板上无分子」→
-    # 147 条库只有前 20 条被评估（报告出现数据缺口），且以 status=ok 悄悄通过。
+    # 写入共享黑板：「子 Agent 工具留空参数即用黑板」的约定据此成立。
+    # 先前的实现里全仓只有属性评估子 Agent 自己的 normalize 工具会写黑板，导入口不写，
+    # 于是 `run_property_assessment` 按提示词留空时，子 Agent 读到「黑板上无分子」，
+    # 147 条库只有前 20 条被评估（报告出现数据缺口），且以 status=ok 通过。
     board = active_blackboard(runtime)
     if board is not None:
         added = board.add_molecules(molecules)
@@ -330,18 +330,18 @@ def import_molecule_library(query_or_text: str = "", molecule_file: str = "",
 
 @tool
 def run_property_assessment(molecules_json: str = "", runtime: ToolRuntime[AgentContext] = None) -> str:
-    """将分子清单下发给「分子属性评估 Agent」执行真实物化性质与类药性评估。
+    """将分子清单下发给「分子属性评估 Agent」执行物化性质与类药性评估。
 
     molecules_json: 可选。`[{"name":"M1","smiles":"..."}, ...]`；
-        **建议留空** —— 留空时子 Agent 会直接使用共享黑板上的分子库，
+        建议留空：留空时子 Agent 会直接使用共享黑板上的分子库，
         这样即使有上万条分子，也不必把清单搬进上下文。
-        只有当你要评估的分子**不在**黑板上（例如临时新增的一组）时，才显式传入。
+        只有当待评估的分子不在黑板上（例如临时新增的一组）时，才显式传入。
 
-    返回子 Agent 的真实评估结果 JSON 原文（大库时含 summary 与明细产物路径）。
+    返回子 Agent 的评估结果 JSON 原文（大库时含 summary 与明细产物路径）。
     """
     mol_file = tool_io.artifact_path("molecules", run=active_run(runtime))
-    # 分子库是必需项：拿不到任何分子来源时**不执行计算**，先请用户给出分子
-    # （旧行为是子 Agent 回退示例库/返回 status=ok 的空结果 —— 都是答非所问）。
+    # 分子库是必需项：拿不到任何分子来源时不执行计算，先请使用者给出分子
+    # （先前的行为是子 Agent 回退示例库或返回 status=ok 的空结果，均属答非所问）。
     board = active_blackboard(runtime)
     if not (molecules_json or "").strip() and not mol_file \
             and not (board.molecules() if board is not None else None):
@@ -373,21 +373,21 @@ def run_property_assessment(molecules_json: str = "", runtime: ToolRuntime[Agent
 @tool
 def run_pocket_analysis(receptor_file: str = "", receptor_sources: str = "",
                         pocket_engine: str = "", top_n: int = 8, runtime: ToolRuntime[AgentContext] = None) -> str:
-    """将「受体结构」下发给「口袋分析 Agent」，用真实工具预测结合口袋并选定对接盒子。
+    """将「受体结构」下发给「口袋分析 Agent」，用实际工具预测结合口袋并选定对接盒子。
 
-    何时调用：**在 run_docking 之前**。如果用户没有显式给出位点盒（site_center/site_size），
-    应先把受体交给口袋分析 Agent：它用 P2Rank（或内置几何法）预测口袋、与实验位点比对，
-    然后通过共享黑板把选定的盒子提交给 Docking Agent —— Docking Agent 会自动使用它。
+    调用时机：在 run_docking 之前。使用者没有显式给出位点盒（site_center/site_size）时，
+    先把受体交给口袋分析 Agent：它用 P2Rank（或内置几何法）预测口袋、与实验位点比对，
+    然后通过共享黑板把选定的盒子提交给 Docking Agent，后者会自动使用该盒子。
 
-    receptor_file: 可选，用户上传/提供的蛋白质文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt，本地路径或 URL）。
+    receptor_file: 可选，上传/提供的蛋白质文件（.pdb/.ent/.pdb1/.cif/.mmcif/.pdbqt，本地路径或 URL）。
     receptor_sources: 可选，受体来源（PDB 编号 / UniProt accession / 基因或蛋白名 / 文件路径）；
-        留空则用本次任务规约里的受体。**用户没指定受体时本工具直接返回 needs_user_input**，
-        绝不回退任何内建/预置受体（它们只用于内部测试）。
+        留空则用本次任务规约里的受体。使用者未指定受体时本工具直接返回 needs_user_input，
+        不回退任何内建或预置受体（它们只用于内部测试）。
     pocket_engine: 留空=按设置页面/环境变量（默认 auto：优先 P2Rank，不可用时回退内置几何法）；
         也可显式传 p2rank / geometric / known_site。
     top_n: 返回前 N 个候选口袋（默认 8）。
 
-    返回子 Agent 的真实分析结果 JSON 原文：{status, engine, pockets:[{rank,score,center,extent,residues}],
+    返回子 Agent 的分析结果 JSON 原文：{status, engine, pockets:[{rank,score,center,extent,residues}],
     selected:{pocket_rank,center,size}, validation:{...}, agent_note}
     """
     guard = unresolved_receptor_message(active_run(runtime))
@@ -418,35 +418,35 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
                 keep_hetatm: str = "",
                 save_poses: bool = True, max_ligands: int = 0,
                 runtime: ToolRuntime[AgentContext] = None) -> str:
-    """把分子对接任务下发给「Docking 执行 Agent」（真实 Vina/AutoDock，按受体×配体全组合）。
+    """把分子对接任务下发给「Docking 执行 Agent」（实际调用 Vina/AutoDock，按受体×配体全组合）。
 
-    分子来源（留空即用共享黑板/运行产物，**大库不要搬进上下文**）：
-      molecules_json / molecule_file（用户上传文件）/ molecules_file（**推荐**，产物绝对路径，同 molecule_file）。
-    受体：receptor_file（用户上传结构，现场准备为 PDBQT）或 receptor_sources
+    分子来源（留空即用共享黑板与运行产物，大库不要搬进上下文）：
+      molecules_json / molecule_file（上传的文件）/ molecules_file（推荐，产物绝对路径，同 molecule_file）。
+    受体：receptor_file（上传的结构，现场准备为 PDBQT）或 receptor_sources
       （PDB 号 / UniProt accession / 基因或蛋白名，或分号或 JSON 数组的多受体=蛋白质库）。
-      **没指定受体时直接返回 needs_user_input**，绝不回退任何预置受体（只用于内部测试）。
+      未指定受体时直接返回 needs_user_input，不回退任何预置受体（只用于内部测试）。
     位点：site_center / site_size（数组 [x,y,z]，也接受 "31.5,13.74,24.36"）；
       留空 = 口袋分析 Agent 已提交的盒子（黑板）或由工具现场定盒。
-    参数：exhaustiveness（**0=用受理层自动规划的运行级值**，显式给值才以你为准，同阶段必须一致）、
+    参数：exhaustiveness（0=用受理层自动规划的运行级值，显式给值才以该值为准，同阶段必须一致）、
       n_poses、engine（留空=跟随设置页默认；可显式 auto/vina/autodock/external）、save_poses、max_ligands。
     keep_hetatm：要保留的非水杂原子残基名（如 'ZN,HEM'）。留空=标准流程剔除水与杂原子，
-      被剔除的残基会出现在结果的 dropped_hetatm/notes 里；金属酶/辅因子体系判断重要后用本参数重跑。
+      被剔除的残基会记入结果的 dropped_hetatm/notes；金属酶或辅因子体系中确需保留时用本参数重跑。
     positive_control_smiles：一般不必传（工具会自动取本次运行的阳性对照并一并对接）。
 
-    返回子 Agent 的真实对接结果 JSON（按受体分组；大库时给 summary + top + 产物路径）。
+    返回子 Agent 的对接结果 JSON（按受体分组；大库时给 summary + top + 产物路径）。
     """
-    # 文件交接别名：molecules_file 与 molecule_file 同义（产物路径与用户上传文件都是本地文件）
+    # 文件交接别名：molecules_file 与 molecule_file 同义（产物路径与上传文件都是本地文件）
     molecule_file = (molecule_file or "").strip() or (molecules_file or "").strip()
     if not (receptor_file or "").strip():   # 受体兜底：请求里上传的文件自动下发
         receptor_file = request_value("receptor_file", runtime)
-    # 护栏：受理层判定「用户点名的受体无法解析」时**在调用任何对接引擎之前**返回，
-    # 绝不回退默认受体继续算（这是产品底线；见 unresolved_receptor_message）。
+    # 护栏：受理层判定「点名的受体无法解析」时，在调用任何对接引擎之前返回，
+    # 不回退默认受体继续计算（见 unresolved_receptor_message）。
     guard = unresolved_receptor_message(active_run(runtime))
     if guard:
         logger.info("拒绝对接：受理层判定用户点名的受体无法解析")
         return guard
-    # **前置条件**（受体/位点/配体库/阳性对照）：缺任何一项都不开始计算 —— 规则在工具层，
-    # 不靠提示词求模型自觉（用户反复强调"先确定信息再来"）。
+    # 前置条件（受体/位点/配体库/阳性对照）：缺任何一项都不开始计算。规则落在工具层，
+    # 不依赖提示词约束模型行为。
     ready = readiness_payload(active_run(runtime), receptor_file=receptor_file,
                               receptor_sources=receptor_sources,
                               site_center=_coords(site_center), site_size=_coords(site_size))
@@ -462,12 +462,12 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
                                       "也不要复述选项内容。"}, ensure_ascii=False)
     agent = get_docking_agent()
     notes: List[str] = []
-    # 搜索强度：0/留空 = 未指定 → 用本次运行的自动规划值（没有规划值时才留给下游按设置页默认）。
-    # 这里**必须**在 params 里如实区分「未指定」与「显式 16」，否则会静默退回 16（审计缺陷）。
+    # 搜索强度：0/留空 = 未指定，改用本次运行的自动规划值（无规划值时才交由下游按设置页默认）。
+    # params 里需要如实区分「未指定」与「显式 16」，否则会静默退回 16。
     run = active_run(runtime)
     plan = (getattr(run, "data", None) or {}).get("param_plan") or {}
     planned_exh = resolve_exhaustiveness(exhaustiveness, plan)
-    # 引擎：显式参数 > 运行请求 > 设置页默认
+    # 引擎优先级：显式参数、运行请求、设置页默认
     engine = resolve_engine(engine, (getattr(run, "data", None) or {}).get("request") or {})
     try:
         explicit_exh = int(exhaustiveness or 0) > 0
@@ -483,7 +483,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     else:
         notes.append("**本次没有搜索强度规划值**（未指定且规划不可用）：exhaustiveness 保持未指定，"
                      "由工具按设置页默认执行，不要自己编数字。")
-    # 参数**只**通过结构化 JSON 下发（键 = molecular_docking 的参数名），散文只做解释与告警。
+    # 参数只通过结构化 JSON 下发（键 = molecular_docking 的参数名），散文只做解释与告警。
     params: Dict[str, Any] = {
         "molecules_json": (molecules_json or "").strip() or None,
         "molecule_file": None,
@@ -497,13 +497,13 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
         "engine": engine,
         "top_from_previous": int(top_from_previous or 0) or None,
         "keep_hetatm": (keep_hetatm or "").strip() or None,
-        # 表单里的「保存位姿 / 最大分子数」必须一路传下去（曾在这条链路上被静默丢弃）
+        # 表单里的「保存位姿 / 最大分子数」必须一路传下去（先前的实现会在这条链路上静默丢弃它）
         "save_poses": bool(save_poses),
         "max_ligands": int(max_ligands or 0) or None,
     }
     if params["exhaustiveness"] is None:
-        # 解析不出规划值：**不要**下发 null（子 Agent 的参数契约是「没出现的键 = 未指定」，
-        # 而且 null 会被 int 形态的 args_schema 拒掉）—— 删掉这个键，让它按工具默认走。
+        # 解析不出规划值：不下发 null（子 Agent 的参数契约是「没出现的键 = 未指定」，
+        # 且 null 会被 int 形态的 args_schema 拒掉）。删掉这个键，按工具默认处理。
         params.pop("exhaustiveness", None)
     instruction = (f"请对任务参数里给出的分子清单执行真实对接（engine={engine}："
                    + ("auto 优先用 Vina，不可用时回退 AutoDock4 CPU" if engine == "auto" else
@@ -516,7 +516,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
                         f"{params['top_from_previous']} 个分子重算 —— 它会直接从共享黑板取清单，"
                         "不要自己列分子。")
     if molecule_file and molecule_file.strip():
-        # 分发消息必须给出**解析后的绝对路径**：子 Agent 不允许自行拼接/猜测路径。
+        # 分发消息给出解析后的绝对路径：子 Agent 不允许自行拼接或猜测路径。
         resolved_file, file_attempts, file_candidates = resolve_molecule_file(molecule_file.strip())
         if file_candidates:
             return json.dumps({
@@ -534,9 +534,9 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
         elif file_attempts and not os.path.isfile(resolved_file):
             notes.append(f"molecule_file 未能解析为本地文件，已尝试：{'；'.join(file_attempts[:4])}")
     rs = (receptor_sources or "").strip()
-    # 本次运行有**上传受体**时，子 Agent 再传注册表受体名（如默认 thrombin）不应被当成"多受体"：
-    # 文档承诺 `receptor_file` 优先，否则会把默认凝血酶也 dock 一遍 ——
-    # 白跑 6 个分子，报告里还多出一个受体块，用户会以为跑了两个靶点。
+    # 本次运行有上传受体时，子 Agent 再传注册表受体名（如默认 thrombin）不按「多受体」处理：
+    # 文档约定 `receptor_file` 优先，否则会把默认凝血酶也 dock 一遍，
+    # 多跑 6 个分子，报告里多出一个受体块，使用者会以为跑了两个靶点。
     if params["receptor_file"] and rs:
         from docking_agent.core.receptors import is_structure_source
 
@@ -548,8 +548,8 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
             rs = ""
     params["receptor_sources"] = rs or None
     if not params["receptor_file"] and not params["receptor_sources"]:
-        # 走到这里说明工具本身没拿到任何受体来源、且受理层也没判 default（否则上面已拦下）。
-        # 无论如何都**不许替用户挑受体** —— 系统没有默认受体，预置受体只用于内部测试。
+        # 走到这里说明工具本身没有受体来源，且受理层未判定 default（否则上面已拦下）。
+        # 不替使用者挑受体：系统没有默认受体，预置受体只用于内部测试。
         notes.append("**本次没有任何受体来源**：不要开始对接，也不要自行挑一个受体 —— "
                      "系统没有默认受体。请返回 status=needs_user_input，并请用户给出受体"
                      "（PDB 编号 / UniProt accession / 基因或蛋白名 / 上传结构文件）。")
@@ -559,7 +559,7 @@ def run_docking(molecules_json: str = "", molecule_file: str = "", molecules_fil
     if params["keep_hetatm"]:
         notes.append("受体准备要保留的非水杂原子见 keep_hetatm；若因缺少化学模板而未能保留，"
                      "结果会给出 unsupported_hetatm —— 请如实说明，不要当作已保留。")
-    # 给了值但解析不出 3 个坐标 → 如实提醒，绝不静默当成"没给位点"（否则会悄悄换盒子）
+    # 给了值但解析不出 3 个坐标时如实提醒，不静默当成「没给位点」（否则会换掉盒子）
     for label, raw, parsed in (("site_center", site_center, params["site_center"]),
                                ("site_size", site_size, params["site_size"])):
         if raw not in (None, "", []) and not parsed:
@@ -578,13 +578,13 @@ def run_binding_mode_analysis(molecules_json: str = "", molecules_file: str = ""
     molecules_json / molecules_file: 二选一。留空时子 Agent 用共享黑板上的全量分子。
     positive_control_smiles: 阳性对照 SMILES；留空时用本次运行请求里的对照。
 
-    返回子 Agent 的真实分析结果 JSON 原文。
+    返回子 Agent 的分析结果 JSON 原文。
     """
     if not positive_control_smiles:
         positive_control_smiles = _load_positive_control()
-    # 分析对象 = **Agent 推荐的全部分子**（用户要求）：推荐清单本身就是"要交付的那几个"，
-    # 不再按亲和力另取一批 top-N（那会与被推荐的分子不一致，也让报告出现两套名单）。
-    # 还没有推荐清单（例如推荐在结合模式之后才做）时，退回全量分子库，保持工具可用。
+    # 分析对象 = Agent 推荐的全部分子：推荐清单本身就是「要交付的那几个」，
+    # 不再按亲和力另取一批 top-N（那会与被推荐的分子不一致，报告也会出现两套名单）。
+    # 尚无推荐清单（例如推荐在结合模式之后才做）时，退回全量分子库。
     run = active_run(runtime)
     rec_rows = ((getattr(run, "data", None) or {}).get("recommendations") or {}).get("rows") or []
     rec_molecules = [{"name": r.get("name") or r.get("smiles"), "smiles": r.get("smiles")}
@@ -612,11 +612,11 @@ def run_binding_mode_analysis(molecules_json: str = "", molecules_file: str = ""
 
 @tool
 def list_known_receptors(runtime: ToolRuntime[AgentContext] = None) -> str:
-    """**内部/诊断用**：列出注册表里的预置受体及其【已知结合位点】（盒中心与尺寸）。
+    """内部/诊断用：列出注册表里的预置受体及其【已知结合位点】（盒中心与尺寸）。
 
-    预置受体**只用于内部测试**：它们不再是用户可选来源，也**没有**任何 Agent 绑定本工具
-    （协调 Agent 的工具面里已移除；子 Agent 的同名工具也已删除）。保留它只为
-    离线诊断/内部脚本能拿到与注册表一致的一份清单。
+    预置受体只用于内部测试：它们不再是使用者可选来源，也没有任何 Agent 绑定本工具
+    （协调 Agent 的工具面里已移除；子 Agent 的同名工具也已删除）。保留它是为了
+    离线诊断与内部脚本能拿到与注册表一致的一份清单。
 
     返回 JSON：{"status":"ok","default":"thrombin","receptors":[{key,name,pdb,protein,site,available}]}
     """

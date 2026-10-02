@@ -1,15 +1,15 @@
 """分子对接引擎：AutoDock Vina（主）与 AutoDock4 CPU（备用），含位姿导出。
 
 面向大库（上千～上万分子）的设计：
-  * **网格图复用**：Vina 的 `compute_vina_maps` 开销与对接本身同量级，
-    逐配体重算会让大库筛选慢一倍以上；这里每个 worker 进程只对「受体+盒子」算一次，
+  * 网格图复用：Vina 的 `compute_vina_maps` 开销与对接本身同量级，
+    逐配体重算会使大库筛选慢一倍以上；每个 worker 进程只对「受体+盒子」算一次，
     之后在整批配体间复用同一个 Vina 实例。
-  * **多进程并行**：`DOCKING_WORKERS` 留空时由 `plan_concurrency` 自动规划 ——
+  * 多进程并行：`DOCKING_WORKERS` 留空时由 `plan_concurrency` 自动规划，
     可用核 = CPU 数 − 1，分子数 ≥ 8 时取 `min(可用核, 24)` 个进程（再被分子数与
     `DOCKING_WORKER_MEM_MB` 的内存护栏夹紧）；分子数 < 8 时改走「1 进程 × 多线程」，
     避免多进程各自建网格图的固定开销。Vina 自身线程数由 `VINA_CPU`（默认 1）控制，
     避免与进程级并行超订。
-  * **小库走串行**：分子数很少时不付进程启动成本，行为与串行完全一致。
+  * 小库走串行：分子数很少时不付进程启动成本，行为与串行一致。
 """
 from __future__ import annotations
 
@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 # 阳性对照在对接清单里的内部标记名（对外展示时会被替换为「阳性对照」）
 POSITIVE_CONTROL_NAME = "__positive_control__"
 
-# `DEFAULT_EXHAUSTIVENESS` 从 `core.params` 导入（全仓唯一来源），这里不再另立数字 ——
-# 历史上这里写的是 6，而设置页/工具签名/自动规划基准都是 16。
+# `DEFAULT_EXHAUSTIVENESS` 从 `core.params` 导入（全仓唯一来源），此处不另立数字。
+# 此前的实现此处写 6，而设置页、工具签名与自动规划基准都是 16。
 
 
 DEFAULT_N_POSES = 1
@@ -69,16 +69,16 @@ def vina_cpu() -> int:
     return max(1, env_int("VINA_CPU", 1))
 
 
-#: 每个 worker 的线程数上限：Vina 单分子的线程扩展在 ~8 线程饱和（这是**引擎的性质**，
-#: 与机器无关；实测 16/32 线程无额外收益）。可用 DOCKING_THREADS_PER_WORKER 覆盖。
+#: 每个 worker 的线程数上限：Vina 单分子的线程扩展在 ~8 线程饱和，属于引擎性质、
+#: 与机器无关（16/32 线程无额外收益）。可用 `DOCKING_THREADS_PER_WORKER` 覆盖。
 _DEFAULT_THREADS_PER_WORKER = 8
 
 
 def _cpu_quota() -> Optional[float]:
     """容器/服务的 CPU 配额（cgroup v2 的 `cpu.max`，或 v1 的 quota/period）。
 
-    为什么必须看它：`os.cpu_count()` 报的是**宿主机**核数，容器里被 `--cpus=4` 限流时
-    仍然会返回 32 —— 按它规划并发会严重超订，把容器拖垮。
+    该值用于修正 `os.cpu_count()`：它报的是宿主机核数，容器被 `--cpus=4` 限流时
+    仍会返回 32，按它规划并发会严重超订。
     """
     try:
         parts = Path("/sys/fs/cgroup/cpu.max").read_text(encoding="utf-8").split()
@@ -99,10 +99,10 @@ def _cpu_quota() -> Optional[float]:
 
 
 def _physical_cores(logical: int) -> int:
-    """物理核数（用于判断是否开了 SMT）。取不到就保守返回逻辑核数。
+    """物理核数（用于判断是否开了 SMT）。取不到时保守返回逻辑核数。
 
-    读 `/proc/cpuinfo` 的 (physical id, core id) 去重 —— 容器里可能只看到部分 CPU，
-    因此最后与「可用逻辑核」取小，绝不高估。
+    读 `/proc/cpuinfo` 的 (physical id, core id) 去重；容器里可能只看到部分 CPU，
+    因此最后与「可用逻辑核」取小，不向上高估。
     """
     pairs = set()
     phys_id = core_id = None
@@ -127,10 +127,10 @@ def _physical_cores(logical: int) -> int:
 
 
 def machine_profile() -> Dict[str, Any]:
-    """探测「这台部署机器实际能给多少算力」——并发规划的唯一输入。
+    """探测部署机器可供使用的算力，是并发规划的唯一输入。
 
-    优先级：**cgroup 配额 > CPU 亲和性 > cpu_count**（容器里前面两个才是真的），
-    再留 1 个逻辑核给服务主进程/事件循环。返回里带 `source` 说明结论从哪来，便于排查。
+    优先级为 cgroup 配额 > CPU 亲和性 > cpu_count（容器内以前两项为准），
+    再留 1 个逻辑核给服务主进程与事件循环。返回里带 `source` 说明结论来源，便于排查。
     """
     cpu_count = max(1, os.cpu_count() or 1)
     affinity: Optional[int] = None
@@ -175,30 +175,30 @@ def _memory_worker_cap() -> int:
 
 
 def plan_concurrency(total: int) -> Dict[str, int]:
-    """规划「进程数 × 每进程线程数」——**由部署机器自动推导**，不依赖任何一台机器的硬编码。
+    """规划「进程数 × 每进程线程数」，由部署机器自动推导，不依赖任何机器的硬编码。
 
-    ## 规则（两条，都是引擎/硬件的性质，不是某台机器的实测值）
+    ## 规则（两条，均为引擎与硬件的性质）
 
-    1. **线程优先**：Vina 单分子的搜索能靠线程并行，而多进程要各自重复建网格图、导入模块，
-       还会争抢内存带宽。所以先把线程开到饱和点，再用进程数把剩下的核填满：
+    1. 线程优先：Vina 单分子的搜索能靠线程并行，而多进程要各自重复建网格图、导入模块，
+       还会争抢内存带宽。因此先把线程开到饱和点，再用进程数把剩下的核填满：
        `threads = min(8, budget // 2)`、`workers = ceil(budget / threads)`。
-       只留一个进程会让大库退化成串行，所以 `budget//2` 保证小机器上至少有 2 个进程。
-    2. **~8 线程是 Vina 的饱和点**（引擎性质，与机器无关；实测 16/32 线程无额外收益）。
+       只留一个进程会使大库退化成串行，`budget//2` 保证小机器上至少有 2 个进程。
+    2. ~8 线程是 Vina 的饱和点（引擎性质，与机器无关；16/32 线程无额外收益）。
 
-    `budget` 来自 `machine_profile()`：**cgroup 配额 > CPU 亲和性 > cpu_count**，再留一核给服务。
+    `budget` 来自 `machine_profile()`：cgroup 配额 > CPU 亲和性 > cpu_count，再留一核给服务。
     因此容器（`--cpus=4`）、cpuset、大核机器、笔记本都会各自得到合适的配置，无需人工调参。
 
-    ## 本机（16 物理核 / 32 逻辑核）实测验证规则（不是规则的输入）
+    ## 16 物理核 / 32 逻辑核机器上的验证数据（不是规则的输入）
 
-    | 分子数 | 旧（进程优先） | 本规则给出 | 结果 |
+    | 分子数 | 先前（进程优先） | 本规则给出 | 结果 |
     | --- | --- | --- | --- |
-    | 6 | 1 × 8 = 7.9s | 4 × 8 | **4.4s** |
-    | 8 | 8 × 3 = 6.5s | 4 × 8 | **4.8s** |
-    | 16 | 16 × 1 = 39.4s | 4 × 8 | **13.5s** |
-    | 64 | 24 × 1 = 70.4s | 4 × 8 | **38.5s**（CPU 1003 → 716 CPU·s） |
+    | 6 | 1 × 8 = 7.9s | 4 × 8 | 4.4s |
+    | 8 | 8 × 3 = 6.5s | 4 × 8 | 4.8s |
+    | 16 | 16 × 1 = 39.4s | 4 × 8 | 13.5s |
+    | 64 | 24 × 1 = 70.4s | 4 × 8 | 38.5s（CPU 1003 降至 716 CPU·s） |
 
     `DOCKING_THREADS_PER_WORKER`（默认 8，旧名 `DOCKING_SERIAL_THREADS` 兼容）可覆盖线程数；
-    `DOCKING_WORKERS` 显式给定时按**精确值**使用（专家模式：宁可多进程也不要多线程，
+    `DOCKING_WORKERS` 显式给定时按精确值使用（专家模式：宁可多进程也不要多线程，
     例如库里有极个别超大柔性分子、需要缩小长尾阻塞面时）。
     """
     profile = machine_profile()
@@ -240,18 +240,18 @@ def pose_save_max() -> int:
     return max(0, env_int("POSE_SAVE_MAX", 5000))
 
 
-# 配体 3D 跨度的唯一实现在 `core/pockets.py::ligand_span`（此处保留旧名别名，
+# 配体 3D 跨度的唯一实现位于 `core/pockets.py::ligand_span`（此处保留旧名别名，
 # 避免对接内部与外部调用点重复实现同一段 PDBQT 坐标解析）。
 
 
 class DockingSession:
     """一个「受体 + 盒子」的对接会话：网格图只计算一次，同一批配体复用。
 
-    **可复现性（实测，非假设）**：Vina 在每次 `dock()` 调用时按构造时给定的种子重新开始采样，
-    因此同一分子的分数**与批次组成、提交顺序、进程数/分片方式无关** —— 这一点有永久回归测试
+    可复现性：Vina 在每次 `dock()` 调用时按构造时给定的种子重新开始采样，
+    因此同一分子的分数与批次组成、提交顺序、进程数/分片方式无关，这一点有回归测试
     （`tests/test_agent_context.py::test_scores_are_independent_of_batch_and_workers`）：
-    8 分子并行批（8 进程）里某分子的分数 == 它单独对接（1 进程）的分数，整批重跑也逐位一致。
-    结果行里据此固定报告 `seed_policy="session"` 与 `seed`，便于他人复算。
+    8 分子并行批（8 进程）里某分子的分数等于它单独对接（1 进程）的分数，整批重跑也逐位一致。
+    结果行据此固定报告 `seed_policy="session"` 与 `seed`，便于复算。
     """
 
     def __init__(self, spec: Dict[str, Any], engine: str = "vina", seed: int = 42,
@@ -267,8 +267,8 @@ class DockingSession:
         self.seed = seed
         self.ga_num_evals = ga_num_evals
         self.threads = threads
-        # 保留参数只为兼容调用方；目前只有 "session"（Vina 每次 dock 都会按该种子重新开始，
-        # 所以不需要也没有 per_molecule 的收益 —— 实测见类文档）。
+        # 保留参数只为兼容调用方；取值仅 "session"（Vina 每次 dock 都会按该种子重新开始，
+        # 因此 per_molecule 没有收益，说明见类文档）。
         self.seed_policy = "session"
         self.mode = "autodock"
         self._vina = None
@@ -291,7 +291,7 @@ class DockingSession:
                 logger.warning("Vina 不可用，回退 AutoDock4：%s", e)
 
     def _init_external(self) -> None:
-        """外部引擎（GPU/CLI）：登记必须**就绪**，否则直接报错 —— 不静默改用内置 CPU。
+        """外部引擎（GPU/CLI）：登记项必须就绪，否则直接报错，不静默改用内置 CPU。
 
         格点图（AutoDock-GPU 需要）在首次 `_dock_external()` 时按本次盒子生成一次并缓存；
         执行适配在 `core/external_run.py`，结果行与内置引擎同口径（能量项 + 位姿 + engine 标注）。
@@ -308,11 +308,11 @@ class DockingSession:
         logger.info("外部引擎就绪：%s（%s）", report.get("flavor_label"), report.get("version_line"))
 
     def _external_maps(self, ligand_types: Sequence[str] = ()) -> str:
-        """按当前受体 + 盒子生成（或复用）格点图，返回 `.fld` 路径。
+        """按当前受体与盒子生成（或复用）格点图，返回 `.fld` 路径。
 
-        配体类型取 `external_run.STANDARD_LIGAND_TYPES`（本机 autogrid4 实测可用的全集），
+        配体类型取 `external_run.STANDARD_LIGAND_TYPES`（本机 autogrid4 可用的全集），
         因为格点图在一个会话内共享、要在下一个配体到来之前就建好；配体若带全集之外的原子类型，
-        这里**直接报错并说明原因** —— autogrid4 的参数库确实没有这些类型，不能假装能算。
+        这里直接报错并说明原因：autogrid4 的参数库没有这些类型，该配体无法计算。
         """
         from docking_agent.core.external_run import STANDARD_LIGAND_TYPES, build_grid_maps
         from docking_agent.core.external_tools import ExternalEngineError
@@ -425,8 +425,8 @@ class DockingSession:
             pose_file = f"{pose_base}.pdbqt"
             try:
                 os.makedirs(os.path.dirname(pose_file) or ".", exist_ok=True)
-                # n_poses>1 时必须把**全部**位姿写出来（原来只用 write_pose 写了最佳一个，
-                # 与「输出位姿数 n_poses」的参数语义不一致）
+                # n_poses>1 时把全部位姿都写出来；此前的实现只用 write_pose 写最佳一个，
+                # 与「输出位姿数 n_poses」的参数语义不一致。
                 if int(n_poses) > 1:
                     v.write_poses(pose_file, n_poses=int(n_poses), energy_range=3.0, overwrite=True)
                     pose_count = int(n_poses)
@@ -438,7 +438,7 @@ class DockingSession:
                 pose_file, pose_count = "", 0
 
         # 盒子适配检查（标准做法：搜索盒每维应 ≥ 配体跨度 + 2×5 Å）：
-        # 这里**如实检测并上报**；主组内超限的分子会由 dock_library 划进 large 组用更大的盒子重跑
+        # 此处如实检测并上报；主组内超限的分子会由 dock_library 划进 large 组用更大的盒子重跑
         # （判据余量与 BOX_GROUP_MARGIN 保持一致，避免「告警了但不分组」的口径漂移）。
         span = _ligand_span(pdbqt)
         box = [float(x) for x in (self.spec.get("size") or [])]
@@ -452,7 +452,7 @@ class DockingSession:
 
         if float(best[0]) == 0.0 and float(best[1]) == 0.0:
             # 兜底（正常路径已被 dock_library 的盒子护栏挡住）：全 0 能量不是分数，
-            # 绝不能让 0.0 作为「亲和力」流进排序/CSV/报告。
+            # 禁止 0.0 作为「亲和力」流进排序/CSV/报告。
             logger.error("Vina 返回全 0 能量（盒子内可能没有受体原子）：%s", smiles)
             return {"smiles": smiles, "engine": "vina",
                     "error": "Vina 返回全 0 能量（盒子内没有受体原子或网格图构建失败）："
@@ -508,8 +508,8 @@ def run_docking_internal(spec: Dict[str, Any], smiles: str,
 
 
 # --------------------------------------------------------------------------- #
-# 备用对接引擎：AutoDock 4 (CPU 模式，autogrid4 + autodock4)
-# 当 Vina 不可用或显式指定时，使用经典 AutoDock 遗传算法做真实 CPU 对接。
+# 备用对接引擎：AutoDock 4（CPU 模式，autogrid4 + autodock4）
+# Vina 不可用或显式指定时，用经典 AutoDock 遗传算法执行 CPU 对接。
 # --------------------------------------------------------------------------- #
 
 
@@ -537,7 +537,7 @@ def _pdbqt_tors(pdbqt_path: str) -> int:
 
 
 def _autodock_bin(name: str) -> Optional[str]:
-    """定位 AD4 家族二进制：`<NAME>_BIN`（如 `AUTODOCK4_BIN`）→ PATH。找不到返回 None。"""
+    """定位 AD4 家族二进制：先查 `<NAME>_BIN`（如 `AUTODOCK4_BIN`），再查 PATH；找不到返回 None。"""
     import shutil
 
     override = str(env(f"{name.upper()}_BIN", "") or "").strip()
@@ -699,9 +699,9 @@ _WORKER_CFG: Dict[str, Any] = {}
 
 
 
-#: 分子输入记录里需要**带进结果行**的身份字段。
-#: 用户常在 SDF/CSV 里给分子编号（ID）、并希望报告/CSV 带上它；只解析进 molecules.json
-#: 是不够的 —— 对接、性质、排序、报告、CSV 每一环都要能拿到（注意：整条链路把 ID 丢了）。
+#: 分子输入记录里需要带进结果行的身份字段。
+#: 调用方常在 SDF/CSV 里给分子编号（ID）并希望报告与 CSV 带上它；只解析进 molecules.json
+#: 不足够，对接、性质、排序、报告、CSV 每一环都要能取到（此前的实现会在整条链路丢掉 ID）。
 IDENTITY_FIELDS: tuple = ("id", "source_file", "source_index")
 
 
@@ -746,13 +746,13 @@ def _worker_dock(item: Tuple[str, str]) -> Dict[str, Any]:
 
 
 def _start_cancel_watcher(executor: Any, cancel_event: Optional[Any]) -> Optional[Any]:
-    """起一个守护线程盯取消标志，一旦置位**立刻**终止进程池并返回。
+    """起一个守护线程监视取消标志，一旦置位立即终止进程池并返回。
 
-    为什么不能在 `as_completed` 循环里只查标志：那个循环只在**有 future 完成**时才转一圈。
+    `as_completed` 循环只在有 future 完成时才转一圈，无法及时响应取消。
     如果一整批都是超大柔性分子（例如 70 个可旋转键的长链），第一批要跑十几分钟，
-    用户点「停止」后进程池仍然满负荷运转 —— 注意：chat 模式取消 70 s 后 load 仍是 27。
+    调用方点「停止」后进程池仍然满负荷运转（chat 模式取消 70 s 后 load 仍是 27）。
 
-    所有对接都在 worker 进程里跑（见 `dock_batch`），因此这个 watcher 对**任意分子数**都有效，
+    所有对接都在 worker 进程里跑（见 `dock_batch`），因此这个 watcher 对任意分子数都有效，
     包括单分子。
     """
     if cancel_event is None:
@@ -772,17 +772,17 @@ def _start_cancel_watcher(executor: Any, cancel_event: Optional[Any]) -> Optiona
 
 
 def _err_text(exc: BaseException) -> str:
-    """异常的可读文本：消息为空时退回异常类名，绝不留出 `对接失败 XXX:` 这种空原因。"""
+    """异常的可读文本：消息为空时退回异常类名，避免出现 `对接失败 XXX:` 这种空原因。"""
     text = str(exc).strip()
     return text or type(exc).__name__
 
 
 def _terminate_pool(executor: Any) -> None:
-    """强制终止进程池中仍在运行的 worker（取消时必须让 Vina 立刻停下）。
+    """强制终止进程池中仍在运行的 worker（取消时 Vina 需要立即停下）。
 
-    **顺序很关键**：先 `shutdown(cancel_futures=True)` 把队列里还没跑的分子取消掉，
-    再 `terminate()` 正在跑的 worker。反过来做的话，执行器的管理线程会发现 worker 死了、
-    而队列里还有一百多个待跑任务，于是**重新拉起 worker 继续啃**（注意：取消后又
+    顺序为先 `shutdown(cancel_futures=True)` 取消队列里还没跑的分子，
+    再 `terminate()` 正在跑的 worker。反过来做时，执行器的管理线程会看到 worker 已退出、
+    而队列里还有一百多个待跑任务，于是重新拉起 worker 继续执行（取消后又
     多算了 43 个分子、load 反涨到 40）。
     """
     # 必须在 shutdown 之前抓住进程句柄：shutdown() 会把 `_processes` 清空，
@@ -798,7 +798,7 @@ def _terminate_pool(executor: Any) -> None:
         except Exception:  # noqa: BLE001
             logger.debug("终止 worker 进程失败", exc_info=True)
     # Vina 在 C++ 里跑，SIGTERM 未必立刻返回（大柔性分子的一次局部优化可能还要几十秒），
-    # 因此给一个很短的收尾窗口后**强杀**：用户点了停止就不该再看到分子数往上走。
+    # 因此给一个很短的收尾窗口后强制 kill：调用方点停止后不再增加已完成的分子数。
     deadline = time.monotonic() + 1.0
     for proc in processes:
         remaining = max(0.0, deadline - time.monotonic())
@@ -864,7 +864,7 @@ def dock_batch(spec: Dict[str, Any], molecules: List[Dict[str, str]], *,
             except Exception:  # noqa: BLE001
                 logger.debug("on_result 回调异常", exc_info=True)
 
-    # 已经请求取消就一个分子都别跑（进程池路径尤其要在建池之前拦住，避免白起 24 个进程）
+    # 已请求取消时不启动任何分子（进程池路径需在建池之前拦住，避免空建 24 个进程）
     if cancel_event is not None and cancel_event.is_set():
         raise CancelledRun("对接已取消（开始前）")
 
@@ -878,8 +878,8 @@ def dock_batch(spec: Dict[str, Any], molecules: List[Dict[str, str]], *,
     completed = 0
     watcher = _start_cancel_watcher(executor, cancel_event)
     try:
-        # 调度：成本高的（可旋转键多/重原子多）先提交 —— 进程池是动态领任务的，
-        # 先跑大分子可以避免"最后只剩一个大分子在跑、其余 worker 空闲"的拖尾。
+        # 调度：成本高的（可旋转键多/重原子多）先提交；进程池是动态领任务的，
+        # 先跑大分子可以避免「最后只剩一个大分子在跑、其余 worker 空闲」的拖尾。
         order = sorted(range(total), key=lambda i: -_ligand_cost(molecules[i].get("smiles", "")))
         future_index = {}
         for i in order:
@@ -954,7 +954,7 @@ def _large_group_box(main_size: Sequence[float], spans: Sequence[Sequence[float]
                      padding: float, max_size: float) -> List[float]:
     """大配体组的盒子：`clamp(组内最大跨度 + padding, 主盒, 大配体组上限)`。
 
-    中心与主组完全相同（中心永远不随分子变）；下界取主盒是为了保证「大配体组的盒子不会比主组小」；
+    中心与主组相同（中心不随分子变化）；下界取主盒，保证大配体组的盒子不小于主组；
     上界允许超过主盒的 `max_size`（否则分组没有意义），但受 `BOX_LARGE_MAX_SIZE` 硬上限约束。
     """
     largest = max((max(float(x) for x in s) for s in spans if s), default=0.0)
@@ -968,10 +968,10 @@ def _large_group_box(main_size: Sequence[float], spans: Sequence[Sequence[float]
 
 
 def external_engine_note(external: Dict[str, Any], engine: str) -> str:
-    """外部引擎的**如实播报**：本次到底由谁执行，一看就知道。
+    """外部引擎的如实播报：说明本次由哪个引擎执行。
 
-    登记了 GPU 引擎却用内置引擎跑，是用户最容易误解的一种状态（以为在 GPU 上）；
-    反过来，真的用外部引擎执行时也要说清楚设备与批次。
+    登记了 GPU 引擎却用内置引擎跑，是调用方最容易误解的一种状态（以为在 GPU 上）；
+    反过来，真的用外部引擎执行时也要写清设备与批次。
     """
     from docking_agent.core.params import resolve_engine
 
@@ -985,7 +985,7 @@ def external_engine_note(external: Dict[str, Any], engine: str) -> str:
 
 
 def _note(note_cb: Optional[Any], message: str) -> None:
-    """播报准备阶段说明（对接尚未开始）。回调异常绝不影响对接本身。"""
+    """播报准备阶段说明（对接尚未开始）。回调异常不影响对接本身。"""
     if note_cb is None:
         return
     try:
@@ -1019,27 +1019,27 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                  note_cb: Optional[Any] = None,
                  cancel_event: Optional[Any] = None,
                  protonation: str = "", protonation_ph: Any = None) -> Dict[str, Any]:
-    """小分子库 × 蛋白质库 对接：对每个受体 × 每个配体执行真实对接，按受体分组返回。
+    """小分子库 × 蛋白质库 对接：对每个受体 × 每个配体执行对接，按受体分组返回。
 
     engine: 'auto'(默认，优先 Vina，失败自动回退 AutoDock CPU) / 'vina' / 'autodock'(AutoDock4 CPU) /
-            'external'(设置页登记的外部引擎，如 AutoDock-GPU；未登记或未就绪**直接报错**，不静默回退)。
+            'external'(设置页登记的外部引擎，如 AutoDock-GPU；未登记或未就绪时直接报错，不静默回退)。
     site:   覆盖受体注册位点，形如 {"center": [x,y,z], "size": [a,b,c]}（用于自定义/微调已知位点）。
     pose_dir: 若提供，每个分子的最佳位姿写入该目录（中间数据留档）。
     max_ligands: 覆盖环境变量 DOCKING_MAX_LIGANDS 的上限（None 表示读环境变量，0 表示不限制）。
     progress_cb: 可选回调 fn(index, total, result)。
-    note_cb: 可选回调 fn(message)：播报「对接尚未开始」的准备阶段（定盒 / 库级下限抽样）。
-             没有它时，大库首次抽样期间界面长时间收不到新消息，看起来像卡死。
+    note_cb: 可选回调 fn(message)：播报「对接尚未开始」的准备阶段（定盒 / 库级下限抽样）；
+             缺少它时，大库首次抽样期间界面长时间收不到新消息。
 
-    **盒子一致性（C 方案，第一原则）**：同一运行里主组所有分子共用同一个盒子（每个受体只定一次）；
+    盒子一致性：同一运行内主组所有分子共用一个盒子，每个受体只定盒一次；
     库级下限会把服务端算出的盒子抬高到「库内 P95 跨度 + 10 Å」；只有跨度明显超出主盒的分子
-    才会被划进 `box_group="large"`，用**同一中心**的更大盒子单独重跑（结果行如实标注）。
+    才会被划进 `box_group="large"`，用同一中心的更大盒子单独重跑（结果行如实标注）。
     """
     if not molecules:
         return {"status": "no_molecules",
                 "message": "未提供待对接的小分子配体，请先提供候选小分子库（SMILES/名称）。"}
 
-    # 外部引擎（用户在设置页提供的 GPU 对接工具）：已配置但不可用时**拒绝启动**，
-    # 不静默回退到内置实现 —— 否则用户以为在用 GPU，实际是 CPU 结果（缺陷类问题）。
+    # 外部引擎（调用方在设置页提供的 GPU 对接工具）：已配置但不可用时拒绝启动，
+    # 不静默回退到内置实现，否则调用方以为在用 GPU，实际得到的是 CPU 结果。
     from docking_agent.core.external_tools import configured_bin, require_engine
 
     external = require_engine() if configured_bin() else {}
@@ -1058,8 +1058,8 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
         logger.warning("本次仅对接前 %s 个分子（共 %s 个）", cap, len(molecules))
         molecules = molecules[:cap]
 
-    # 质子化态策略：**运行级**解析一次，同时用于配体（逐分子）与受体（准备时重分配），
-    # 保证「受体与配体同一套化学条件」；逐分子/逐受体结果里都有 provenance。
+    # 质子化态策略在运行级解析一次，同时用于配体（逐分子）与受体（准备时重分配），
+    # 保证「受体与配体同一套化学条件」；逐分子与逐受体结果里都有 provenance。
     from docking_agent.core.protonation import protonation_ph as _ph_value
     from docking_agent.core.protonation import protonation_policy as _policy
 
@@ -1104,7 +1104,7 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                          "请提供模板 SDF（meeko --add_templates）或直接提供已准备好的 "
                          "PDBQT 受体后重跑。金属离子（ZN/MG/CA/FE/MN 等）通常可直接保留。")
 
-    # 口袋/盒子参数（口袋引擎与 C 方案的四个新参数都从这里读）
+    # 口袋与盒子参数（口袋引擎与 C 方案的四个参数都从这里读）
     settings = engine_settings()
     if pocket_engine and str(pocket_engine).strip():
         settings["engine"] = str(pocket_engine).strip().lower()
@@ -1112,12 +1112,12 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
     large_padding = float(settings.get("box_large_padding", box_large_padding()))
     max_size = float(settings.get("max_size", 30.0))
 
-    # 位点覆盖（用户自定义/微调已知结合位点，或口袋分析 Agent 提交的盒子）
+    # 位点覆盖（调用方自定义/微调已知结合位点，或口袋分析 Agent 提交的盒子）
     explicit_source = str((site or {}).get("source") or "用户指定")
-    # 库级配体感知下限：**用户显式指定的盒子不受影响**（显式优先是不变量）。
-    # 但「口袋分析 Agent 选定的盒子」是**工具产物**，不是用户意图：它的**中心**必须尊重，
-    # 尺寸则与自动定盒一样按库级下限抬高 —— 否则大配体库会被塞进 22 Å 的小盒子，
-    # 大量分子只能落到互不可比的大盒分组（注意：120 个农药大分子库主盒 22³）。
+    # 库级配体感知下限：调用方显式指定的盒子不受影响（显式优先是不变量）。
+    # 而「口袋分析 Agent 选定的盒子」是工具产物，不是调用方意图：其中心必须尊重，
+    # 尺寸则与自动定盒一样按库级下限抬高，否则大配体库会被塞进 22 Å 的小盒子，
+    # 大量分子只能落到互不可比的大盒分组（120 个农药大分子库的主盒为 22³）。
     tool_site = str((site or {}).get("chosen_by") or "") == "pocket_agent"
     span_bound: Optional[Dict[str, Any]] = None
     if site:
@@ -1156,9 +1156,9 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                             "library_floor": floor_info}
             spec["_site_explicit"] = True
     else:
-        # 没有显式指定位点时，用**真实工具**确定盒子（P2Rank / 内置几何法），
+        # 没有显式指定位点时，用工具确定盒子（P2Rank / 内置几何法），
         # 而不是把盒子放在蛋白质心。实验位点（共晶配体）优先，工具做独立验证。
-        # 库级下限：关闭时既不算 3D、也不参与夹取，行为与旧版逐位一致（只在结果里留一条说明）。
+        # 库级下限关闭时既不算 3D、也不参与夹取，只在结果里留一条说明。
         _note(note_cb, "正在确定对接盒：按库级下限抽样配体 3D 跨度"
                          "（大库首次需几十秒，命中同库缓存则即时）")
         span_bound = library_span_bound(molecules, min_size=settings["min_size"],
@@ -1202,10 +1202,10 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
 
     for spec in specs:
         # ---- 盒子有效性硬护栏（在调用任何引擎之前）----
-        # Vina 在盒子内**没有受体原子**时不报错，而是返回全 0 能量（affinity=0.0）；
-        # 0.0 不是分数而是「什么都没算」。注意：盒子来自另一个蛋白的位点坐标
+        # Vina 在盒子内没有受体原子时不报错，而是返回全 0 能量（affinity=0.0）；
+        # 0.0 不是分数而是「什么都没算」。此前的实现会出现盒子取自另一个蛋白位点坐标的情况
         # （盒中心距该受体最近原子 75 Å），147 个分子跑 7.5 分钟得到一堆 0.0。
-        # 这里直接拒绝，并把「差多远」如实写进 notes，让 Agent 一眼看出是盒子/受体错配。
+        # 这里直接拒绝，并把「差多远」写进 notes，使 Agent 能看出是盒子与受体错配。
         stats = box_atom_stats(str(spec.get("pdbqt") or ""), spec.get("center") or [],
                                spec.get("size") or [])
         if stats.get("atoms") == 0:
@@ -1256,7 +1256,7 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                     logger.debug("progress_cb 异常", exc_info=True)
 
         def _on_result(r: Dict[str, Any], _spec: Dict[str, Any] = spec) -> None:
-            # 超限分子先**扣住不报**，等 large 组用大盒子跑完再报最终结果：
+            # 超限分子先扣住不报，等 large 组用大盒子跑完再报最终结果：
             # 这样进度总数不重复计，界面看到的也是最终分数。
             if not r.get("error") and _box_overflows(r.get("ligand_span"), main_box, margin):
                 # 主盒下的适配告警对最终结果不成立（会被大盒子重跑），先摘掉，
@@ -1332,7 +1332,7 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
                           "unsupported_hetatm": spec.get("unsupported_hetatm") or [],
                           "cocrystal_ligand": spec.get("cocrystal_ligand") or {},
                           # 受体结构路径：供上层解析共晶配体 SMILES（是否用作阳性对照的询问）。
-                          # `source_pdb` 是**准备这份 PDBQT 的原始结构**（去配体后只有它还有配体原子）。
+                          # `source_pdb` 是准备这份 PDBQT 的原始结构（去配体后只有它还有配体原子）。
                           "source_pdb": str(spec.get("source_pdb") or ""),
                           "receptor_pdb": str(spec.get("pdb") or ""),
                           "receptor_protonation": spec.get("receptor_protonation") or {},
@@ -1360,7 +1360,7 @@ def dock_library(molecules: List[Dict[str, str]], receptor: Any = None,
     plan = plan_concurrency(len(molecules))
     notes.append(f"对接并发：{plan['workers']} 进程 × {plan['threads']} 线程"
                  f"（{len(molecules)} 个分子；大分子优先调度以减少拖尾）")
-    # 全部受体都被护栏拒绝时，状态必须是 error（不能让「一条都没算」看起来像成功）
+    # 全部受体都被护栏拒绝时，状态必须是 error（避免「一条都没算」看起来像成功）
     status = "error" if receptors and all(b.get("status") == "error" for b in receptors) else "ok"
     return {"status": status, "receptors": receptors, "notes": notes,
             "concurrency": plan, "poses_saved": save_all_poses}

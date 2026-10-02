@@ -1,16 +1,16 @@
-"""FastAPI 应用：交互式网页 + REST/SSE 接口（实现 docs/api.md 契约）。
+"""FastAPI 应用：交互式网页与 REST/SSE 接口（实现 docs/api.md 契约）。
 
-分层：本模块只做「HTTP 适配」——参数校验、SSE 转发、文件下载；
-计算在 `docking_agent.core`，编排在 `docking_agent.agents`，
+分层：本模块只做 HTTP 适配，包含参数校验、SSE 转发与文件下载；
+计算在 `docking_agent.core`；
+编排在 `docking_agent.agents`；
 产物与运行记录在 `docking_agent.runs` / `docking_agent.reporting`。
 
-**结构**（第 2 波拆分）：原先这里是一个 700+ 行的 `create_app()` 闭包，~36 条路由与
-全部辅助函数挤在一起。现在：
+模块结构：
 
-* 各功能路由 → `api/routers/*.py`（模块级 `APIRouter`，见 `register_routers`）；
-* 共享支撑（状态 / 安全边界 / 脱敏 / 上传准备 / 产物下载名）→ `api/support.py`；
-* Agent 编排胶水（SSE 心跳 / 线程自愈 / 多轮上下文）→ `api/agent_flow.py`；
-* 本模块只负责**组装**：lifespan、安全中间件、挂路由、静态前端、标准 Agent Protocol 面。
+* 各功能路由位于 `api/routers/*.py`，以模块级 `APIRouter` 注册，入口为 `register_routers`；
+* 共享支撑（状态 / 安全边界 / 脱敏 / 上传准备 / 产物下载名）位于 `api/support.py`；
+* Agent 编排胶水（SSE 心跳 / 线程自愈 / 多轮上下文）位于 `api/agent_flow.py`；
+* 本模块负责组装：lifespan、安全中间件、挂路由、静态前端、标准 Agent Protocol 面。
 """
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ from docking_agent.paths import web_dir
 from docking_agent.runs import get_run_store
 from docking_agent.runtime.llm import load_llm_config
 
-# 兼容再导出：历史测试/脚本直接 `from docking_agent.api.app import <name>`。
-# 用 `as` 别名显式声明再导出（避免 ruff F401 误判为未使用导入）。
+# 兼容再导出：既有测试与脚本直接 `from docking_agent.api.app import <name>`。
+# 以 `as` 别名显式声明再导出，避免 ruff F401 判为未使用导入。
 from docking_agent.api.support import _completeness as _completeness
 from docking_agent.api.support import _serialize as _serialize
 from docking_agent.api.routers.settings import _fetch_endpoint_models as _fetch_endpoint_models
@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_env()
-    # 布局自检（非严格）：缺 `config/`/`web/`/`assets/` 时响亮告警，而不是等用户
-    # 遇到「前端 404 / 找不到受体注册表」再排查（wheel 安装就会这样）。
+    # 布局自检（非严格）：缺 `config/`/`web/`/`assets/` 时立即告警，
+    # 避免调用方在前端 404 或受体注册表缺失时再排查（wheel 安装即为此类情况）。
     from docking_agent.paths import assert_runtime_layout
 
     assert_runtime_layout()
@@ -63,14 +63,14 @@ async def lifespan(app: FastAPI):
         logger.warning("未配置 LLM_API_KEY：多 Agent 模式不可用（Agent 链路是唯一执行入口）")
     logger.info("引擎可用性：%s", _engine_available())
     try:
-        # 进程重启后不可能还有运行在执行：把残留的 running 如实标记为 interrupted
+        # 进程重启后不存在仍在执行的运行：把残留的 running 状态标记为 interrupted
         fixed = get_run_store().reconcile_interrupted()
         if fixed:
             logger.info("已收尾 %d 个被中断的运行：%s", len(fixed), ", ".join(fixed[:5]))
     except Exception as exc:  # noqa: BLE001 - 收尾失败不能影响服务启动
         logger.warning("收尾被中断的运行失败（忽略）：%s", exc)
-    # 运行目录保留策略（**默认关闭**，显式 RUNS_AUTO_PRUNE=1 才启用）：
-    # 不设上限时 `var/runs` 会无限增长（实测 2.2 GB / 4900+ 目录），拖慢启动扫描与检索。
+    # 运行目录保留策略（默认关闭，显式设置 RUNS_AUTO_PRUNE=1 才启用）：
+    # 不设上限时 `var/runs` 会增长到 2.2 GB / 4900+ 目录的规模，拖慢启动扫描与检索。
     if env_bool("RUNS_AUTO_PRUNE", False):
         try:
             report = get_run_store().prune(
@@ -90,8 +90,8 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Docking Multi-Agent", version=__version__, lifespan=lifespan)
 
     # ---------------- 安全边界：同源校验 + 安全响应头 ----------------
-    # 规则与常量见 `api/support.py`：带 Origin 且与 Host 不同源 → 拒绝；
-    # 不带 Origin（curl / 测试 / 同源导航）放行；反向代理可用 DOCKING_ALLOWED_ORIGINS。
+    # 规则与常量见 `api/support.py`：带 Origin 且与 Host 不同源时拒绝；
+    # 不带 Origin（curl / 测试 / 同源导航）时放行；反向代理可用 DOCKING_ALLOWED_ORIGINS 声明来源。
     @app.middleware("http")
     async def _security_boundary(request: Request, call_next):
         if request.method in _MUTATING_METHODS and not _same_origin(request):
@@ -102,9 +102,9 @@ def create_app() -> FastAPI:
                                   "如经反向代理部署，请用 DOCKING_ALLOWED_ORIGINS 声明允许的来源。"},
             )
         response = await call_next(request)
-        # 前端资源不允许浏览器按启发式规则"猜"缓存：页面/脚本改完后，打开着的旧标签页
-        # 与普通刷新都必须拿到新内容。注意：引擎下拉新增 external 后，
-        # 旧标签页仍显示旧选项，用户以为功能没上线。只作用于页面与静态脚本，不碰 API 响应。
+        # 页面与静态脚本不参与浏览器的启发式缓存：资源更新后，已打开的标签页
+        # 与普通刷新都取到新内容。引擎下拉新增 external 时，
+        # 旧标签页会继续显示旧选项，被使用者判为功能未生效。该头只作用于页面与静态脚本，不作用于 API 响应。
         if request.url.path in ("/", "/advanced", "/simple") \
                 or request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
@@ -134,16 +134,16 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def index() -> Any:
-        """**默认首页 = 简易模式**（只有对话与结果；参数走默认与自动规划）。
+        """默认首页指向简易模式：界面只含对话与结果，参数取默认值并由自动规划生成。
 
-        两套界面是**同一份后端契约的两个视图**：都走标准 Agent Protocol
+        两套界面是同一份后端契约的两个视图，都走标准 Agent Protocol
         （`/threads/{tid}/runs/stream`）与同一批 `/api/*` 产物接口。
         """
         return _serve_page("simple.html")
 
     @app.get("/advanced")
     async def advanced() -> Any:
-        """高级模式（参数表单 / 历史检索 / 完整报告 / 中间数据 / 设置页）。"""
+        """高级模式（参数表单 / 历史检索 / 报告全文 / 中间数据 / 设置页）。"""
         return _serve_page("index.html")
 
     @app.get("/simple")

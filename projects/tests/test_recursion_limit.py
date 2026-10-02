@@ -1,18 +1,18 @@
-"""图递归上限（`GRAPH_RECURSION_LIMIT`）回归：默认值、子 Agent 的显式额度、以及"步数不会平白变多"。
+"""图递归上限（`GRAPH_RECURSION_LIMIT`）回归：默认值、子 Agent 的显式额度、以及步数消耗。
 
-注意：
+报错信息：
 
     Recursion limit of 60 reached without hitting a stop condition.
 
-三次成因叠加：
+三类成因叠加：
 
-1. **子 Agent 调用根本没给 `recursion_limit`** —— `workers.py::invoke_worker` 只传了
-   `configurable.thread_id`，于是用它的是 LangGraph 的默认值（25）。子 Agent 要连着调
-   「解析受体 → 口袋 → 对接（分批）→ 结合模式」多轮工具，很快就顶到上限。
-2. **默认 60 对长任务偏紧**：每个模型调用至少消耗 2 个 super-step（model + tools），
-   60 步只够 ~30 轮；现在提到 120（`RECURSION_LIMIT` 仍可覆盖）。
-3. **工具调用配对自愈不能多占步数**：`before_model` 钩子会变成图里的一个**节点**，
-   每次模型调用多走一步；改成 `wrap_model_call`（包裹式，不改图结构）。
+1. 子 Agent 调用未给 `recursion_limit`：`workers.py::invoke_worker` 只传了
+   `configurable.thread_id`，因此生效的是 LangGraph 默认值（25）。子 Agent 要连续调用
+   「解析受体、口袋、对接（分批）、结合模式」多轮工具，很快到达上限。
+2. 默认 60 对长流程偏紧：每个模型调用至少消耗 2 个 super-step（model 与 tools），
+   60 步只够约 30 轮；默认值提到 120（`RECURSION_LIMIT` 仍可覆盖）。
+3. 工具调用配对自愈不多占步数：`before_model` 钩子会变成图里的一个节点，
+   每次模型调用多走一步；改用 `wrap_model_call`（包裹式，不改图结构）。
 """
 from __future__ import annotations
 
@@ -27,13 +27,13 @@ def test_default_recursion_limit_is_120() -> None:
 
 
 def test_settings_spec_agrees_with_the_constant() -> None:
-    """settings 里写字面量（它只依赖 envs.py，不反向导入 config）→ 两者必须一致。"""
+    """settings 里写的是字面量（它只依赖 envs.py，不反向导入 config），两者须一致。"""
     spec = next(s for s in SPECS if s.env == "RECURSION_LIMIT")
     assert spec.default == DEFAULT_RECURSION_LIMIT, (spec.default, DEFAULT_RECURSION_LIMIT)
 
 
 def test_workers_get_an_explicit_recursion_limit(monkeypatch: Any) -> None:
-    """子 Agent 调用必须显式带上 recursion_limit（缺省只有 25，长任务必炸）。"""
+    """子 Agent 调用须显式带上 recursion_limit（缺省只有 25，长流程会提前中断）。"""
     from docking_agent.agents import workers as W
 
     seen: Dict[str, Any] = {}
@@ -71,10 +71,10 @@ def test_worker_recursion_limit_follows_the_env(monkeypatch: Any) -> None:
 
 
 def test_pairing_middleware_does_not_add_a_graph_node() -> None:
-    """配对自愈用 `wrap_model_call`（包裹式）：**不得**在图里多出一个节点。
+    """配对自愈用 `wrap_model_call`（包裹式），不在图里新增节点。
 
-    `before_model` 钩子会变成独立节点 —— 每次模型调用多一个 super-step，
-    在 `recursion_limit` 面前等于把可用轮数砍掉三分之一（故障的放大器）。
+    `before_model` 钩子会变成独立节点，每次模型调用多一个 super-step，
+    在 `recursion_limit` 面前等于把可用轮数砍掉三分之一。
     """
     from langchain.agents import create_agent
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel

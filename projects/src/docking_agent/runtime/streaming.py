@@ -1,19 +1,19 @@
-"""Agent 事件流 -> SSE：替代 coze_coding_utils.helper.stream_runner 的平台协议。
+"""Agent 事件流转成 SSE：替代 coze_coding_utils.helper.stream_runner 的平台协议。
 
-对外事件（每个 event 都是 `event: message` + JSON data，最后以 `done` 结束）：
+对外事件（每个 event 都是 `event: message` 加 JSON data，最后以 `done` 结束）：
   {"type":"start","run_id":...}
-  {"type":"token","content":"..."}                 # 模型增量文本（**不含**思考内容）
+  {"type":"token","content":"..."}                 # 模型增量文本（不含思考内容）
   {"type":"thinking","content":"..."}              # 模型思考/推理增量（前端折叠到「思考」气泡）
   {"type":"tool_call","name":"...","args":{...}}   # 子 Agent 调度工具调用
   {"type":"tool_result","name":"...","content":"..."}
   {"type":"update","node":"..."}                   # 图节点推进
-  {"type":"custom","payload":{...}}                # 节点内 get_stream_writer() 主动上报（P1 新增）
-  {"type":"final","content":"..."}                 # 最终回答（完整文本）
+  {"type":"custom","payload":{...}}                # 节点内 get_stream_writer() 主动上报
+  {"type":"final","content":"..."}                 # 最终回答（全文）
   {"type":"error",...} / {"type":"done","run_id":...}
 
-**既有事件类型是不变量**（前端 web/app.js 已消费，见 architecture.md §5）：`custom` 只是在
-原类型之外**追加**的通道，用于让工具/节点把"真实进度"（逐分子对接、长任务阶段）直接上报，
-前端不认它也不会坏。
+既有事件类型是不变量（前端 web/app.js 已消费，见 architecture.md §5）：`custom` 是
+在原类型之外追加的通道，用于工具或节点上报实际进度（逐分子对接、长任务阶段），
+前端不识别该类型也不受影响。
 """
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ TRUNCATE = env_int("STREAM_TOOL_RESULT_CHARS", 2000)
 def sse_event(data: Any, event: str = "message", event_id: Optional[str] = None) -> str:
     """把事件编码为 SSE 报文。
 
-    自动附加 `ts`（服务端毫秒时间戳）：前端用它计算每个节点的**真实起止时间**，
-    进而判断同层子 Agent 到底是并行还是串行 —— 运行示意图按实测结果渲染，而不是画死流程。
+    自动附加 `ts`（服务端毫秒时间戳）：前端用它计算每个节点的起止时间，
+    据此判断同层子 Agent 是并行还是串行；运行示意图按上报时间渲染，而不是固定流程。
     """
     if isinstance(data, dict) and "ts" not in data:
         data = {**data, "ts": int(time.time() * 1000)}
@@ -78,7 +78,7 @@ def _final_from_state(values: Any) -> str:
     return ""
 
 
-#: 常见供应商把「思考」放在独立字段或标签里（这里统一抽出来，**绝不混进正文**）
+#: 常见供应商把「思考」放在独立字段或标签里（这里统一抽出，不写进正文）
 _THINK_TAGS = ("thinking", "think", "reasoning", "analysis")
 _THINK_TAG_RE = None
 
@@ -86,8 +86,8 @@ _THINK_TAG_RE = None
 def split_thinking(text: str) -> "tuple[str, str]":
     """把正文里的 `<thinking>…</thinking>` 段剥出来，返回 `(正文, 思考)`。
 
-    为什么需要：部分供应商/端点在思考模式下把推理直接拼进 content（注意：聊天区被
-    大段推理刷屏）。这类文本对用户没有信息量，必须挪到可折叠的「思考」气泡里。
+    部分供应商或端点在思考模式下把推理直接拼进 content，聊天区会被大段推理占满。
+    这类文本对使用者没有信息量，需要挪到可折叠的「思考」气泡里。
     """
     global _THINK_TAG_RE
     import re as _re
@@ -102,7 +102,7 @@ def split_thinking(text: str) -> "tuple[str, str]":
 
 
 def reasoning_of(msg: Any) -> str:
-    """从一条消息里取出**思考/推理**文本（没有则返回空串）。
+    """从一条消息里取出思考或推理文本（没有则返回空串）。
 
     覆盖三类来源：
       1. `additional_kwargs.reasoning_content` / `reasoning`（DeepSeek、豆包等 OpenAI 兼容端点）；
@@ -132,10 +132,10 @@ def reasoning_of(msg: Any) -> str:
     return "\n".join(p for p in (str(x).strip() for x in parts) if p)
 
 def _events_for(mode: str, chunk: Any, announced: set) -> List[Dict[str, Any]]:
-    """把一个 LangGraph `(mode, chunk)` 映射成内部事件（与改造前逐字一致的行为）。
+    """把一个 LangGraph `(mode, chunk)` 映射成内部事件（行为与拆分前逐字一致）。
 
-    单独成函数的原因：主循环要处理「跑满步数 → 自动放宽 → 从 checkpoint 继续」，
-    把映射拆开后，重试逻辑才读得懂（缩进也不会失控）。
+    单独成函数的原因：主循环需要处理「跑满步数、自动放宽、从 checkpoint 继续」，
+    映射逻辑拆开之后重试分支更易读，缩进层级也可控。
     """
     out: List[Dict[str, Any]] = []
     if mode == "messages":
@@ -143,7 +143,7 @@ def _events_for(mode: str, chunk: Any, announced: set) -> List[Dict[str, Any]]:
         node = (meta or {}).get("langgraph_node", "")
         text = as_text(getattr(msg, "content", ""))
         if type(msg).__name__ in ("AIMessageChunk", "AIMessage"):
-            # 思考内容单独走 `thinking` 事件：前端折叠成「思考」气泡，**不混进正文**
+            # 思考内容单独走 `thinking` 事件：前端折叠成「思考」气泡，不写进正文
             text, inline_think = split_thinking(text)
             reasoning = "\n".join(x for x in (reasoning_of(msg), inline_think) if x)
             if reasoning:
@@ -164,7 +164,7 @@ def _events_for(mode: str, chunk: Any, announced: set) -> List[Dict[str, Any]]:
             keys = list(update.keys()) if isinstance(update, dict) else []
             out.append({"type": "update", "node": node, "keys": keys})
     elif mode == "custom":
-        # 节点/工具通过 get_stream_writer() 主动上报的实时进度（新增通道，不改既有类型）
+        # 节点或工具通过 get_stream_writer() 上报的实时进度（独立通道，既有事件类型不变）
         out.append({"type": "custom", "payload": chunk})
     return out
 
@@ -174,11 +174,11 @@ async def stream_agent_sse(graph: Any, payload: Optional[Dict[str, Any]], run_co
     """驱动一次 Agent 运行并输出 SSE。
 
     `context`：LangGraph 的 `context_schema` 实例（见 `runtime/context.AgentContext`）；
-    为 None 时由调用方负责用 ContextVar 兜底（双读期两条路径等价）。
+    为 None 时由调用方用 ContextVar 兜底（双读期两条路径等价）。
 
-    **步数预算**：命中 `GRAPH_RECURSION_LIMIT` 不报错 —— 自动放宽上限（120 → 240 → 480）
-    并从 checkpoint 继续；到顶时让主管 Agent 用现有结果收尾（注入收尾提示），最后用
-    已有结果落盘。理由见 `runtime/limits.py`：跑满步数是执行细节，不该打扰用户。
+    步数预算：命中 `GRAPH_RECURSION_LIMIT` 时不报错，而是自动放宽上限（120、240、480）
+    并从 checkpoint 继续；到达上限时向主管 Agent 注入收尾提示，用现有结果收尾并落盘。
+    理由见 `runtime/limits.py`：跑满步数属于执行细节，不必打断使用者。
     """
     yield sse_event({"type": "start", "run_id": run_id})
     announced: set = set()
@@ -206,7 +206,7 @@ async def stream_agent_sse(graph: Any, payload: Optional[Dict[str, Any]], run_co
                 limit = escalated
                 next_payload = None
                 if escalate(limit) is None:
-                    # 已是最后一档：让主管 Agent 知道要收尾，用剩下的步数给结论
+                    # 已是最后一档：告知主管 Agent 需要收尾，用剩余步数给出结论
                     try:
                         await graph.aupdate_state(
                             {**run_config, "recursion_limit": limit},

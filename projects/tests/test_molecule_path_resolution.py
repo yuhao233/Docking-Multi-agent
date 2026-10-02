@@ -1,17 +1,14 @@
-"""回归：上传成功的小分子库在对话里必须能被读到（已知缺陷）。
+"""回归：上传成功的小分子库在对话中可被读取。
 
-事件经过：
-  - 用户上传 PGR.sdf（上传响应 count=149），落盘为
-    `assets/uploads/20260917-112109-3e5739-PGR.sdf`；
-  - 协调 Agent 只拿到**显示名** `PGR.sdf`，把它当路径传给 import_molecule_library，
-    RDKit 报 `Bad input file PGR.sdf`，随后又猜了 3 个错误路径，最终退回示例分子库；
-  - 对接没跑，用户被要求重新提供文件。
+场景：使用者上传 `PGR.sdf`（上传响应 count=149），落盘为
+`assets/uploads/20260917-112109-3e5739-PGR.sdf`；协调 Agent 只拿到显示名 `PGR.sdf`，
+把它当路径传给 import_molecule_library 时 RDKit 报 `Bad input file PGR.sdf`。
 
-两处根因（本文件分别回归）：
-  1. 受理层在对话模式（advanced=false）下用系统默认参数，把请求里**真实存在的**
-     `molecule_file` 丢掉了，给编排层的指令变成「使用示例分子库」；
-  2. 工具层没有「裸文件名 → 上传/缓存目录里的真实文件」的解析兜底，也不回传
-     「实际尝试过的路径与失败原因」。
+两处技术原因（分别由下列用例回归）：
+  1. 受理层在对话模式（advanced=false）下使用系统默认参数，丢弃请求中真实存在的
+     `molecule_file`，给编排层的指令因此变成「使用示例分子库」；
+  2. 工具层缺少「裸文件名到上传/缓存目录中真实文件」的解析兜底，也不回传解析过的
+     路径与失败原因（`attempted` 字段）。
 """
 from __future__ import annotations
 
@@ -38,9 +35,9 @@ from docking_agent.tools import molecule_paths  # noqa: E402
 
 def _write_sdf(directory: Path, filename: str = "20260917-112109-3e5739-PGR.sdf",
                names=("aspirin", "caffeine", "ibuprofen")) -> Path:
-    """用 RDKit 生成**互不相同**的多记录 SDF（名称写入 `_Name`）。
+    """用 RDKit 生成互不相同的多记录 SDF（名称写入 `_Name`）。
 
-    注意不能用同一套原子手写 3 个记录：统一归一化层按 canonical SMILES 去重，
+    记录不能用同一套原子手写：统一归一化层按 canonical SMILES 去重，
     相同的分子会被合并成 1 条，测不出「读到全部 N 个」。
     """
     from rdkit import Chem
@@ -76,7 +73,7 @@ def test_looks_like_molecule_path_distinguishes_smiles() -> None:
 
 
 def test_resolve_bare_filename_matches_timestamped_upload(tmp_path, monkeypatch) -> None:
-    """上传端点的落盘名带时间戳前缀；裸文件名必须能解析到它。"""
+    """上传端点的落盘名带时间戳前缀；裸文件名须能解析到它。"""
 
     uploaded = _write_sdf(tmp_path, "20260917-112109-3e5739-PGR.sdf")
     monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
@@ -93,7 +90,7 @@ def test_resolve_bare_filename_matches_timestamped_upload(tmp_path, monkeypatch)
 
 
 def test_resolve_ambiguous_suffix_returns_candidates_without_guessing(tmp_path, monkeypatch) -> None:
-    """多个候选命中同一后缀时必须返回候选清单、不得随便取一个。"""
+    """多个候选命中同一后缀时返回候选清单，不任意取一个。"""
 
     _write_sdf(tmp_path, "20260917-112109-3e5739-PGR.sdf", names=("aspirin",))
     _write_sdf(tmp_path, "20260918-090000-aaaaaa-PGR.sdf", names=("caffeine",))
@@ -115,7 +112,7 @@ def test_resolve_reports_every_attempted_path_with_reason(tmp_path, monkeypatch)
 
 
 def test_import_molecule_library_accepts_bare_filename(tmp_path, monkeypatch) -> None:
-    """缺陷主场景：只给显示名 PGR.sdf，也要读到上传的 3 个分子。"""
+    """主场景：只给显示名 PGR.sdf，也要读到上传的 3 个分子。"""
 
     _write_sdf(tmp_path, names=("aspirin", "caffeine", "ibuprofen"))
     monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
@@ -138,7 +135,7 @@ def test_import_molecule_library_treats_path_in_query_or_text_as_file(tmp_path, 
 
 
 def test_import_molecule_library_falls_back_to_request_molecule_file(tmp_path, monkeypatch) -> None:
-    """「上传成功 = 对话里一定能用」：模型一个参数都不传，也要用上传的库。"""
+    """上传成功即对话中可用：模型不传任何参数时也使用上传的库。"""
 
     uploaded = _write_sdf(tmp_path, names=("aspirin", "caffeine", "ibuprofen"))
     monkeypatch.setattr(molecule_paths, "molecule_search_dirs", lambda: [tmp_path])
@@ -166,7 +163,7 @@ def test_import_molecule_library_failure_lists_attempts(tmp_path, monkeypatch) -
 
 
 def test_intake_chat_mode_carries_uploaded_molecule_file(tmp_path) -> None:
-    """受理层根因：对话模式（advanced=false）不得丢掉请求里的 molecule_file。"""
+    """受理层技术原因：对话模式（advanced=false）不丢弃请求里的 molecule_file。"""
     from docking_agent import intake
     from docking_agent.api.schemas import AgentRequest
 
@@ -181,14 +178,14 @@ def test_intake_chat_mode_carries_uploaded_molecule_file(tmp_path) -> None:
 
     assert spec["ligands"]["source"] == "file"
     assert spec["ligands"]["file"] == str(uploaded)
-    # 指令里必须出现**绝对路径**，且明确要求原样传给 import_molecule_library
+    # 指令里出现绝对路径，且明确要求原样传给 import_molecule_library
     assert str(uploaded) in message
     assert "import_molecule_library" in message
     assert "使用示例分子库" not in message
 
 
 def test_intake_chat_mode_without_ligands_does_not_auto_use_example_library() -> None:
-    """没有分子库时**不再**默认提示示例库回退，而是要求向用户索取。"""
+    """没有分子库时不提示示例库回退，而是要求向使用者索取。"""
     from docking_agent import intake
     from docking_agent.api.schemas import AgentRequest
 
@@ -200,7 +197,7 @@ def test_intake_chat_mode_without_ligands_does_not_auto_use_example_library() ->
 
 
 def _write_big_sdf(directory: Path, count: int = 120) -> Path:
-    """生成 count 个互不相同、带 `_Name` 的分子（模拟用户上传的小分子库）。"""
+    """生成 count 个互不相同、带 `_Name` 的分子（模拟使用者上传的小分子库）。"""
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
@@ -218,7 +215,7 @@ def _write_big_sdf(directory: Path, count: int = 120) -> Path:
 
 def test_upload_count_equals_import_count_and_ids_survive(tmp_path) -> None:
     """端到端不变量：`/api/uploads` 解析出的分子数 == `import_molecule_library` 读到的分子数，
-    且 SDF 的 `_Name` 作为 ID 贯穿（用户明确要求「输出最好带上小分子的ID」）。"""
+    且 SDF 的 `_Name` 作为 ID 贯穿（输出需带上小分子 ID）。"""
     import json as _json
 
     pytest.importorskip("fastapi")
@@ -248,7 +245,7 @@ def test_upload_count_equals_import_count_and_ids_survive(tmp_path) -> None:
 
 
 def test_import_ambiguous_suffix_asks_user_with_candidates(tmp_path, monkeypatch) -> None:
-    """歧义时工具不得猜：返回候选清单并置 needs_user_input。"""
+    """歧义时工具不猜测：返回候选清单并置 needs_user_input。"""
 
     _write_sdf(tmp_path, "20260917-112109-3e5739-PGR.sdf", names=("aspirin",))
     _write_sdf(tmp_path, "20260918-090000-bbbbbb-PGR.sdf", names=("caffeine",))
@@ -261,8 +258,8 @@ def test_import_ambiguous_suffix_asks_user_with_candidates(tmp_path, monkeypatch
 
 
 def test_normalize_molecule_library_accepts_text_file_and_blackboard(tmp_path) -> None:
-    """统一入口：属性评估的规范化工具也要能吃「脏」输入，而不是 JSONDecodeError
-    （注意：子 Agent 传非 JSON 文本 → `分子库规范化失败`）。"""
+    """统一入口：属性评估的规范化工具接受非结构化输入，而不是抛 JSONDecodeError
+    （子 Agent 传非 JSON 文本时返回 `分子库规范化失败`）。"""
     from docking_agent.tools.properties import normalize_molecule_library
 
     # ① 自由文本（名称:SMILES / 名称 SMILES）
@@ -277,7 +274,7 @@ def test_normalize_molecule_library_accepts_text_file_and_blackboard(tmp_path) -
     assert file_out["status"] == "ok" and file_out["count"] == 2
     assert {m["id"] for m in file_out["molecules"]} == {"aspirin", "caffeine"}
 
-    # ③ 留空 → 共享黑板（不是报错）
+    # ③ 留空时读取共享黑板（不是报错）
     board = Blackboard("R-NORM")
     board.add_molecules([{"name": "乙醇", "smiles": "CCO"}])
     token = current_blackboard.set(board)
@@ -290,7 +287,7 @@ def test_normalize_molecule_library_accepts_text_file_and_blackboard(tmp_path) -
 
 
 def test_upload_sniffs_structure_content_when_extension_unknown() -> None:
-    """扩展名不认识（.dat）但内容是 PDB → 必须按受体处理（内容嗅探优先于扩展名）。"""
+    """扩展名未知（.dat）但内容是 PDB 时按受体处理（内容嗅探优先于扩展名）。"""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -304,7 +301,7 @@ def test_upload_sniffs_structure_content_when_extension_unknown() -> None:
                         data={"kind": "auto"})
         assert r.status_code == 200, r.text[:300]
         uploaded = r.json()
-        # 上传阶段只做**内容嗅探**（判断 kind），不做准备
+        # 上传阶段只做内容嗅探（判断 kind），不做准备
         assert uploaded["kind"] == "receptor" and uploaded["pending"] is True
         assert "receptor_file" not in uploaded
         body = client.post("/api/uploads/inspect",

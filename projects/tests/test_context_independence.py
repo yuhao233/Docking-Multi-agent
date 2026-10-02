@@ -1,18 +1,18 @@
-"""P2-b：**工具链路必须走 runtime，不许再偷读 ContextVar**（回归守卫）。
+"""工具链路的上下文访问约束：工具与内部辅助函数经由 runtime 读取，不裸读 ContextVar。
 
-背景（P1④ 双读 → P2-b 收口）：
-项目原来靠三个 ContextVar（`current_run` / `current_blackboard` / `request_context`）传递运行上下文，
-工具与内部辅助函数随处 `.get()`。P1 已把 **23 个 `@tool`** 改成 `active_*(runtime)`；
-P2-b 又把工具侧的内部辅助函数（`_analyze` / `_invoke_checked` / `_coerce_molecule_list` /
+背景：运行上下文由三个 ContextVar（`current_run` / `current_blackboard` / `request_context`）传递，
+工具与内部辅助函数此前随处 `.get()`。当前 23 个 `@tool` 已改为 `active_*(runtime)`，
+工具侧的内部辅助函数（`_analyze` / `_invoke_checked` / `_coerce_molecule_list` /
 `_live_molecule_row` / `_receptor_blocks` / `_ranked_rows` / `_from_blackboard` / `current_ranking` /
-`_default_receptor_from_run`）与 `tool_io` 数据总线改为「显式传入 + ContextVar 兜底」。
+`_default_receptor_from_run`）与 `tool_io` 数据总线改为「显式传入 + ContextVar 兜底」，
+兜底只在显式参数为 None 时生效。
 
-本测试把这件事**锁死**：
-1. 任何 `@tool` 函数体内**不得**出现裸的 ContextVar 读取；
-2. `tools/` 下的内部辅助函数同样不得裸读；
-3. 允许的兜底必须写成 `x = x if x is not None else current_run.get()` 这种**显式兜底**形式；
-4. 残余依赖集中在一份**显式白名单**里（CLI/单测直调、日志前缀、以及待决策的黑板），
-   任何新增的越界读取都会让本用例失败。
+本模块锁定的约束：
+1. 任何 `@tool` 函数体内不出现裸的 ContextVar 读取；
+2. `tools/` 下的内部辅助函数同样不裸读；
+3. 允许的兜底写成 `x = x if x is not None else current_run.get()` 这种显式兜底形式；
+4. 残余依赖集中在一份显式白名单里（CLI/单测直调、日志前缀、以及待决策的黑板），
+   新增的越界读取会导致本用例失败。
 """
 from __future__ import annotations
 
@@ -25,17 +25,17 @@ from docking_agent.runtime.blackboard import Blackboard
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "docking_agent"
 
-#: 裸读（不允许，除非在下面的白名单里）
+#: 裸读：除白名单外不允许
 RAW_READ = re.compile(r"(?<!else )\b(current_run|current_blackboard|request_context)\.get\(\)")
 READ_NAMES = ("current_run.get()", "current_blackboard.get()", "request_context.get()",
               "get_blackboard()")
 
-#: 允许继续使用 ContextVar 的地方（每条都要有理由；**新增必须在这里写明为什么**）
+#: 允许继续使用 ContextVar 的位置（每条附理由；新增项需在此写明原因）
 ALLOWED: Dict[str, Set[str]] = {
     # 兜底层本身：`runtime` 缺失时回退 ContextVar（双读的关键实现）
     "runtime/context.py": {"active_run", "active_blackboard", "active_request",
                            "current_agent_context"},
-    # 黑板访问器本身（黑板是否迁进 graph state 是**待决策**项，见 README 记录 48）
+    # 黑板访问器本身（黑板是否迁进 graph state 待决策，见 README 记录 48）
     "runtime/blackboard.py": {"get_blackboard", "board_molecules_json"},
     # 日志前缀：纯展示用途，拿不到就省略前缀
     "logging_setup.py": {"filter"},
@@ -85,7 +85,7 @@ def _raw_reads(src: str) -> Dict[str, List[int]]:
 
 
 def test_tools_never_read_contextvars_directly() -> None:
-    """`tools/` 下的裸读必须为零（全部走 `active_*(runtime)` 或显式兜底）。"""
+    """`tools/` 下的裸读为零：全部走 `active_*(runtime)` 或显式兜底。"""
     offenders: Dict[str, Dict[str, List[int]]] = {}
     for path in sorted((SRC / "tools").glob("*.py")):
         rel = f"tools/{path.name}"
@@ -99,7 +99,7 @@ def test_tools_never_read_contextvars_directly() -> None:
 
 
 def test_allowed_residual_reads_are_documented() -> None:
-    """白名单里的函数必须真的存在（避免白名单腐烂成"永久豁免"）。"""
+    """白名单里的函数需要实际存在，避免白名单失效后仍被当作豁免。"""
     for rel, names in ALLOWED.items():
         path = SRC / rel
         assert path.is_file(), f"白名单文件不存在：{rel}"
@@ -109,7 +109,7 @@ def test_allowed_residual_reads_are_documented() -> None:
 
 
 def test_every_tool_uses_runtime_aware_accessors() -> None:
-    """每个 `@tool` 只要碰运行上下文，就必须用 `active_*` / 显式参数，不得用裸 `.get()`。"""
+    """每个 `@tool` 只要读运行上下文，就使用 `active_*` 或显式参数，不用裸 `.get()`。"""
     offenders: List[str] = []
     for path in sorted((SRC / "tools").glob("*.py")):
         src = path.read_text(encoding="utf-8")
@@ -126,17 +126,17 @@ def test_every_tool_uses_runtime_aware_accessors() -> None:
 
 
 def test_tool_io_dual_reads_with_explicit_run() -> None:
-    """数据总线（tool_io）必须支持显式 `run=`；裸读只允许出现在 `else` 兜底里。"""
+    """数据总线（tool_io）支持显式 `run=`；裸读仅存在于 `else` 兜底里。"""
     src = (SRC / "runtime" / "tool_io.py").read_text(encoding="utf-8")
     assert "run if run is not None else current_run.get()" in src, "tool_io 必须支持显式 run"
     assert not _raw_reads(src), f"tool_io 里仍有裸读：{_raw_reads(src)}"
 
 
 # --------------------------------------------------------------------------- #
-# P2-c：黑板接入 LangGraph store（父图与子 Agent 共享同一命名空间）
+# 黑板接入 LangGraph store：父图与子 Agent 共享同一命名空间
 # --------------------------------------------------------------------------- #
 def test_store_backed_blackboard_shares_state_across_views() -> None:
-    """两个视图（模拟另一个进程/子图）通过同一 store 看到彼此写入 —— 这是接入 store 的意义。"""
+    """两个视图（模拟另一个进程或子图）通过同一 store 看到彼此的写入。"""
     from docking_agent.runtime.blackboard import shared_store, store_blackboard
 
     store = shared_store()
@@ -176,7 +176,7 @@ def test_store_writes_are_per_field() -> None:
 
 
 def test_active_blackboard_prefers_store_when_available() -> None:
-    """runtime 提供 store + run 时，`active_blackboard` 必须给出 store 视图（规范后端）。"""
+    """runtime 提供 store 与 run 时，`active_blackboard` 给出 store 视图（规范后端）。"""
     from dataclasses import dataclass
 
     from docking_agent.runtime.blackboard import shared_store

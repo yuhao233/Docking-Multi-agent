@@ -1,8 +1,8 @@
 """入参归一化：把多种调用格式统一成 LangGraph Agent 需要的 {"messages": [...]}。
 
 支持的格式：
-  1. {"messages":[{"role":"user","content":"..."}]}            —— LangChain/OpenAI 风格
-  2. {"text": "..."} / {"query": "..."} / {"content": "..."}  —— 纯文本简写
+  1. {"messages":[{"role":"user","content":"..."}]}            对应 LangChain/OpenAI 风格
+  2. {"text": "..."} / {"query": "..."} / {"content": "..."}  纯文本简写
   3. Coze 风格 {"type":"query","content":{"query":{"prompt":[{"type":"text","content":{"text":"..."}}]}}}
   4. 直接传字符串
 """
@@ -59,7 +59,7 @@ def _flatten_content(content: Any, _depth: int = 0) -> str:
 def parse_json_object(text: Any) -> Optional[Dict[str, Any]]:
     """从模型/子 Agent 输出里提取 JSON 对象（容忍 ```json 围栏与前后杂字符）。
 
-    受理层与分发层的唯一实现 —— 两处各写一份曾导致行为漂移（一边接受列表、一边不接受）。
+    受理层与分发层共用本实现，避免两处分别实现导致的行为漂移（一边接受列表、一边不接受）。
     """
     if not isinstance(text, str) or not text.strip():
         return None

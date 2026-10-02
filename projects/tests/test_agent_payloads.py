@@ -1,16 +1,16 @@
-"""Agent 之间的信息传递：**给模型的视图**必须精简，完整明细留在产物里。
+"""Agent 之间的信息传递：回给模型的视图保持精简，明细留在产物里。
 
-用户要求「每一个 agent 的输出信息也要精简高效、专业」。这里的口径是**受众分离**：
+口径是受众分离：
 
-- 工具产物（`*_tool.json`）保留**全量**明细 —— 报告、排序、审计都读它；
-- 回给模型（子 Agent）的载荷只带**决策与转述所需**的字段，逐分子的溯源散文压成聚合口径。
+- 工具产物（`*_tool.json`）保留全量明细，报告、排序与溯源都读它；
+- 回给模型（子 Agent）的载荷只带决策与转述所需字段，逐分子的溯源散文压成聚合口径。
 
-为什么不是单纯「删字段」：`protonation.method` 这类字符串（"dimorphite-dl 2.0.2（专业 pKa 引擎；
-pH 7.4 ± 0.5）"）完全是 `engine`+`engine_version`+`ph`+`engine_window` 的重复描述，逐分子重复
-一遍能占整行 80% 的字节，还最容易被模型照抄进正文。
+不采用单纯删字段的做法：`protonation.method` 是 `engine`+`engine_version`+`ph`
++`engine_window` 的重复描述，逐分子重复一遍能占整行 80% 的字节，
+且容易被模型照抄进正文。
 
-本文件**不属于** `ENGINE_TEST_FILES`：这些是纯载荷形状用例（引擎全部被 monkeypatch），
-CI（`DOCKING_ENGINE_TESTS=0`）必须跑到。
+这些用例不在 `ENGINE_TEST_FILES` 内：它们是纯载荷形状用例（引擎全部被 monkeypatch），
+CI（`DOCKING_ENGINE_TESTS=0`）会执行到。
 """
 from __future__ import annotations
 
@@ -25,17 +25,17 @@ def _payload_size(obj: Any) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Agent 之间的信息传递：**给模型的视图**必须精简，完整明细留在产物里
+# Agent 之间的信息传递：回给模型的视图保持精简，明细留在产物里
 # --------------------------------------------------------------------------- #
 def _payload_size(obj: Any) -> int:
     return len(json.dumps(obj, ensure_ascii=False))
 
 
 def test_property_payload_is_agent_sized_and_artifact_keeps_full_detail(run_ctx) -> None:
-    """属性评估回给模型的行只带数据字段；逐分子质子化散文留在产物里。
+    """属性评估回给模型的行只带数据字段；逐分子质子化描述留在产物里。
 
-    为什么值得钉住：`protonation` 的 `method`/`note`/`variants` 逐分子重复一遍能占整行 80% 的
-    字节，而报告要的只是 engine/charge 这些数据字段 —— 模型照着长文复述还会把报告撑肿。
+    `protonation` 的 `method`/`note`/`variants` 逐分子重复一遍能占整行 80% 的字节，
+    而报告只取 engine/charge 这类数据字段；长文还会被模型复述，把报告撑大。
     """
     from docking_agent.tools import properties
 
@@ -45,19 +45,19 @@ def test_property_payload_is_agent_sized_and_artifact_keeps_full_detail(run_ctx)
     out = json.loads(raw)
     assert out["status"] == "ok" and len(out["assessment"]) == 5
     row = out["assessment"][0]
-    # 视图里只有数据字段 + 压成 policy/applied 的质子化口径
+    # 视图里只保留数据字段，质子化口径压成 policy/applied
     assert set(row["protonation"]) <= {"policy", "applied"}, row["protonation"]
     for forbidden in ("method", "note", "variants", "variant_rule", "engine_window", "rules"):
         assert forbidden not in row["protonation"], forbidden
     assert row["molecular_weight"] and row["logP"] is not None
-    # 完整明细仍在产物里（报告与审计读它）
+    # 明细仍留在产物里（报告与溯源读它）
     saved = json.loads((run.dir / "properties_tool.json").read_text(encoding="utf-8"))
     assert "variants" in saved[0]["protonation"] and saved[0]["protonation"].get("engine")
     assert _payload_size(out) < _payload_size(saved), "给模型的载荷必须小于产物"
 
 
 def test_docking_payload_drops_report_only_detail(run_ctx, monkeypatch: pytest.MonkeyPatch) -> None:
-    """对接视图：保留盒子溯源与结论字段，压掉逐分子溯源长文与「报告才需要」的块字段。"""
+    """对接视图：保留盒子溯源与结论字段，压掉逐分子溯源长文与报告专用块字段。"""
     from docking_agent.tools import docking as dock_tool
 
     run, _board = run_ctx
@@ -86,9 +86,9 @@ def test_docking_payload_drops_report_only_detail(run_ctx, monkeypatch: pytest.M
                                             "ligand_warnings": ["w1", "w2", "w3"]}]}]}
 
     monkeypatch.setattr(dock_tool, "dock_library", _fake_dock)
-    # 用注册表里的内部测试受体（`thrombin`）：本用例只关心「给模型的视图」，
-    # 而**不可用/无法识别的受体现在会抛 ReceptorInputError**（见
-    # tests/test_receptor_ext_upload.py），所以不能随便编一个名字。
+    # 用例使用注册表里的内部测试受体（`thrombin`），因为这里只关心回给模型的视图；
+    # 不可用或无法识别的受体在当前实现中会抛 ReceptorInputError（见
+    # tests/test_receptor_ext_upload.py），因此受体名不能随意编造。
     out = json.loads(dock_tool.molecular_docking.invoke(
         {"molecules_json": json.dumps([{"name": "M1", "smiles": "CCO"}]),
          "receptor_sources": "thrombin"}))
@@ -102,7 +102,7 @@ def test_docking_payload_drops_report_only_detail(run_ctx, monkeypatch: pytest.M
                                                        "charge_after"}
     assert "method" not in row["ligand_facts"]["protonation"]
     assert len(row["ligand_warnings"]) == 2, "告警最多两条（其余在产物里）"
-    # 完整明细仍在产物里
+    # 明细仍留在产物里
     saved = json.loads((run.dir / "docking_tool.json").read_text(encoding="utf-8"))
     full = saved["receptors"][0]
     assert "box_atom_stats" in full
@@ -110,7 +110,7 @@ def test_docking_payload_drops_report_only_detail(run_ctx, monkeypatch: pytest.M
 
 
 def test_binding_payload_does_not_repeat_control_pharmacophore(run_ctx) -> None:
-    """结合模式：对照的药效团只在顶层给一次，逐行不再重复（按分子数线性膨胀）。"""
+    """结合模式：对照的药效团只在顶层给出一次，逐行不再重复，避免随分子数线性膨胀。"""
     from docking_agent.tools import binding
 
     _run, _board = run_ctx

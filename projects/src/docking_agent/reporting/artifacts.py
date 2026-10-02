@@ -1,9 +1,9 @@
 """报告产物：把整套图表与 PDF 报告写入运行目录并登记为可下载产物。
 
-两种运行模式（确定性流水线与多 Agent）共用，保证固定格式报告里内嵌的图片
+确定性流水线与多 Agent 两种运行模式共用本模块，固定格式报告里内嵌的图片
 在两种模式下都真实存在、可下载。
 
-不导入 `docking_agent.runs`（避免与 runs -> reporting.store 形成循环依赖），
+本模块不导入 `docking_agent.runs`（避免与 runs -> reporting.store 形成循环依赖），
 只要求传入的对象具备 `write_bytes(rel, data, name=, label=, content_type=)` 接口。
 """
 from __future__ import annotations
@@ -59,19 +59,19 @@ def _resolve_candidate(raw: str) -> Optional[Path]:
 
 def copy_receptor_files(run: Any, receptors: List[Dict[str, Any]], *,
                         source_candidates: Any = ()) -> List[str]:
-    """把本次对接**真正用到的受体结构**复制进运行目录（`receptor/`），随整包下载。
+    """把本次对接实际使用的受体结构复制进运行目录（`receptor/`），随整包下载。
 
-    为什么必须复制：`download.zip` 原本只有配体位姿与 JSON，受体结构只以**绝对路径**
-    记在 `docking.json` 里（指向 `assets/receptors/...` 或 `assets/cache/...`）——
-    换台机器、换个人拿到的包根本无法复现这次对接。
+    复制的原因：`download.zip` 原先只含配体位姿与 JSON，受体结构仅以绝对路径
+    记在 `docking.json` 里（指向 `assets/receptors/...` 或 `assets/cache/...`），
+    换台机器或换个人拿到的包无法复现这次对接。
 
     每个受体放三类文件（取得到才放）：
-      `receptor/<key>.pdbqt`        —— 对接实际使用的受体（AutoDock 输入，权威）
-      `receptor/<key>_prepared.pdb` —— 准备阶段去水/去杂原子后的蛋白（PDB 文本，便于看图核对）
-      `receptor/<key>_source.<ext>` —— 原始结构：上传的原文件 / URL 下载的原文件；
-                                       注册表受体没有原文件时就不放这一类
+      `receptor/<key>.pdbqt`        对接实际使用的受体（AutoDock 输入，权威）
+      `receptor/<key>_prepared.pdb` 准备阶段去水/去杂原子后的蛋白（PDB 文本，便于看图核对）
+      `receptor/<key>_source.<ext>` 原始结构：上传的原文件 / URL 下载的原文件；
+                                    注册表受体没有原文件时就不放这一类
 
-    复制是**尽力而为**：任何一个文件取不到只记 warning，绝不影响运行与报告。
+    复制采用尽力而为的方式：任何一个文件取不到只记 warning，不影响运行与报告。
     返回登记成功的产物名列表。
     """
     added: List[str] = []
@@ -131,9 +131,9 @@ def copy_receptor_files(run: Any, receptors: List[Dict[str, Any]], *,
 def _find_prepared_pdb(pdbqt: Path) -> Optional[Path]:
     """找出与某个 PDBQT 对应的「准备后蛋白 PDB」。
 
-    准备阶段的产物是内容寻址命名的：`<base>_<hash>[_ph7.4].pdbqt` 旁边的
-    `<base>_<hash>_prot.pdb`（去水/去杂原子后的蛋白）。按 pH 质子化时会多一层
-    `_ph7.4` 后缀，所以不能只做一次 `stem + '_prot.pdb'` 拼接。
+    准备阶段的产物按内容寻址命名：`<base>_<hash>[_ph7.4].pdbqt` 旁边是
+    `<base>_<hash>_prot.pdb`（去水/去杂原子后的蛋白）。按 pH 质子化时文件会多一层
+    `_ph7.4` 后缀，因此单次 `stem + '_prot.pdb'` 拼接不足以覆盖全部情形。
     """
     import re as _re
 
@@ -156,7 +156,7 @@ def _find_prepared_pdb(pdbqt: Path) -> Optional[Path]:
     return None
 
 def _safe_key(text: str) -> str:
-    """受体名 → 安全文件名（与 core.files.slug 同口径，避免上下层重复实现）。"""
+    """受体名转安全文件名（与 core.files.slug 同口径，避免上下层重复实现）。"""
     from docking_agent.core.files import slug
 
     return slug(text) or "receptor"
@@ -180,9 +180,9 @@ def _copy_one(run: Any, src: Path, dest: Path, name: str, label: str) -> List[st
 
 
 # name -> (相对路径, 中文说明, 生成函数(ranking, pos_control, top_rows) -> bytes|None)
-# 相对路径统一来自 report.CHART_FILES：报告内嵌的相对图路径与这里落盘的产物路径不会漂移。
+# 相对路径统一取自 report.CHART_FILES：报告内嵌的相对图路径与这里落盘的产物路径不会漂移。
 # top_rows = 推荐排行前 N 个分子（与报告第 3.1 节同一集合）：理化性质空间图只画它们，
-# 2D 结构图也据此绘制 —— 整库散点在大库时会糊成一团，用户明确要求"只展示 top 的分子"。
+# 2D 结构图也据此绘制。整库散点在大库时会糊成一团，因此报告只展示 top 的分子。
 CHART_SPECS = {
     "docking_chart": (CHART_FILES["docking_chart"], "对接亲和力对比图",
                       lambda r, pc, top: docking_bar_chart(r, pc)),
@@ -192,8 +192,8 @@ CHART_SPECS = {
                            lambda r, pc, top: affinity_histogram(r, pc)),
     "property_chart": (CHART_FILES["property_chart"], "理化性质空间图（仅推荐排行前 N 个）",
                        lambda r, pc, top: property_scatter_chart(top or r, top_only=bool(top))),
-    # 结构对比图按**推荐分子**（用户要求：报告展示的部分也用推荐的分子）；
-    # 没有推荐排行时退回对接排序表（`structure_grid` 自身按传入顺序绘制）
+    # 结构对比图按推荐分子绘制，报告展示的部分同样使用推荐分子；
+    # 没有推荐排行时退到对接排序表（`structure_grid` 自身按传入顺序绘制）
     "structure_grid": (CHART_FILES["structure_grid"], "候选分子结构对比（含阳性对照，按推荐排行）",
                        lambda r, pc, top: structure_grid(
                            top or r, pc, top_n=(len(top) if top else 12))),
@@ -210,11 +210,11 @@ def _write_binding_analysis(run: Any, result: Optional[Dict[str, Any]],
                             ranking: Optional[List[Dict[str, Any]]] = None) -> List[str]:
     """为推荐排行前 N 个分子做姿态–口袋相互作用分析 + 2D/3D 图（真实坐标）。
 
-    - 数据来源：**对接真实写出的位姿**（`poses/pose_*.pdbqt`）+ 受体 PDBQT；
+    - 数据来源：对接实际写出的位姿（`poses/pose_*.pdbqt`）与受体 PDBQT；
     - 产物命名：`charts/interaction_2d_01.png` / `charts/pose_3d_01.png`（序号 = 推荐名次），
       与产物名一致，网页与 PDF 都能按相对路径解析；
-    - 结果写回 `result["pose_analysis"]`（含逐残基明细），报告 §5.2 与推荐理由都引用它。
-    - 关闭了「保存位姿」时**没有位姿可分析**：如实写进 `result["pose_analysis_note"]`，不编造。
+    - 结果写回 `result["pose_analysis"]`（含逐残基明细），报告 §5.2 与推荐理由都引用它；
+    - 关闭了「保存位姿」时没有位姿可分析：如实写进 `result["pose_analysis_note"]`，不编造。
     """
     from docking_agent.core import interactions as I
 
@@ -230,7 +230,7 @@ def _write_binding_analysis(run: Any, result: Optional[Dict[str, Any]],
         result["pose_analysis_note"] = "缺少可读的受体 PDBQT，未做姿态–口袋分析"
         return []
 
-    # 推荐排行行只保留评分需要的字段（不含 pose_file）→ 按 smiles 回查完整对接行拿位姿路径
+    # 推荐排行行只保留评分需要的字段（不含 pose_file），位姿路径按 smiles 回查对接行
     pose_by_smiles = {str(r.get("smiles") or ""): str(r.get("pose_file") or "")
                       for r in (ranking or []) if isinstance(r, dict)}
     candidates = list(top_rows or [])[:int(top_n or 0) or len(top_rows or [])]
@@ -310,9 +310,9 @@ def write_report_charts(run: Any, ranking: List[Dict[str, Any]],
                         top_n: Optional[int] = None) -> List[str]:
     """生成并登记全部图表，返回成功写入的产物名列表。
 
-    传入 `result` 时额外做**姿态–口袋结合分析**（真实坐标）：为推荐排行前 N 个分子各出
+    传入 `result` 时额外做姿态–口袋结合分析（真实坐标）：为推荐排行前 N 个分子各出
     一张 2D 相互作用图与一张 3D 姿态图，并把逐残基相互作用明细写回
-    `result["pose_analysis"]`，供报告与协调 Agent 引用（不传 result 时行为不变）。
+    `result["pose_analysis"]`，供报告与协调 Agent 引用。不传 result 时行为不变。
     """
     written: List[str] = []
     top_rows = recommendation_rows(run, ranking or [])
@@ -335,11 +335,11 @@ def write_report_charts(run: Any, ranking: List[Dict[str, Any]],
 
 
 def _write_recommend_cards(run: Any, top_rows: List[Dict[str, Any]]) -> List[str]:
-    """为推荐排行前 N 名各写一张「2D 结构 + 指标表」卡片图（报告 3.1 节挨着用）。
+    """为推荐排行前 N 名各写一张「2D 结构 + 指标表」卡片图（报告 3.1 节紧邻使用）。
 
-    用户要求：推荐化合物排行榜里，结构图要**就在数据旁边**。markdown/PDF 都没有
-    「图片放进表格单元格」的可靠画法，所以把「结构 + 指标」画成一张卡片图，
-    网页、PDF 与离线包三处长得完全一样。
+    推荐化合物排行榜中的结构图需要与数据并排。markdown/PDF 都没有
+    「图片放进表格单元格」的可靠画法，因此把「结构 + 指标」画成一张卡片图，
+    网页、PDF 与离线包三处呈现同一份内容。
     """
     from docking_agent.reporting.cards import recommendation_card
 
@@ -360,7 +360,7 @@ def _write_recommend_cards(run: Any, top_rows: List[Dict[str, Any]]) -> List[str
 
 
 def _chart_paths(run: Any) -> Dict[str, Path]:
-    """已登记图片产物 → 本地路径；清单里没有时回退扫 charts/ 目录。"""
+    """已登记图片产物的本地路径映射；清单里没有时回退扫 charts/ 目录。"""
     paths: Dict[str, Path] = {}
     try:
         artifacts = run.artifacts()
@@ -391,16 +391,16 @@ def _receptor_label(result: Dict[str, Any]) -> str:
 def write_report_pdf(run: Any, result: Dict[str, Any], *, markdown: str = "") -> bool:
     """生成 PDF 版报告并登记为 `report_pdf` 产物。
 
-    为什么失败只记 warning：PDF 是「附加交付物」，渲染依赖字体/图片等环境因素；
-    它出问题不应该让已经算完的对接结果整体判为失败，用户仍可下载 CSV/Markdown。
-    返回是否成功，便于测试与调用方记录，但都不要据此中断主流程。
+    PDF 失败只记 warning 的原因：PDF 是附加交付物，渲染依赖字体、图片等环境因素；
+    它出问题不应使已经算完的对接结果整体判为失败，调用方仍可下载 CSV/Markdown。
+    返回是否成功，便于测试与调用方记录，二者都不据此中断主流程。
     """
     try:
         text = markdown
         if not text:
             report_md = Path(run.dir) / "report.md"
             if report_md.is_file():
-                # 直接渲染落盘的 report.md：保证 PDF 与页面上看到的报告内容完全一致
+                # 直接渲染落盘的 report.md：PDF 与页面上看到的报告内容保持一致
                 text = report_md.read_text(encoding="utf-8")
         run_kind = str(getattr(run, "kind", "agent") or "agent")
         run_id = str(getattr(run, "id", "") or "")

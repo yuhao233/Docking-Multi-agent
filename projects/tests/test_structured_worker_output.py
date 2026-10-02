@@ -1,12 +1,12 @@
 """P2：子 Agent 结构化输出（`response_format=ToolStrategy(<Role>Report)`）。
 
 覆盖：
-1. 4 个报告模型覆盖既有 `_REQUIRED_KEYS`，且**额外字段原样保留**（`extra="allow"`）；
+1. 4 个报告模型覆盖既有 `_REQUIRED_KEYS`，额外字段原样保留（`extra="allow"`）；
 2. 4 个子 Agent 构建时都带上了对应角色的 `ToolStrategy`；
 3. `invoke_worker` 优先返回 `structured_response`（序列化成 JSON 字符串，对外契约不变）；
-4. 没有结构化输出时**回退到消息文本**（旧路径 / 模型不调用结构化工具时仍然工作）；
-5. `_invoke_checked` 对结构化结果**一次通过、不触发重试**，而"文本路径仍会重试并在两次都坏时
-   返回 `agent_output_invalid`"——后者是既有语义，必须保留。
+4. 没有结构化输出时回退到消息文本（旧路径与模型不调用结构化工具时仍然工作）；
+5. `_invoke_checked` 对结构化结果一次通过、不触发重试；文本路径仍会重试，两次都不合法时
+   返回 `agent_output_invalid`，这是既有语义。
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def test_report_models_cover_required_keys() -> None:
 
 
 def test_report_models_preserve_extra_fields() -> None:
-    """子 Agent 的真实报告里还有 artifacts / top / summary 等字段，绝不能被 schema 吃掉。"""
+    """子 Agent 的报告里还有 artifacts / top / summary 等字段，不能被 schema 丢弃。"""
     rep = PropertyReport.model_validate({
         "status": "ok", "assessment": [{"name": "乙醇"}],
         "artifacts": {"properties_file": "/tmp/p.json"}, "assessment_total": 1,
@@ -140,7 +140,7 @@ def test_invoke_checked_passes_structured_result_without_retry(
 
 def test_invoke_checked_still_retries_and_reports_invalid_text(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    """既有语义（文本路径）必须保留：两次都不合法 → agent_output_invalid。"""
+    """既有语义（文本路径）保持不变：两次都不合法时返回 agent_output_invalid。"""
     from docking_agent.agents import dispatch
 
     calls: List[str] = []
@@ -159,7 +159,7 @@ def test_invoke_checked_still_retries_and_reports_invalid_text(
 
 
 # --------------------------------------------------------------------------- #
-# 6) 供应商兼容：结构化输出「能上就上」，被拒绝时必须优雅降级（真实案例：DeepSeek thinking mode）
+# 6) 供应商兼容：结构化输出优先启用，被拒绝时降级为文本契约（已知场景：DeepSeek thinking mode）
 # --------------------------------------------------------------------------- #
 class _ProviderRejection(Exception):
     """模拟 OpenAI 兼容端点的 400：'Thinking mode does not support this tool_choice'。"""
@@ -173,7 +173,7 @@ class _ProviderRejection(Exception):
 def test_structured_rejection_detection_is_narrow() -> None:
     assert is_structured_rejection(_ProviderRejection())
     assert is_structured_rejection(RuntimeError("response_format is not supported"))
-    # 无关错误绝不降级（限流/超时必须照常抛出，否则会掩盖故障）
+    # 无关错误不降级（限流与超时照常抛出，否则会掩盖错误来源）
     assert not is_structured_rejection(RuntimeError("429 rate limit exceeded"))
     assert not is_structured_rejection(TimeoutError("timed out"))
 
@@ -221,7 +221,7 @@ def test_invoke_worker_falls_back_when_provider_rejects_structured(
 
 
 def test_structured_rejection_is_remembered_per_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """同一角色的第二次调用必须**直接用文本契约图**，不再重复付一次 400 的代价。"""
+    """同一角色的第二次调用直接用文本契约图，不再重复付一次 400 的代价。"""
     W = _init_fake_workers(monkeypatch)
     try:
         attempts: List[str] = []
@@ -237,7 +237,7 @@ def test_structured_rejection_is_remembered_per_agent(monkeypatch: pytest.Monkey
                 return {"messages": [AIMessage(content='{"status":"ok","assessment":[]}')]}
 
         agent = _Structured()
-        # 用**真实**的缓存逻辑：登记角色 + 该角色的文本重建器
+        # 使用实际的缓存逻辑：登记角色与该角色的文本重建器
         W._agent_roles[id(agent)] = "property"
         W._WORKER_BUILDERS["property"] = lambda **kw: _Fallback()
 
@@ -249,7 +249,7 @@ def test_structured_rejection_is_remembered_per_agent(monkeypatch: pytest.Monkey
 
 
 def test_degradation_is_recorded_in_the_run_log(monkeypatch: pytest.MonkeyPatch) -> None:
-    """降级必须**如实写进运行记录**（用户/报告能看到本次为什么没用结构化输出）。"""
+    """降级如实写进运行记录（报告与运行日志可看到本次未采用结构化输出的原因）。"""
     from docking_agent.runs import current_run
 
     W = _init_fake_workers(monkeypatch)
@@ -276,7 +276,7 @@ def test_degradation_is_recorded_in_the_run_log(monkeypatch: pytest.MonkeyPatch)
         W.invoke_worker(agent, "评估", "t1")
     finally:
         current_run.reset(token)
-    # 文案已按能力记忆改写：说明"这是已记录的模型能力、后续不再重试"，仍如实写进运行记录
+    # 文案对应能力记忆：说明"这是已记录的模型能力、后续不再重试"，仍如实写进运行记录
     assert logs and "不支持强制结构化输出" in logs[0] and "文本 JSON 契约" in logs[0], logs
     assert "已记录" in logs[0], logs
 
@@ -311,7 +311,7 @@ def test_structured_output_can_be_disabled_by_env(monkeypatch: pytest.MonkeyPatc
 
 
 def test_agent_note_is_trimmed_to_one_short_sentence() -> None:
-    """`agent_note` 由契约强制「一句、≤80 字」——输出经济性靠机制，不只靠提示词。"""
+    """`agent_note` 由契约强制「一句、≤80 字」，输出经济性由机制保证，不只依赖提示词。"""
     from docking_agent.agents.reports import AGENT_NOTE_MAX, BindingReport, PropertyReport
 
     long_note = "先规范化去重了 3 条重复 SMILES，又剔除 1 条无法解析。" + "另外还有一堆细节。" * 5

@@ -1,8 +1,8 @@
-"""大库参数规划与两阶段漏斗：**库解析完成后再规划一次**（库来自上传文件时受理层拿不到）。
+"""大库参数规划与两阶段漏斗：库解析完成后再规划一次（库来自上传文件时受理层拿不到）。
 
-注意：分子来自上传的 SDF，受理层规划时库里
-还没有分子 → `param_plan` 整份为空 → notes 写"本次无规划值"，2961 个分子全部按系统默认
-exhaustiveness=16 精算 40 分钟，粗筛/精算两阶段一次都没跑。
+分子来自上传的 SDF，受理层规划时库里还没有分子，
+`param_plan` 整份为空，notes 写"本次无规划值"，
+2961 个分子按系统默认 exhaustiveness=16 精算 40 分钟，粗筛 / 精算两阶段不执行。
 """
 from __future__ import annotations
 
@@ -34,13 +34,13 @@ def _patch_runtime(monkeypatch: Any, run: Any) -> None:
 
 
 def test_large_library_gets_a_late_plan_and_two_stage_funnel(monkeypatch: Any, tmp_path: Any) -> None:
-    """2961 条库：工具内部必须补规划，并按「粗筛全库 → 精算头部」跑两遍。"""
+    """2961 条库：工具内部补规划，先粗筛全库再精算头部，共跑两遍。"""
     import os
 
     from docking_agent.tools import docking as D
 
     funnel_min = int(os.environ.get("AGENT_FUNNEL_MIN") or 500)
-    # 每条必须**化学身份不同**：同 SMILES 会被身份去重折叠成一条（这正是"库级去重"的正确行为）
+    # 每条需化学身份不同：同 SMILES 会被身份去重折叠成一条（"库级去重"的预期行为）
     molecules = [{"name": f"M{n}", "smiles": f"{'C' * n}O"} for n in range(1, funnel_min + 51)]
     run = _fake_run(tmp_path)
     _patch_runtime(monkeypatch, run)
@@ -75,7 +75,7 @@ def out_notes(raw: str) -> List[str]:
 
 
 def test_small_library_is_not_funneled(monkeypatch: Any, tmp_path: Any) -> None:
-    """小库（< 漏斗门槛）不该被拆成两遍，也不该出现两阶段说明。"""
+    """小库（< 漏斗门槛）不拆成两遍，输出 notes 里也不出现两阶段记录。"""
     from docking_agent.tools import docking as D
 
     run = _fake_run(tmp_path)
@@ -96,11 +96,11 @@ def test_small_library_is_not_funneled(monkeypatch: Any, tmp_path: Any) -> None:
 
 
 def test_uploaded_receptor_is_used_without_being_forwarded(monkeypatch: Any, tmp_path: Any) -> None:
-    """请求里上传的受体文件必须**自动生效**，不要求协调 Agent 转发路径。
+    """请求里上传的受体文件自动生效，不要求协调 Agent 转发路径。
 
-    注意：口袋工具有这条兜底（`pockets.py` 的 fallback），对接工具没有
-    —— 模型只传了分子文件，对接子 Agent 就报"未提供任何受体…请指定受体后再对接"，而界面「本次
-    下发参数」里明明写着受体文件。
+    口袋工具带这条兜底（`pockets.py` 的 fallback），对接工具缺少该兜底时，
+    模型只传分子文件会导致对接子 Agent 报"未提供任何受体…请指定受体后再对接"，
+    而界面「本次下发参数」里已列出受体文件。
     """
     from docking_agent.core import normalize as N
     from docking_agent.tools import docking as D
@@ -112,7 +112,7 @@ def test_uploaded_receptor_is_used_without_being_forwarded(monkeypatch: Any, tmp
                         lambda name, runtime=None: {
                             "receptor_file": "/tmp/8ZE2_upload.pdb"}.get(name, ""))
     monkeypatch.setattr(D, "active_blackboard", lambda runtime=None: None)
-    # 受体准备（归一化 + PDBQT）不是本用例的关注点：等价替换成"原样可用"
+    # 受体准备（归一化 + PDBQT）不属于本用例关注点：替换为等价的"原样可用"实现
     from docking_agent.core import receptors as R
 
     monkeypatch.setattr(N, "normalize_receptor_source",
@@ -133,7 +133,7 @@ def test_uploaded_receptor_is_used_without_being_forwarded(monkeypatch: Any, tmp
             "notes": []}
 
     monkeypatch.setattr(D, "dock_library", _fake_dock_library)
-    # 关键：receptor_file 参数为空（协调 Agent 没转发），但请求里有上传文件
+    # receptor_file 参数为空（协调 Agent 未转发），但请求里存在上传文件
     out = D.molecular_docking.func(molecules_json='[{"name":"A","smiles":"CCO"}]',
                                    receptor_file="", receptor_sources="", exhaustiveness=0)
     body = __import__("json").loads(out)

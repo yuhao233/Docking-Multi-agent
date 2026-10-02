@@ -1,10 +1,10 @@
-"""配体质子化的专业 pKa 引擎层（Dimorphite-DL）回归。
+"""配体质子化的 pKa 引擎层（Dimorphite-DL）回归。
 
 设计要点：
-  * **默认优先专业引擎**（装了就用），`LIGAND_PKA_ENGINE=rules` 可强制回退内置规则表（复现旧口径）；
-  * 引擎不可用时**如实回退**并记录原因 + 安装提示，绝不让配体准备失败；
-  * 窗口内多微观态时按可复现规则取一个形式对接，规则写进溯源；
-  * 本文件在**装了/没装 Dimorphite** 的环境都必须通过（CI 不装）。
+  * 默认优先使用 Dimorphite-DL（已安装时），`LIGAND_PKA_ENGINE=rules` 可强制回退内置规则表（复现旧口径）；
+  * 引擎不可用时如实回退并记录原因与安装提示，配体准备不会因此失败；
+  * 窗口内存在多个微观态时按可复现规则取一个形式对接，规则写进溯源；
+  * 该文件在已安装与未安装 Dimorphite 的环境都通过（CI 不装）。
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def test_engine_status_shape() -> None:
 
 
 def test_pick_variant_prefers_lowest_absolute_charge() -> None:
-    """选择规则：|净电荷| 最小 → 带电原子最少 → 字典序（可复现，且写进 rule）。"""
+    """选择规则：|净电荷| 最小，其次带电原子最少，最后按字典序（可复现，且写进 rule）。"""
     from docking_agent.core.ligand_pka import pick_variant
 
     best = pick_variant(HISTAMINE_VARIANTS)
@@ -55,7 +55,7 @@ def test_pick_variant_prefers_lowest_absolute_charge() -> None:
     assert "净电荷" in best["rule"]
     # 只有一种形态时直接选它
     assert pick_variant(["CC(=O)[O-]"])["smiles"] == "CC(=O)[O-]"
-    # 全部不可解析 → 空结果（调用方据此回退）
+    # 全部不可解析时返回空结果（调用方据此回退）
     assert pick_variant(["not_a_smiles"]) == {}
 
 
@@ -80,7 +80,7 @@ def test_apply_protonation_records_engine_provenance(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.skipif(not _engine_available(), reason="未安装 Dimorphite-DL")
 def test_professional_engine_used_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """装了专业引擎时默认就用它，并把引擎/版本/微观态写进溯源。"""
+    """已安装 Dimorphite-DL 时默认使用该引擎，并把引擎 / 版本 / 微观态写进溯源。"""
     from docking_agent.core.protonation import apply_protonation
 
     monkeypatch.delenv("LIGAND_PKA_ENGINE", raising=False)
@@ -125,7 +125,7 @@ def test_protonation_summary_counts_engines() -> None:
 
 
 def test_missing_engine_falls_back_and_explains(monkeypatch: pytest.MonkeyPatch) -> None:
-    """没装专业引擎的环境（CI）必须：如实回退内置规则表 + 给出安装提示，绝不报错。"""
+    """未安装 Dimorphite-DL 的环境（CI）：回退内置规则表并给出安装提示，不抛异常。"""
     from docking_agent.core import ligand_pka
     from docking_agent.core.protonation import apply_protonation
 
@@ -139,7 +139,7 @@ def test_missing_engine_falls_back_and_explains(monkeypatch: pytest.MonkeyPatch)
     result = ligand_pka.protonate(ASPIRIN, 7.4)
     assert result["ok"] is False and "未安装" in result["reason"]
 
-    # 正式入口仍然给出可用结果（规则表），并把回退原因与安装提示写进溯源
+    # 正式入口仍给出可用结果（规则表），并把回退原因与安装提示写进溯源
     out, info = apply_protonation(ASPIRIN, policy="ph", ph=7.4)
     assert out.endswith("[O-]"), f"规则表也应把羧酸处理成羧酸根：{out}"
     assert "未安装" in info["engine_fallback_reason"]

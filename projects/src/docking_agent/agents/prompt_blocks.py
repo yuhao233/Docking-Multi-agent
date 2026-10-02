@@ -1,25 +1,22 @@
-"""协调 Agent 的**条件纪律段**：按本次运行的实际情况只注入用得上的小节。
+"""协调 Agent 的条件纪律段：按本次运行的实际情况只注入用得上的小节。
 
-## 为什么
+系统提示词在每一次模型调用上重发。「执行纪律」一节占 sp 的 55%（6,181 字符 ≈ 3,960
+tokens），而一次运行通常只用得到其中几条：例如「特殊体系（金属/辅因子）」只在受体
+掉过杂原子时相关，「两阶段漏斗」只在大库时相关，「用户上传文件处理」只在有上传时相关；
+注入未用到的段落会持续占用上下文预算。
 
-系统提示词在**每一次模型调用**上重发。「执行纪律」一节占 sp 的 55%（6,181 字符 ≈ 3,960
-tokens），但一次运行通常只用得到其中几条 —— 例如「特殊体系（金属/辅因子）」只在受体确实
-掉过杂原子时相关，「两阶段漏斗」只在大库时相关，「用户上传文件处理」只在真有上传时相关。
-把用不到的整段一直挂着是纯开销。
+提示词文本只有一份来源（`config/agent_llm_config.json` 的 `sp`），条件段以 HTML 注释
+`block:KEY` / `end:KEY` 标记包起来（对应下文 `_START` / `_END` 正则）。组装时按条件抽掉不相关的段：
 
-## 怎么做的（以及为什么这么做）
+- 配置里没有标记（未分段或标记被删）：原样返回全文；
+- 条件判断拿不到事实：注入该段（安全优先）；
+- 组装函数内部出现异常：返回全文。
 
-提示词文本**仍然只有一份来源**（`config/agent_llm_config.json` 的 `sp`），条件段用
-`<!-- block:KEY -->` / `<!-- end:KEY -->` 注释标记包起来。组装时按条件**抽掉**不相关的段：
+注入结果记进 `run.data["prompt_blocks"]`（随 run.json 落盘），
+据此可查本次运行实际注入的纪律段。
 
-- **配置里没有标记**（老配置 / 被人删了标记）→ 原样返回全文，**不丢纪律**；
-- 条件判断拿不到事实 → **注入**（安全优先），绝不因为「不知道」就省掉；
-- 组装函数内部任何异常 → 返回全文。
-
-## 代价
-
-提示词不再是「一份常量」，所以每次注入都记进 `run.data["prompt_blocks"]`（随 run.json 落盘）：
-复盘时能看出这次到底给了模型哪些纪律段。
+对外接口：`parse_blocks` / `strip_blocks` / `unwrap_blocks` 负责标记解析与剥离，
+`collect_facts` / `select_blocks` 决定注入集合，`assemble` 完成组装并返回注入信息。
 """
 from __future__ import annotations
 
@@ -32,7 +29,7 @@ from docking_agent.runtime import run_facts
 
 logger = logging.getLogger(__name__)
 
-#: 所有条件段（键 → 一段话说明它管什么），也是配置里必须出现的标记集合
+#: 所有条件段（键到说明文字的映射），同时是配置里必须出现的标记集合
 BLOCKS: Dict[str, str] = {
     "upload_files": "用户上传文件处理（只在真有上传时相关）",
     "receptor_discipline": "受体纪律 3c（没提受体 / 点名待解析 / 解析失败）",
@@ -47,7 +44,7 @@ _END = re.compile(r"<!--\s*end:([a-z_]+)\s*-->\n?")
 def parse_blocks(text: str) -> Tuple[str, Dict[str, str]]:
     """把带标记的提示词拆成 `(无标记正文, {key: 该段的原文（含标记）})`。
 
-    标记必须成对且不交叉；**解析不出成对标记的键就当作「没有条件段」**（返回空 dict），
+    标记须成对且不交叉；解析不出成对标记的键按「没有条件段」处理（返回空 dict），
     由调用方退回全文。
     """
     found: Dict[str, str] = {}
@@ -61,9 +58,10 @@ def parse_blocks(text: str) -> Tuple[str, Dict[str, str]]:
 
 
 def strip_blocks(text: str, keys: Iterable[str]) -> str:
-    """从提示词里删掉指定的条件段（标记一起删）。
+    """从提示词里删掉指定的条件段（标记一并删除）。
 
-    只有在**所有**给定键都能成对解析时才动刀 —— 否则原样返回（宁可多花钱，不可丢纪律）。
+    仅当所有给定键都能成对解析时才执行删除，否则原样返回，
+    即宁可多付 token，也不丢纪律段。
     """
     out = text
     for key in keys:
@@ -78,7 +76,7 @@ def strip_blocks(text: str, keys: Iterable[str]) -> str:
 
 
 def unwrap_blocks(text: str) -> str:
-    """删掉**保留段**的标记（标记只是给组装用的，不该出现在模型看到的提示词里）。"""
+    """删掉保留段的标记（标记只用于组装，不进入模型看到的提示词）。"""
     return _END.sub("", _START.sub("", text))
 
 
@@ -88,7 +86,7 @@ def funnel_min() -> int:
 
 
 def collect_facts(run: Any) -> Dict[str, Any]:
-    """收集条件段需要的**全部**事实（未知一律用 `None` 表示 → 注入）。"""
+    """收集条件段需要的全部事实（未知项用 `None` 表示，按注入处理）。"""
     data = getattr(run, "data", None) if run is not None else None
     if not isinstance(data, dict):
         return {}
@@ -97,7 +95,7 @@ def collect_facts(run: Any) -> Dict[str, Any]:
     request = data.get("request") if isinstance(data.get("request"), dict) else {}
     facts: Dict[str, Any] = dict(run_facts.read(run))
     if spec is None:
-        # 没有规约（CLI / 早期阶段）→ 关键事实留 None（= 未知 → 注入）
+        # 没有规约（CLI / 早期阶段）时关键事实留 None（等同未知，按注入处理）
         facts.setdefault("has_upload", None)
         facts.setdefault("receptor_pending", None)
     else:
@@ -121,20 +119,20 @@ def collect_facts(run: Any) -> Dict[str, Any]:
 
 
 def select_blocks(facts: Dict[str, Any]) -> Set[str]:
-    """给定事实，决定**注入**哪些条件段（返回要保留的键）。"""
+    """按给定事实决定注入哪些条件段（返回要保留的键）。"""
     keep: Set[str] = set()
-    # 上传处理：只有**确认没有上传**才跳过
+    # 上传处理：仅在确认没有上传时跳过
     if facts.get("has_upload") is not False:
         keep.add("upload_files")
-    # 受体纪律 3c：只有受体已落实（用户上传 / 表单给定）才跳过
+    # 受体纪律 3c：仅在受体已落实（使用者上传 / 表单给定）时跳过
     if facts.get("receptor_pending") is not False:
         keep.add("receptor_discipline")
-    # 两阶段漏斗：指令里已带自动规划建议、或库明显不大 → 段里的口径已在指令里/用不上
+    # 两阶段漏斗：指令已带自动规划建议，或库明显不大时，段里的口径已在指令中或无需使用
     threshold = funnel_min()
     small = 0 < facts.get("library_size", 0) < threshold
     if not (facts.get("has_plan") or small or threshold == 0):
         keep.add("funnel_two_stage")
-    # 特殊体系：只有**确实看过一份干净对接结果**才跳过
+    # 特殊体系：仅在已有一份干净对接结果时跳过
     if not (facts.get("docking_seen") and not facts.get("hetero_atoms")
             and not facts.get("special_chemistry")):
         keep.add("special_systems")
@@ -142,7 +140,7 @@ def select_blocks(facts: Dict[str, Any]) -> Set[str]:
 
 
 def assemble(sp: str, run: Any) -> Tuple[str, Dict[str, Any]]:
-    """返回 `(本次该用的系统提示词, 审计信息)`；任何异常都退回全文。"""
+    """返回 `(本次该用的系统提示词, 注入信息)`；任何异常都退回全文。"""
     try:
         plain = unwrap_blocks(sp)     # 无论走哪条路，给模型看的都不带组装标记
         _body, found = parse_blocks(sp)
@@ -165,13 +163,13 @@ def assemble(sp: str, run: Any) -> Tuple[str, Dict[str, Any]]:
                        "docking_seen", "hetero_atoms", "special_chemistry")},
         }
         return text, info
-    except Exception as e:                     # noqa: BLE001 - 组装失败绝不能让纪律消失
+    except Exception as e:                     # noqa: BLE001 - 组装失败退回全文，纪律段不丢失
         logger.warning("条件提示词组装失败（退回全文）：%s", e)
         return unwrap_blocks(sp), {"blocks": "none", "reason": f"组装失败：{e}"}
 
 
 def record(run: Any, info: Dict[str, Any]) -> None:
-    """把本次注入情况写进 `run.data`（随 run.json 落盘，供复盘/审计）。"""
+    """把本次注入情况写进 `run.data`（随 run.json 落盘，供事后核对）。"""
     data = getattr(run, "data", None)
     if not isinstance(data, dict):
         return
@@ -182,7 +180,7 @@ def record(run: Any, info: Dict[str, Any]) -> None:
 
 
 def coordinator_prompt_middleware(base_sp: str) -> Any:
-    """构建协调 Agent 的**动态系统提示词**中间件（每次模型调用按运行事实组装）。"""
+    """构建协调 Agent 的动态系统提示词中间件（每次模型调用按运行事实组装）。"""
     from langchain.agents.middleware import dynamic_prompt
 
     from docking_agent.runtime.context import active_run

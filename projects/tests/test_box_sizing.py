@@ -1,9 +1,9 @@
-"""C 方案回归：库级配体感知下限 + 超限分子分组 + **主组盒子一致性**。
+"""C 方案回归：库级配体感知下限 + 超限分子分组 + 主组盒子一致性。
 
-为什么值得一组测试：实测（`docs/architecture.md` §15.7b 的 B0 表）表明 Vina 分数对盒子大小
-**敏感且非单调**（同一配体在 18³/22³/28³/34³ 间最大差 1.34 kcal/mol），所以「同一运行内主组所有
-分子必须共用同一个盒子」是第一原则；本文件的第 1 条用例就是它的守护。大配体不靠逐分子自适应，
-而是划进 `box_group="large"`，用**同一中心**的更大盒子单独重跑并如实标注，不跨组比较。
+`docs/architecture.md` §15.7b 的 B0 表表明，Vina 分数对盒子大小敏感且非单调
+（同一配体在 18³/22³/28³/34³ 间最大差 1.34 kcal/mol），因此同一运行内主组所有
+分子必须共用同一个盒子，第 1 条用例守护该不变量。大配体不做逐分子自适应，
+而是划进 `box_group="large"`，用同一中心的更大盒子单独重跑并如实标注，不跨组比较。
 
 全部用例离线可跑：对接用本地 Vina（不联网、不调用模型），其余用 monkeypatch 或纯函数验证。
 """
@@ -36,14 +36,14 @@ SMALL: List[Dict[str, str]] = [
     {"name": "布洛芬", "smiles": "CC(C)Cc1ccc(cc1)C(C)C(=O)O"},
     {"name": "对乙酰氨基酚", "smiles": "CC(=O)Nc1ccc(O)cc1"},
 ]
-# 更小的三分子库（跨度都 < 7 Å）：P95+10 仍小于 min_size，用来验证「小分子库不被抬高」
+# 更小的三分子库（跨度都小于 7 Å）：P95 + 10 仍小于 min_size，用来验证小分子库不被抬高
 TINY: List[Dict[str, str]] = [SMALL[0], SMALL[1], SMALL[2]]
-# 六肽 Gly6（3D 跨度约 15 Å）：跨度 + 10 Å 仍在上限 30 Å 以内 → 用来验证「库级下限抬高盒子」
+# 六肽 Gly6（3D 跨度约 15 Å）：跨度 + 10 Å 仍在上限 30 Å 以内，用来验证库级下限抬高盒子
 HEX_GLY6: Dict[str, str] = {
     "name": "六肽(Gly6)",
     "smiles": "NCC(=O)NCC(=O)NCC(=O)NCC(=O)NCC(=O)NCC(=O)O",
 }
-# 六肽 Phe-Ala-Phe-Gly-Phe-Gly（3D 跨度约 21 Å）：跨度 + 10 Å 超过 MAX(30) → 验证分组兜底
+# 六肽 Phe-Ala-Phe-Gly-Phe-Gly（3D 跨度约 21 Å）：跨度 + 10 Å 超过 MAX(30)，验证分组兜底
 HEX_FAFGFG: Dict[str, str] = {
     "name": "六肽(FAFGFG)",
     "smiles": ("C[C@H](NC(=O)[C@@H](N)Cc1ccccc1)C(=O)N[C@@H](Cc1ccccc1)C(=O)NCC(=O)"
@@ -72,7 +72,7 @@ def _span_max(smiles: str) -> float:
 
 
 def _thrombin_spec() -> Dict[str, Any]:
-    """注册表里的凝血酶受体 spec（含实验位点，盒子 22³）——用于 select_site 单测。"""
+    """注册表里的凝血酶受体 spec（含实验位点，盒子 22³），用于 select_site 单测。"""
     from docking_agent.core import resolve_receptor_specs
 
     specs, _notes = resolve_receptor_specs(THROMBIN)
@@ -82,8 +82,8 @@ def _thrombin_spec() -> Dict[str, Any]:
 def _dock(molecules: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
     """统一的真实 Vina 小批量对接（exhaustiveness=1，只验证盒子逻辑）。
 
-    显式用 `protonation="keep"`：本文件验证的是**盒子/分组**逻辑，化学形式必须固定，
-    否则默认的 pH 质子化会改变分子 3D 跨度，让分组断言随化学策略漂移（真实踩到过）。
+    显式用 `protonation="keep"`：这里验证的是盒子与分组逻辑，化学形式必须固定，
+    否则默认的 pH 质子化会改变分子 3D 跨度，分组断言随化学策略漂移。
     """
     from docking_agent.core import dock_library
 
@@ -97,7 +97,7 @@ def _dock(molecules: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
 # 1. 一致性不变量（本次改动的核心守护）
 # --------------------------------------------------------------------------- #
 def test_main_group_shares_one_box() -> None:
-    """6 个小分子的库：所有 main 组行的 box_size / box_center 必须**完全相同**。"""
+    """6 个小分子的库：所有 main 组行的 box_size / box_center 必须一致。"""
     out = _dock(SMALL + [HEX_GLY6])
     assert out["status"] == "ok"
     block = out["receptors"][0]
@@ -218,7 +218,7 @@ def test_library_span_cache_hits_without_regeneration(monkeypatch: pytest.Monkey
 
 
 # --------------------------------------------------------------------------- #
-# 5. BOX_SPAN_ENABLED=off：完全退回旧行为
+# 5. BOX_SPAN_ENABLED=off：退回旧行为
 # --------------------------------------------------------------------------- #
 def test_box_span_disabled_falls_back_to_old_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
     from docking_agent.core import docking as D
@@ -308,7 +308,7 @@ def test_merge_and_rank_keeps_main_only() -> None:
         {"name": "小", "smiles": "CCO", "affinity_kcal_mol": -3.0, "box_group": "main"},
         {"name": "大", "smiles": "CCCCCCCCCCCCCCCCCCCC", "affinity_kcal_mol": -9.0,
          "box_group": "large"},
-        {"name": "旧数据", "smiles": "CC", "affinity_kcal_mol": -2.0},  # 无 box_group → 视为 main
+        {"name": "旧数据", "smiles": "CC", "affinity_kcal_mol": -2.0},  # 无 box_group 时按 main 处理
     ]
     ranked = merge_and_rank([], rows, {})
     assert [r["name"] for r in ranked] == ["小", "旧数据"]
@@ -327,8 +327,8 @@ def test_split_box_groups_helper() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 9. 「口袋 Agent 提交的盒子」= 工具产物 → 仍受库级下限约束；用户显式盒子不受影响
-#    （注意：120 个农药大分子库被塞进口袋 Agent 给的 22³ 主盒）
+# 9. 口袋 Agent 提交的盒子属于工具产物，仍受库级下限约束；调用方显式指定的盒子不受影响，
+#    后者对应 120 个农药大分子库被放入口袋 Agent 给出的 22³ 主盒的情形
 # --------------------------------------------------------------------------- #
 def test_pocket_agent_box_is_raised_by_library_floor() -> None:
     """中心用口袋 Agent 的，尺寸按库级下限抬高（只抬不缩），并留下可追溯的 library_floor。"""
@@ -351,7 +351,7 @@ def test_pocket_agent_box_is_raised_by_library_floor() -> None:
 
 
 def test_user_specified_explicit_box_is_never_touched() -> None:
-    """对照（不变量）：用户显式给的盒子（无 chosen_by）一律不抬高、不加库级下限。"""
+    """对照（不变量）：调用方显式指定的盒子（无 chosen_by）不抬高、不加库级下限。"""
     user_site = {"center": [31.5, 13.74, 24.36], "size": [22.0, 22.0, 22.0],
                  "source": "用户指定"}
     out = _dock(SMALL + [HEX_GLY6], site=user_site)
@@ -363,7 +363,7 @@ def test_user_specified_explicit_box_is_never_touched() -> None:
 
 def test_pocket_agent_box_floor_disabled_keeps_tool_size(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    """开关关闭时完全退回旧行为：工具盒子原样使用（可追溯地留一条说明）。"""
+    """开关关闭时退回旧行为：工具盒子原样使用，并留一条可追溯的说明。"""
     monkeypatch.setenv("BOX_SPAN_ENABLED", "off")
     pinned = {"center": [31.5, 13.74, 24.36], "size": [22.0, 22.0, 22.0],
               "source": "口袋分析 Agent 选定", "chosen_by": "pocket_agent"}
@@ -376,10 +376,10 @@ def test_pocket_agent_box_floor_disabled_keeps_tool_size(
 
 
 # --------------------------------------------------------------------------- #
-# 10. 库级跨度抽样的并发路径：结果必须与串行**逐位一致**（否则盒子会随机器核数漂移）
+# 10. 库级跨度抽样的并发路径：结果必须与串行逐位一致，否则盒子会随机器核数漂移
 # --------------------------------------------------------------------------- #
 def test_parallel_span_sampling_matches_serial(monkeypatch: pytest.MonkeyPatch) -> None:
-    """大库走进程池、小库走串行：两条路径的 P95/下限必须完全相同。"""
+    """大库走进程池、小库走串行：两条路径的 P95 与下限必须一致。"""
     from docking_agent.core import pockets as P
 
     library = [{"name": f"M{n}", "smiles": "C" * n + "O"} for n in range(40, 100, 3)]
@@ -395,7 +395,7 @@ def test_parallel_span_sampling_matches_serial(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_parallel_span_failure_falls_back_to_serial(monkeypatch: pytest.MonkeyPatch) -> None:
-    """进程池不可用时必须静默退回串行并给出同样的结果（绝不让整库失败）。"""
+    """进程池不可用时静默退回串行并给出同样的结果，不使整库失败。"""
     from docking_agent.core import pockets as P
 
     class _BrokenPool:
@@ -426,7 +426,7 @@ def test_small_library_stays_serial(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 11. 准备阶段（定盒/库级下限抽样）必须给界面反馈，不能长时间静默
+# 11. 准备阶段（定盒与库级下限抽样）必须向界面播报进度，不能长时间静默
 # --------------------------------------------------------------------------- #
 def test_note_cb_reports_prep_phase_before_docking(monkeypatch: pytest.MonkeyPatch) -> None:
     """库级下限抽样发生在对接之前：这段必须先播报，否则界面看起来卡死。"""
@@ -458,7 +458,7 @@ def test_note_cb_absent_is_silent_and_safe() -> None:
 
 
 def test_note_cb_exception_never_breaks_docking(monkeypatch: pytest.MonkeyPatch) -> None:
-    """回调抛异常（界面已关/run 已取消）绝不能影响对接本身。"""
+    """回调抛异常（界面已关或 run 已取消）不影响对接本身。"""
     from docking_agent.core import docking as D
 
     def boom(_message: str) -> None:

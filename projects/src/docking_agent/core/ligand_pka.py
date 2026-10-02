@@ -1,21 +1,21 @@
-"""配体质子化引擎：优先用**专业 pKa 软件**（Dimorphite-DL），不可用时回退内置规则表。
+"""配体质子化引擎：优先使用 Dimorphite-DL，不可用时回退内置规则表。
 
-为什么单独一层：受体侧已经用专业工具（`pdb2pqr` + PROPKA，见 `core/receptor_ph.py`），
-而配体侧原先是**内置官能团 pKa 规则表**（`core/protonation.py`，明确标注「近似，不是 pKa 预测」）。
-本模块把「用哪个引擎」做成可探测、可溯源、可回退的一层：
+受体侧使用 `pdb2pqr` 与 PROPKA（见 `core/receptor_ph.py`），配体侧原先使用内置官能团
+pKa 规则表（`core/protonation.py`，标注为近似而非 pKa 预测）。本模块封装引擎选择，
+提供探测、溯源与回退：
 
-    auto（默认）  → 装了专业引擎就用它；否则回退内置规则表（并在报告里如实说明）
-    dimorphite    → 强制用 Dimorphite-DL（不可用即回退）
-    rules         → 强制内置规则表（复现旧口径 / 离线兜底）
+    auto（默认）  装有 Dimorphite-DL 时使用该引擎，否则回退内置规则表，并在报告中说明
+    dimorphite    指定使用 Dimorphite-DL，不可用时回退
+    rules         指定使用内置规则表，复现旧口径或离线兜底
 
 环境变量：
     LIGAND_PKA_ENGINE      auto | dimorphite | rules（默认 auto）
     LIGAND_PKA_WINDOW      靶 pH ± 该值内的微观态都参与选择（默认 0.5；0 = 只取该 pH）
-    LIGAND_PKA_PRECISION   Dimorphite 的 pKa 精度因子（默认 0.1：越小越少「临界态」）
+    LIGAND_PKA_PRECISION   Dimorphite 的 pKa 精度因子（默认 0.1：越小则临界态越少）
 
-**安装说明（重要）**：Dimorphite-DL 2.0.2 的元数据把 RDKit 钉在 `rdkit<2026`，
-而本项目需要 `rdkit>=2026.3.6`。实测 2.0.2 在 RDKit 2026.3.6 上功能正常，
-因此安装时用 `--no-deps`（只补 loguru 依赖），**避免把 RDKit 降级**：
+安装要点：Dimorphite-DL 2.0.2 的元数据把 RDKit 钉在 `rdkit<2026`，而本项目需要
+`rdkit>=2026.3.6`。2.0.2 在 RDKit 2026.3.6 上功能正常，因此安装时用 `--no-deps`
+（只补 loguru 依赖），以避免把 RDKit 降级：
 
     uv pip install loguru
     uv pip install --no-deps dimorphite-dl
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 ENGINES = ("auto", "dimorphite", "rules")
 #: pH 窗口半宽默认值
 DEFAULT_WINDOW = 0.5
-#: Dimorphite 的 pKa 精度因子默认值（0.1 = 只把真正临界的位点列为多态）
+#: Dimorphite 的 pKa 精度因子默认值（0.1 = 只把临界位点列为多态）
 DEFAULT_PRECISION = 0.1
 #: 单分子最多枚举的微观态数（防组合爆炸）
 MAX_VARIANTS = 32
@@ -71,7 +71,7 @@ def dimorphite_engine() -> Optional[Dict[str, Any]]:
     """Dimorphite-DL 可用时返回引擎信息，否则 None。"""
     try:
         from dimorphite_dl import protonate_smiles  # noqa: F401
-    except Exception as e:  # noqa: BLE001 - 未安装/依赖冲突都按「不可用」处理
+    except Exception as e:  # noqa: BLE001 - 未安装或依赖冲突时按不可用处理
         logger.debug("Dimorphite-DL 不可用：%s", e)
         return None
     version = ""
@@ -84,7 +84,7 @@ def dimorphite_engine() -> Optional[Dict[str, Any]]:
 
 
 def engine_status() -> Dict[str, Any]:
-    """给 doctor / 设置页 / 报告用的引擎状态（含安装提示）。"""
+    """供 doctor、设置页与报告使用的引擎状态，含安装提示。"""
     info = dimorphite_engine()
     if info:
         return {**info, "available": True, "install": "", "active": configured_engine() != "rules"}
@@ -103,12 +103,12 @@ def _variant_row(smiles: str) -> Optional[Dict[str, Any]]:
 
 
 def pick_variant(variants: Sequence[str]) -> Dict[str, Any]:
-    """多微观态里选一个用于对接：|净电荷| 最小 → 带电原子最少 → 字典序（可复现）。
+    """从多个微观态中选一个用于对接，顺序为净电荷绝对值最小、带电原子最少、字典序，结果可复现。
 
-    为什么这样选：Dimorphite 只给「窗口内可能的微观态」，**不给布居数**；对接只能取一个形式。
-    在它已经把 pKa 明显偏离 pH 的位点固定之后（`precision` 控制），剩下的多态都是**临界态**，
-    此时取净电荷最小的形式是 docking 界的常规取法，且完全可复现。选择规则会写进溯源与报告，
-    用户可据此判断是否需要自行提供已准备好的质子化态（策略 `keep`）。
+    选择依据：Dimorphite 给出窗口内可能的微观态，不给出布居数，而对接只能取一种形式。
+    在它已把 pKa 明显偏离 pH 的位点固定之后（由 `precision` 控制），剩余多态均为临界态，
+    此时取净电荷最小的形式是 docking 领域的常规取法，且可复现。选择规则写入溯源与报告，
+    调用方可据此判断是否需要自行提供已准备好的质子化态（策略 `keep`）。
     """
     rows: List[Dict[str, Any]] = []
     for smiles in variants or []:
@@ -124,11 +124,11 @@ def pick_variant(variants: Sequence[str]) -> Dict[str, Any]:
 
 
 def protonate(smiles: str, ph: float, *, engine: Optional[str] = None) -> Dict[str, Any]:
-    """用专业引擎按目标 pH 处理配体，返回单一位点形式的 SMILES。
+    """用 Dimorphite-DL 按目标 pH 处理配体，返回单一位点形式的 SMILES。
 
     返回字典：
-      ok=True  → `smiles` / `charge` / `engine` / `version` / `variants` / `rule` / `window`
-      ok=False → `reason`（调用方据此回退内置规则表；`install` 给出补齐方法）
+      ok=True  含 `smiles` / `charge` / `engine` / `version` / `variants` / `rule` / `window`
+      ok=False 含 `reason`，调用方据此回退内置规则表；`install` 给出补齐方法
     """
     chosen = configured_engine(engine)
     if chosen == "rules":
@@ -150,7 +150,7 @@ def protonate(smiles: str, ph: float, *, engine: Optional[str] = None) -> Dict[s
         raw_variants = protonate_smiles(text, ph_min=max(0.0, ph - window),
                                         ph_max=min(14.0, ph + window),
                                         precision=precision, max_variants=MAX_VARIANTS)
-    except Exception as e:  # noqa: BLE001 - 引擎异常一律回退，不让配体准备失败
+    except Exception as e:  # noqa: BLE001 - 引擎异常统一回退，配体准备不再继续失败
         logger.warning("Dimorphite-DL 处理失败（%s: %s），回退内置规则表", type(e).__name__, e)
         return {"ok": False, "reason": f"引擎异常（{type(e).__name__}: {e}）",
                 "install": INSTALL_HINT}

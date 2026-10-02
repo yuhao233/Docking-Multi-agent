@@ -1,7 +1,7 @@
-"""报告可展示字段的**唯一权威清单**（工具白名单与报告渲染共用一份，避免两处漂移）。
+"""报告可展示字段的单一权威清单：工具白名单与报告渲染共用一份，避免两处定义漂移。
 
-语义键 → 中文列名。协调 Agent 通过 `customize_report` 只能从这份清单里挑，
-报告渲染时也按同一份清单取列名与取数，因此「Agent 说要展示 ID」与实际列名不会对不上。
+语义键与中文列名一一对应。协调 Agent 通过 `customize_report` 只能从这份清单内选取，
+报告渲染按同一份清单取列名与取数，因此「Agent 要求展示 ID」与实际列名保持一致。
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ REPORT_FIELD_LABELS: Dict[str, str] = {
     "source_file": "来源文件",
 }
 
-#: 报告默认就展示的列（排行表已有的列）——额外列在此基础上追加，避免重复。
+#: 报告默认展示的列（排行表已有的列）；额外列在此基础上追加，避免重复。
 REPORT_DEFAULT_COLUMNS: tuple = (
     "rank", "name", "composite", "grade", "affinity_kcal_mol", "ligand_efficiency",
 )

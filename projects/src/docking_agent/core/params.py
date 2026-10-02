@@ -1,29 +1,29 @@
-"""对接参数的自动规划（运行级 / 漏斗阶段级，**绝不逐分子**）。
+"""对接参数的自动规划（运行级 / 漏斗阶段级，不逐分子）。
 
-## 为什么必须自动规划、又必须"阶段一致"
+## 规划的必要性与"阶段一致"
 
 对接耗时 ≈ 盒子体积 × exhaustiveness，而 `exhaustiveness` 直接决定采样是否充分。
-给小分子配高强度、给大分子配低强度看似"省时间"，实际会把**参数效应混进排序**：
-实测（`docs/architecture.md` §15.7b B0）同一配体仅换盒子大小就能差 **1.34 kcal/mol**，
-采样强度的影响更大。因此本项目的第一原则是：
+给小分子配高强度、给大分子配低强度看似"省时间"，实际会把参数效应混进排序：
+`docs/architecture.md` §15.7b B0 记录，同一配体仅换盒子大小就能差 1.34 kcal/mol，
+采样强度的影响更大。因此本模块遵循的第一原则是：
 
-    **参数是运行级 / 漏斗阶段级的：同一阶段（pass）内所有分子的 exhaustiveness 必须完全一致。**
+    参数是运行级 / 漏斗阶段级的：同一阶段（pass）内所有分子的 exhaustiveness 必须一致。
 
 本模块只回答"这一次运行该用什么参数"，输出一份可追溯的 `param_plan`：
-每个数值都对应 `decisions` 里的一条可读理由；用户显式指定的参数一律不改（`source="user"`）。
+每个数值都对应 `decisions` 里的一条可读理由；调用方显式指定的参数一律不改（`source="user"`）。
 
 ## 规划规则（精度优先）
 
 | 规则 | 公式 |
 | --- | --- |
-| 基准强度 | `screening` → 16（与表单默认一致）；`binding_only`/姿态分析 → 16；`properties_only` → 不规划 |
+| 基准强度 | `screening` 取 16（与表单默认一致）；`binding_only`/姿态分析取 16；`properties_only` 不规划 |
 | 柔性系数 | `f_rot = clamp(P90(库内可旋转键) / 5, 0.75, 2.5)`（2D 描述符；大库抽样最重的 N 个） |
 | 盒体积系数 | `f_box = clamp((V_box / 22³)^(1/3), 1.0, 2.0)`（保持单位体积采样密度） |
 | 搜索强度 | `exhaustiveness = clamp(round(base × f_rot × f_box), 2, 32)` |
-| 两阶段漏斗 | `N ≥ AGENT_FUNNEL_MIN(500)`：粗筛 `max(1, round(exh/4))` 全库 + 精算 `exh` 前 `refine_top_n` |
+| 两阶段漏斗 | `N ≥ AGENT_FUNNEL_MIN(500)`：粗筛 `max(1, round(exh/4))` 全库，精算 `exh` 前 `refine_top_n` |
 | pilot 护栏 | `N ≥ 50`：最贵的 3 个分子以 `exhaustiveness=1` 真实试跑，外推总耗时；超预算按精度优先降级 |
 
-pilot 只是**测量**：不写位姿、不进 ranking/黑板，失败就退回静态规划（只 warning）。
+pilot 只用于测量：不写位姿、不进 ranking/黑板，失败时退回静态规划并记录 warning。
 
 阈值全部来自 `settings.py`/环境变量（`AUTO_PARAM_*`），本模块不写死魔法数。
 """
@@ -45,11 +45,11 @@ from docking_agent.paths import cache_dir
 
 logger = logging.getLogger(__name__)
 
-#: 对接搜索强度默认值 —— **全仓唯一来源**。
+#: 对接搜索强度默认值，全仓唯一来源。
 #: 与设置页 `docking.exhaustiveness`（default=16）、工具签名 `molecular_docking(exhaustiveness=16)`、
 #: 自动规划基准 `AUTO_PARAM_BASE_SCREENING`（default=16）一致。
-#: 历史缺陷：`core/docking.py` 里另有一个字面量 6，于是「直接调 core」的路径默认值与
-#: 产品默认值不同（同一件事两个默认值）；现在 core 从这里导入。
+#: `core/docking.py` 此前另有字面量 6，于是「直接调 core」的路径默认值与产品默认值
+#: 不一致（同一件事两个默认值）；core 现在从本模块导入该常量。
 DEFAULT_EXHAUSTIVENESS = 16
 
 # 规划关闭/不可用时的回退值：与默认值同源，避免出现第二个数字
@@ -104,7 +104,7 @@ def _rotatable_bonds(smiles: str) -> Optional[int]:
 
 
 def _stats_defaults(count: int) -> Dict[str, Any]:
-    """统计失败时的保守默认：p90 = 柔性基准值 → 柔性系数 1.0。"""
+    """统计失败时的保守默认：p90 取柔性基准值，柔性系数为 1.0。"""
     return {"count": int(count), "p90_rotatable": env_float("AUTO_PARAM_FLEX_DIVISOR", 5.0),
             "heaviest": [], "cached": False, "degraded": True,
             "sample_n": 0, "library_n": 0,
@@ -127,7 +127,7 @@ def _stats_cache_path(digest: str) -> Any:
 
 def _compute_stats(library: Sequence[str], k: int, pool: int,
                    name_by_smiles: Dict[str, str]) -> Dict[str, Any]:
-    """真实计算：重原子数（全库，便宜）→ 前 k 个最重的算可旋转键 → P90 + 最贵分子。"""
+    """真实计算：先算全库重原子数（便宜），再为前 k 个最重的分子算可旋转键，输出 P90 与最贵分子。"""
     heavy = {smi: _heavy_atom_count(smi) for smi in library}
     ranked = sorted(library, key=lambda s: (-heavy.get(s, 0), s))[:k]
     rots: Dict[str, int] = {}
@@ -155,15 +155,15 @@ def _compute_stats(library: Sequence[str], k: int, pool: int,
 
 def library_stats(molecules: Sequence[Dict[str, Any]], *,
                   use_cache: bool = True) -> Dict[str, Any]:
-    """库级 2D 统计：`{count, p90_rotatable, heaviest}`（外加抽样/缓存元信息）。
+    """库级 2D 统计：`{count, p90_rotatable, heaviest}`（外加抽样与缓存元信息）。
 
-    - **成本控制**：不为全库算可旋转键。先用最便宜的重原子数降序取前
+    - 成本控制：不为全库算可旋转键。先用最便宜的重原子数降序取前
       `AUTO_PARAM_STATS_SAMPLE`(500) 个，只为这些算可旋转键（任务规则：大库可抽样最重的 500 个）。
-    - **缓存**：按库内容 + 抽样规模的 sha1 缓存到 `cache_dir()/param_stats/`，同一库第二次调用直接命中。
-    - **降级**：任何解析/描述符失败都返回保守默认（柔性系数 = 1.0）并 `logger.warning`，
-      绝不让规划因为统计失败而中断运行。
+    - 缓存：按库内容与抽样规模的 sha1 缓存到 `cache_dir()/param_stats/`，同一库第二次调用直接命中。
+    - 降级：解析或描述符失败都返回保守默认（柔性系数 = 1.0）并 `logger.warning`，
+      规划不因统计失败而中断运行。
 
-    `heaviest` 是**最贵的 N 个分子**（`cost = 可旋转键×4 + 重原子`，即 `_ligand_cost` 口径），
+    `heaviest` 是最贵的 N 个分子（`cost = 可旋转键×4 + 重原子`，即 `_ligand_cost` 口径），
     供 pilot 试跑选取。
     """
     molecules = list(molecules or [])
@@ -240,7 +240,7 @@ def _coarse_of(exhaustiveness: int) -> int:
 def _largest_exh_within_budget(mean_sec: float, library_n: int, budget: float, *,
                                floor: int, ceiling: int, refine_top_n: int,
                                two_stage: bool) -> int:
-    """在 `[floor, ceiling]` 里取**最大**的、外推仍在预算内的 exhaustiveness。"""
+    """在 `[floor, ceiling]` 里取最大的、外推仍在预算内的 exhaustiveness。"""
     for candidate in range(int(ceiling), int(floor) - 1, -1):
         coarse = _coarse_of(candidate) if two_stage else None
         eta = _estimate_eta(mean_sec, library_n, candidate, coarse, refine_top_n, two_stage)
@@ -253,23 +253,20 @@ def _largest_exh_within_budget(mean_sec: float, library_n: int, budget: float, *
 # 主入口：纯函数 + 可选 pilot 回调
 # --------------------------------------------------------------------------- #
 
-#: 「未指定」哨兵：工具签名默认值必须用 0 而不是 16。
-#:
-#: 历史缺陷（静默降级）：`run_docking(exhaustiveness=16)` /
-#: `molecular_docking(exhaustiveness=16)` 无法区分「用户显式设了 16」与「没人给值」——
-#: 而 `plan_docking_params` 算出来的是 `clamp(round(16×柔性系数×盒体积系数), 2, 32)`，
-#: 常与 16 不同。协调层一旦忘了把规划值传下来（措辞/渲染任一环失效），运行就会**静默退回**
-#: 16 并偏低估采样强度，且报告里看不出发生过降级。
-#: 现在 0 = 未指定 → 用运行级 `param_plan`（见 `resolve_exhaustiveness`）。
+#: 未指定哨兵：工具签名默认值取 0，不取 16。
+#: `plan_docking_params` 的结果是 `clamp(round(16×柔性系数×盒体积系数), 2, 32)`，与 16 通常不等；
+#: 若默认值写成 16，就无法区分「调用方显式指定 16」与「未传值」，规划值一旦未传到工具，
+#: 采样强度会降到 16 且结果中无法区分。
+#: 0 = 未指定时改用运行级 `param_plan`（见 `resolve_exhaustiveness`）。
 UNSET_EXHAUSTIVENESS = 0
 
 
 def resolve_exhaustiveness(explicit: Any = UNSET_EXHAUSTIVENESS,
                            plan: Optional[Dict[str, Any]] = None) -> Optional[int]:
-    """把工具参数解析成**本次运行真正要用的**搜索强度。
+    """把工具参数解析成本次运行真正要用的搜索强度。
 
     优先级：显式值（>0） > 运行级 `param_plan["exhaustiveness"]` > `None`。
-    返回 `None` 表示「本次没有规划值」，由最下游按设置页默认执行 —— 这里**不写第二个默认数字**
+    返回 `None` 表示本次没有规划值，由最下游按设置页默认执行；本函数不写第二个默认数字
     （`DEFAULT_EXHAUSTIVENESS` 是全仓唯一来源）。
     """
     try:
@@ -297,18 +294,18 @@ def system_default_engine() -> str:
 
         spec = SPEC_BY_PATH.get("docking.engine")
         value = str(runtime_effective(spec) or "").strip().lower() if spec is not None else ""
-    except Exception:  # noqa: BLE001 - 设置不可读时按内置默认执行，不能因此让对接失败
+    except Exception:  # noqa: BLE001 - 设置不可读时按内置默认执行，不因此中断对接
         value = ""
     return value if value in ENGINE_CHOICES else "auto"
 
 
 def resolve_engine(explicit: Any = "", request: Optional[Dict[str, Any]] = None) -> str:
-    """把「工具参数 / 运行请求 / 设置页默认」解析成**本次真正要用的**对接引擎。
+    """把「工具参数 / 运行请求 / 设置页默认」解析成本次真正要用的对接引擎。
 
-    优先级：工具参数（非空） > 运行请求里的 `engine`（表单/高级设置） > 设置页默认 > `auto`。
-    参数默认留空（而不是 `"auto"`）才能区分「模型没给」与「模型明确要 auto」——
-    与 `resolve_exhaustiveness` 同一个口径：留空就跟随系统默认，不让工具层的硬编码默认
-    悄悄盖掉用户在设置页做的选择。
+    优先级：工具参数（非空） > 运行请求里的 `engine`（表单或高级设置） > 设置页默认 > `auto`。
+    参数默认留空（而不是 `"auto"`）才能区分「模型没给」与「模型明确要 auto」，
+    与 `resolve_exhaustiveness` 同一个口径：留空就跟随系统默认，工具层的硬编码默认
+    不会盖掉调用方在设置页做的选择。
     """
     for candidate in (explicit, (request or {}).get("engine")):
         value = str(candidate or "").strip().lower()
@@ -327,11 +324,11 @@ def plan_docking_params(*, task_type: str = "screening",
 
     - `molecules`：候选分子（含 `smiles`），用于库规模与柔性统计；
     - `box_size`：主组对接盒边长（Å）；未知时盒体积系数取 1.0 并如实记录；
-    - `user_params`：用户显式指定的参数（`exhaustiveness` / `n_poses`）；
-      **一旦给出就冻结，自动规划不改写**（`source="user"`）；
+    - `user_params`：调用方显式指定的参数（`exhaustiveness` / `n_poses`）；
+      一旦给出即冻结，自动规划不改写（`source="user"`）；
     - `budget_sec`：预算秒数；None 时按 `AUTO_PARAM_BUDGET_RATIO × RUN_TIMEOUT_SECONDS` 计算；
     - `pilot`：可选回调 `fn(candidates) -> 单分子秒数`（exhaustiveness=1）。
-      仅用于**测量**；抛异常/返回 None 一律退回静态规划（不抛、只 warning）。
+      只用于测量；抛异常或返回 None 时退回静态规划（不抛、只 warning）。
     """
     task_type = str(task_type or "screening").strip().lower() or "screening"
     molecules = list(molecules or [])
@@ -377,8 +374,8 @@ def plan_docking_params(*, task_type: str = "screening",
             "warnings": warnings,
         }
 
-    # 引擎：用户参数 > 设置页「对接引擎（默认）」。规划表里写的是**本次要用的引擎**，
-    # 不能固定成 PLAN_ENGINE，否则用户在设置页选了 external/autodock 时报告与执行不一致。
+    # 引擎：调用方参数 > 设置页「对接引擎（默认）」。规划表里写的是本次要用的引擎，
+    # 不固定成 PLAN_ENGINE，否则调用方在设置页选了 external/autodock 时报告与执行不一致。
     planned_engine = resolve_engine((user_params or {}).get("engine"))
     if planned_engine != PLAN_ENGINE:
         decisions.append(f"对接引擎 = {planned_engine}（来自用户参数或设置页「对接引擎（默认）」；"
@@ -428,7 +425,7 @@ def plan_docking_params(*, task_type: str = "screening",
     decisions.append(f"exhaustiveness = clamp(round({base} × {flex_factor:.2f} × "
                      f"{box_factor:.2f}), {exh_min}, {exh_max}) = {planned_exh}")
 
-    # ---- 用户显式参数：冻结，不自动改 ----
+    # ---- 调用方显式参数：冻结，不自动改 ----
     source = "auto"
     if user_exh is not None:
         source = "user"
@@ -533,7 +530,7 @@ def plan_docking_params(*, task_type: str = "screening",
                                  f"（{eta_large:.0f} s > {budget:.0f} s）：精算头部维持 "
                                  f"{refine_top_n}")
 
-        # 超预算 → 精度优先的降级顺序：① 先降精算头部（下限 100）② 再降强度（不低于 base/2）
+        # 超预算时的精度优先降级顺序：① 先降精算头部（下限 100），② 再降强度（不低于 base/2）
         if eta > budget:
             decisions.append(f"pilot 预估 {eta:.0f} s > 预算 {budget:.0f} s → 触发精度优先降级")
             refine_min = max(1, min(5000, env_int("AUTO_PARAM_REFINE_TOP_MIN", 100)))

@@ -1,17 +1,17 @@
-"""名称归一化 + UniProt 多策略检索打分（受体自动解析的「大脑」）。
+"""名称归一化与 UniProt 多策略检索打分（受体自动解析的名称解析层）。
 
-## 为什么单独一层
+## 层次划分的原因
 
-用户点名受体时说的是**口语化名称**（「植物去甲基化酶ROS1」「代森猛锌」），
-而在线数据库要的是 accession/基因名/英文蛋白名。旧实现把用户输入直接当 accession
-拼进 URL，导致 `HTTP 400` 或「解析不到 → 立刻问用户」。本模块把这段「翻译」独立出来，
-做成**纯逻辑 + 可注入 HTTP**，因此既能真实联网，也能零网络单测。
+调用方点名受体时给出的是口语化名称（「植物去甲基化酶ROS1」「代森猛锌」），
+而在线数据库要的是 accession/基因名/英文蛋白名。此前的实现把调用方输入直接当 accession
+拼进 URL，导致 `HTTP 400` 或「解析不到后立刻提问」。本模块把这段名称转换独立出来，
+做成纯逻辑加可注入 HTTP，因此既能真实联网，也能零网络单测。
 
-职责边界（重要）：
-  * 本模块**不下载结构**（RCSB/AlphaFold 回退在 `tools/online.py`）；
-  * 本模块**不接入受理层**（受理层保持零网络、确定性）；
-  * 检索命中多个**同样合理但物种不同**的候选时返回 ``status="ambiguous"``，
-    并附候选清单，由上层向用户提问，绝不替用户猜一个。
+职责边界：
+  * 本模块不下载结构（RCSB/AlphaFold 回退在 `tools/online.py`）；
+  * 本模块不接入受理层（受理层保持零网络、确定性）；
+  * 检索命中多个同样合理但物种不同的候选时返回 ``status="ambiguous"``，
+    并附候选清单，由上层向使用者提问，不替使用者选定其中一个。
 
 ## 打分规则（可单测，改动必须同步更新测试）
 
@@ -22,13 +22,13 @@
 | 同为植物 | +18 | 线索是植物但候选是另一种植物（如线索「植物」、候选水稻） |
 | 物种不符 | −25 | 线索是植物却命中人源/鼠源等，压下去 |
 | 蛋白名含映射家族词 | +20 | 如 demethylase / DNA glycosylase / kinase |
-| 蛋白名不含家族词 | −10 | 只在用户给了家族词时扣 |
+| 蛋白名不含家族词 | −10 | 只在调用方给了家族词时扣 |
 | 基因名精确匹配 | +15 | gene_names 里逐字等于线索基因（ROS1 ≠ ROS1A） |
 | 注释完整度 | +3×3 | 蛋白名/基因名/物种三项各 +3 |
 
 ## 歧义判定
 
-取分数最高的两个候选：若 `second >= best - 8` 且 `best >= 45` 且两者**物种不同**，
+取分数最高的两个候选：若 `second >= best - 8` 且 `best >= 45` 且两者物种不同，
 返回 ``ambiguous``。物种相同则不算歧义（例如同一物种里的同家族蛋白，由基因名区分）。
 """
 from __future__ import annotations
@@ -62,8 +62,8 @@ MIN_ACCEPT_SCORE = 25.0
 # 单一候选但置信度不足的分数线（未 reviewed / 物种不符 / 名称部分匹配都会被判低置信）
 LOW_CONFIDENCE_SCORE = 55.0
 
-# 候选排序时的物种偏好（只影响**展示顺序**，不影响「选谁」——选谁由用户决定）：
-# 常见生物医学模式物种排在前面，让 choices 的头几个最可能是用户想要的。
+# 候选排序时的物种偏好（只影响展示顺序，不影响「选谁」，选谁由调用方决定）：
+# 常见生物医学模式物种排在前面，choices 的头几个即最可能是调用方想要的。
 _SPECIES_RANK = {9606: 0, 10090: 1, 10116: 2, 3702: 3}
 
 # accession（6/10 位）与 entry ID（EGFR_HUMAN）
@@ -71,7 +71,7 @@ _ENTRY_ID_RE = re.compile(r"^[A-Z0-9]{1,10}_[A-Z0-9]{1,10}$")
 _UNIPROT_ACCESSION_RE = re.compile(
     r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$",
     re.IGNORECASE)
-# 基因/拉丁 token：ROS1 / EGFR / TP53 —— 要求首字母大写，避免把普通小写英文当基因
+# 基因/拉丁 token：ROS1 / EGFR / TP53，要求首字母大写，避免把普通小写英文当基因
 _GENE_RE = re.compile(r"[A-Z][A-Z0-9]{1,9}")
 _GENE_STOPWORDS = {"DNA", "RNA", "AND", "OR", "THE", "PDB", "ATP", "GTP", "NAD", "FAD",
                    "SMILES", "CID", "INCHI", "ID", "AP", "EM", "PCR", "BLAST", "API",
@@ -85,7 +85,7 @@ class ResolveError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # 名称归一化
 # --------------------------------------------------------------------------- #
-# 物种线索 → UniProt 物种。顺序即优先级（先具体后泛化）：
+# 物种线索与 UniProt 物种的对应。顺序即优先级（先具体后泛化）：
 # 「拟南芥」先于「植物」，避免把具体物种降级成泛化线索。
 SPECIES_HINTS: Tuple[Dict[str, Any], ...] = (
     {"keys": ("拟南芥", "arabidopsis thaliana", "arabidopsis", "thaliana"),
@@ -122,7 +122,7 @@ _PLANT_ORGANISM_KEYS = ("arabidopsis", "oryza", "zea ", "zea mays", "glycine", "
                         "phaseolus", "gossypium", "cucumis", "citrus", "prunus", "malus",
                         "spinacia", "daucus", "helianthus", "ricinus", "manihot", "lotus")
 
-# 中文家族词 → 英文检索词（顺序即匹配优先级：长词先匹配并「吃掉」已匹配片段，
+# 中文家族词与英文检索词的对应（顺序即匹配优先级：长词先匹配并「吃掉」已匹配片段，
 # 避免「去甲基化酶」里的「甲基化」被误判成 methylation）。
 FAMILY_TERMS_ZH: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("去甲基化酶", ("demethylase", "DNA glycosylase", "glycosylase", "demethylation")),
@@ -148,7 +148,7 @@ FAMILY_TERMS_ZH: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("酶", ("enzyme",)),
 )
 
-# 英文家族词（用户直接写英文时也能被识别）
+# 英文家族词（调用方直接写英文时也能被识别）
 FAMILY_TERMS_EN: Tuple[str, ...] = (
     "demethylase", "glycosylase", "methyltransferase", "methylase", "kinase",
     "phosphatase", "protease", "peptidase", "polymerase", "ligase", "hydrolase",
@@ -156,13 +156,13 @@ FAMILY_TERMS_EN: Tuple[str, ...] = (
     "receptor", "protein", "enzyme",
 )
 
-# 过于宽泛的家族词：**保留在映射表里**（名称归一化要认识「受体/蛋白/酶」），
-# 但**不用它构造 UniProt 检索式** —— `(receptor) AND reviewed:true` 会命中成百上千个
+# 过于宽泛的家族词：保留在映射表里（名称归一化要认识「受体/蛋白/酶」），
+# 但不用于构造 UniProt 检索式，`(receptor) AND reviewed:true` 会命中成百上千个
 # 无关受体，把「查不到的假受体」变成一堆噪声候选。检索式只用具体家族词（demethylase…）。
 GENERIC_FAMILY_TERMS = {"protein", "enzyme", "receptor", "channel"}
 
-# 中文常见小分子名 → PubChem 英文名（PubChem 的 name 检索不认中文）。
-# 只做「翻译」，绝不臆造 SMILES；命不中就走现有分子侧提问规则。
+# 中文常见小分子名与 PubChem 英文名的对应（PubChem 的 name 检索不认中文）。
+# 只做名称转换，不生成 SMILES；命不中就走现有分子侧提问规则。
 LIGAND_ALIASES_ZH: Dict[str, str] = {
     "代森锰锌": "Mancozeb", "代森猛锌": "Mancozeb", "代森锌": "Zineb",
     "代森锰": "Maneb", "代森联": "Metiram", "丙森锌": "Propineb",
@@ -177,7 +177,7 @@ def _norm_key(text: str) -> str:
 
 
 def normalize_molecule_name(text: str) -> Tuple[str, str]:
-    """中文小分子名 → PubChem 英文名；返回 (检索名, 命中的别名)；未命中原样返回。"""
+    """中文小分子名转 PubChem 英文名；返回 (检索名, 命中的别名)；未命中原样返回。"""
     raw = str(text or "").strip()
     key = _norm_key(raw)
     for zh, en in LIGAND_ALIASES_ZH.items():
@@ -210,7 +210,7 @@ def extract_species(text: str) -> Optional[Dict[str, Any]]:
 
 
 def map_family_terms(text: str) -> List[str]:
-    """中文/英文家族词 → 英文检索词（长词优先，已匹配片段不再参与后续匹配）。"""
+    """中文或英文家族词转英文检索词（长词优先，已匹配片段不再参与后续匹配）。"""
     compact = re.sub(r"\d+", "", str(text or ""))
     remaining = compact
     terms: List[str] = []
@@ -226,7 +226,7 @@ def map_family_terms(text: str) -> List[str]:
 
 
 def normalize_query(text: str) -> Dict[str, Any]:
-    """把用户口语化点名归一化成检索线索（基因/物种/家族词/accession）。"""
+    """把调用方口语化点名归一化成检索线索（基因/物种/家族词/accession）。"""
     raw = str(text or "").strip()
     stripped = raw.strip().strip('"').strip("'")
     upper = stripped.upper()
@@ -269,7 +269,7 @@ def _default_fetch_json(url: str, timeout: int = _TIMEOUT) -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# entry → 候选
+# entry 转候选
 # --------------------------------------------------------------------------- #
 def _protein_name(entry: Dict[str, Any]) -> str:
     desc = entry.get("proteinDescription") or {}
@@ -313,7 +313,7 @@ def entry_to_candidate(entry: Dict[str, Any]) -> Dict[str, Any]:
     taxid = org.get("taxonId")
     organism = str(org.get("scientificName") or "")
     entry_type = str(entry.get("entryType") or "")
-    # 注意：不能只判断 `"reviewed" in entry_type` —— "unreviewed (TrEMBL)" 里也含 "reviewed"。
+    # 不能只判断 `"reviewed" in entry_type`，因为 "unreviewed (TrEMBL)" 里也含 "reviewed"。
     reviewed = bool(entry.get("reviewed")) or "swiss-prot" in entry_type.lower()
     length = (entry.get("sequence") or {}).get("length") or 0
     try:
@@ -379,12 +379,12 @@ def decide_status(candidates: Sequence[Dict[str, Any]],
                   query: Optional[Dict[str, Any]] = None) -> str:
     """按打分与线索决定 resolved / ambiguous / low_confidence / not_found。
 
-    三态（对应：不确定就让用户选）：
-      * ``resolved``：唯一候选，且所有**用户给出的**线索都强匹配（reviewed + 基因精确 +
-        物种精确 + 蛋白名含家族词）→ 自动继续；
-      * ``ambiguous``：有多个分数接近的候选（无法用物种/上下文消歧）→ 列候选让用户选；
+    三态（对应：不确定时交回调用方选择）：
+      * ``resolved``：唯一候选，且调用方给出的所有线索都强匹配（reviewed + 基因精确 +
+        物种精确 + 蛋白名含家族词），自动继续；
+      * ``ambiguous``：有多个分数接近的候选（无法用物种或上下文消歧），列出候选交调用方选择；
       * ``low_confidence``：只有 1 个候选，但置信度不足（未 reviewed / 物种不符 /
-        名称只部分匹配）→ 也要列出来让用户确认，不替用户决定；
+        名称只部分匹配），同样列出来供调用方确认，不替调用方决定；
       * ``not_found``：一个都没查到。
     """
     if not candidates:
@@ -495,8 +495,8 @@ def resolve_receptor_name(text: str, fetch: Optional[FetchJson] = None,
          "selected": 候选或 None, "candidates": [...], "attempts": [...],
          "total_candidates": n}
 
-    `attempts` 逐条记录「试过哪条检索式、命中几条」，失败路径会原样交给用户看，
-    满足「提问必须列出已尝试的检索」的要求。
+    `attempts` 逐条记录「试过哪条检索式、命中几条」，失败路径会原样交给使用者查看，
+    满足「提问必须列出已发起的检索」的要求。
     """
     fetch = fetch or _default_fetch_json
     entry_fetch = entry_fetch or _default_fetch_json
@@ -587,7 +587,7 @@ def _result(scored: List[Dict[str, Any]], query: Dict[str, Any],
 
 
 def summarize_attempts(attempts: Sequence[Dict[str, Any]]) -> List[str]:
-    """把 attempts 渲染成给用户看的「已尝试的检索」清单。"""
+    """把 attempts 渲染成给使用者查看的「已发起的检索」清单。"""
     lines: List[str] = []
     for item in attempts or []:
         if not isinstance(item, dict):
@@ -608,7 +608,7 @@ def candidate_brief(cand: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def candidate_structure_hint(cand: Dict[str, Any]) -> str:
-    """候选的结构来源提示（有 PDB 交叉引用 → RCSB，否则 AlphaFold 预测）。"""
+    """候选的结构来源提示（有 PDB 交叉引用时用 RCSB，否则用 AlphaFold 预测）。"""
     pdbs = cand.get("pdb_ids") or []
     return f"RCSB {'/'.join(pdbs[:2])}" if pdbs else "AlphaFold 预测"
 
@@ -623,8 +623,8 @@ def receptor_choices(candidates: Sequence[Dict[str, Any]],
       * ``prompt`` 前端点击后原样发出的追问（同一 conversation_id 的下一轮）；
       * ``detail`` accession/物种/蛋白名/结构来源/打分理由，供 UI 展开与报告溯源。
 
-    **不提供「改用系统默认受体」选项**：预置受体只用于内部测试，系统也没有默认受体
-    （历史缺陷：这里曾无条件追加一个 `thrombin` 选项，与产品规则和代码守卫直接冲突）。
+    不提供「改用系统默认受体」选项：预置受体只用于内部测试，系统也没有默认受体
+    （此前的实现无条件追加一个 `thrombin` 选项，与产品规则和代码守卫直接冲突）。
     """
     choices: List[Dict[str, Any]] = []
     for cand in list(candidates)[:limit]:

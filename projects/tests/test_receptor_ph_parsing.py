@@ -1,14 +1,13 @@
-"""PQR 解析回归（**不需要 pdb2pqr**，因此放在非 engine 组里，CI 也会跑）。
+"""PQR 解析回归（不需要 pdb2pqr，因此放在非 engine 组里，CI 也会跑）。
 
-注意（受体 7YHP）：
-    meeko 读取 PQR 失败（returncode=1）：
-      File ".../meeko/polymer.py", line 2614, in atom_from_pqr_items
-        resnum = int(atom_pqr_items.pop(0))
-      ValueError: invalid literal for int() with base 10: '128.990'
+在受体 7YHP 上，meeko 读取 PQR 失败（returncode=1）：
+    File ".../meeko/polymer.py", line 2614, in atom_from_pqr_items
+      resnum = int(atom_pqr_items.pop(0))
+    ValueError: invalid literal for int() with base 10: '128.990'
 
-根因：pdb2pqr 按 PDB **固定列**写 PQR。残基号到 4 位（7YHP 有 560–1xxx）时，链号与残基号
+技术原因：pdb2pqr 按 PDB 固定列写 PQR。残基号到 4 位（7YHP 有 560–1xxx）时，链号与残基号
 之间没有空格（`GLU A1005`），白空格切分只有 10 个 token；meeko 把 `A1005` 当链号、
-把 x 坐标当残基号 → `int('128.990')` 崩。整条 pH 准备因此失败并静默回退标准流程
+把 x 坐标当残基号，执行 `int('128.990')` 时抛出异常。整条 pH 准备因此失败并静默回退标准流程
 （报告里只写「未按目标 pH 重新准备」）。插入码（`36A`）是同一类粘连的另一半。
 """
 from __future__ import annotations
@@ -24,10 +23,10 @@ SRC = PROJECT_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-#: 7YHP 真实 PQR 里触发缺陷的两行（残基号 1005，链 A）
+#: 7YHP 的 PQR 里触发解析异常的两行（残基号 1005，链 A）
 FUSED_4DIGIT = "ATOM   2841  N   GLU A1005     128.990 117.515 122.728 -0.5163 1.8240\n"
 NORMAL_3DIGIT = "ATOM      1  N   LYS A 560     104.561 111.076 111.444  0.0966 1.8240\n"
-#: 7YHP 缓存产物（在仓库工作区里存在时做一次真实数据全量校验）
+#: 7YHP 缓存产物（在工作区里存在时对实际数据做一次全量校验）
 REAL_PQR = PROJECT_ROOT / "assets" / "cache" / "7YHP_f7f8da9b58da39a3_ph7.4.pqr"
 
 
@@ -40,21 +39,21 @@ def _atom(line: str) -> Dict[str, Any]:
 
 
 def test_four_digit_resnum_fused_with_chain_is_split() -> None:
-    """4 位残基号把链号挤没空格 → 必须拆成「链 / 残基号」两个 token（本次缺陷）。"""
+    """4 位残基号把链号挤掉空格，须拆成「链 / 残基号」两个 token。"""
     from docking_agent.core.receptor_ph import normalize_pqr_for_meeko
 
     fixed, changed = normalize_pqr_for_meeko(FUSED_4DIGIT)
     assert changed == 1
     tokens = fixed.split()
     assert tokens[3] == "GLU" and tokens[4] == "A" and tokens[5] == "1005", tokens[:6]
-    # 关键：meeko 的 `resnum = int(token)` 现在拿到的一定是整数
+    # meeko 的 `resnum = int(token)` 此时拿到的是整数
     assert tokens[5].lstrip("-").isdigit()
     # 坐标与电荷/半径不得被改写丢精度
     assert tokens[6:11] == ["128.990", "117.515", "122.728", "-0.5163", "1.8240"]
 
 
 def test_insertion_code_still_becomes_its_own_field() -> None:
-    """插入码（既有行为）：`36A` → `36 A`，不得丢掉插入码。"""
+    """插入码（既有行为）：`36A` 拆成 `36 A`，不得丢掉插入码。"""
     from docking_agent.core.receptor_ph import normalize_pqr_for_meeko
 
     fixed, changed = normalize_pqr_for_meeko("ATOM 1 N ILE H 36A 31.4 25.9 19.2 0.03 1.82\n")
@@ -90,7 +89,7 @@ def test_non_atom_lines_are_preserved() -> None:
 
 
 def test_his_states_use_residue_key_not_coordinates() -> None:
-    """HIS 分组必须按「链+残基号」：4 位残基号以前会被当成链名，状态统计全错。"""
+    """HIS 分组按「链+残基号」进行：4 位残基号被当成链名时，状态统计会出错。"""
     from docking_agent.core.receptor_ph import his_states_from_pqr
 
     hip = ("ATOM   2841  N   HIS A1005     128.990 117.515 122.728 -0.5163 1.8240\n"
@@ -103,7 +102,7 @@ def test_his_states_use_residue_key_not_coordinates() -> None:
 
 @pytest.mark.skipif(not REAL_PQR.is_file(), reason="工作区里没有 7YHP 的 PQR 产物")
 def test_real_7yhp_pqr_becomes_meeko_parseable() -> None:
-    """真实产物全量校验：规范化后每一行都满足 meeko 的字段假设（链/残基号各自独立）。"""
+    """实际产物全量校验：规范化后每一行都满足 meeko 的字段假设（链/残基号各自独立）。"""
     from docking_agent.core.receptor_ph import normalize_pqr_for_meeko, parse_pqr_atom_line
 
     raw = REAL_PQR.read_text(encoding="utf-8", errors="ignore")
@@ -120,10 +119,10 @@ def test_real_7yhp_pqr_becomes_meeko_parseable() -> None:
         assert tokens[5].lstrip("-").isdigit(), f"残基号位仍是坐标：{line!r}"
         parsed = parse_pqr_atom_line(line)
         assert parsed is not None and 500 <= int(parsed["resnum"]) <= 2000, parsed
-    # 7YHP 里确实存在 4 位残基号的行 → 本次修复确实覆盖到了它们
+    # 7YHP 里存在 4 位残基号的行，本次规范化覆盖到了它们
     non_canonical = [t for t in atoms if not t.split()[5].lstrip("-").isdigit()]
     assert non_canonical, "样本里没有 4 位残基号的行，测试失去意义"
     assert changed == len(non_canonical), (changed, len(non_canonical))
-    # 3 位残基号的行必须**逐字不动**（不做无谓改写）
+    # 3 位残基号的行逐字不动（不做无谓改写）
     canonical = [t for t in atoms if t.split()[5].lstrip("-").isdigit()]
     assert canonical and all(t in fixed for t in canonical[:50])

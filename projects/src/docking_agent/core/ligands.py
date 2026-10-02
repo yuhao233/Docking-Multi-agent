@@ -19,9 +19,9 @@ _SMILES_LIKE = None
 
 
 def _looks_like_smiles(text: str) -> bool:
-    """字符集启发式判断（用于区分「名称」与「SMILES」）。
+    """按字符集启发式判断片段是「名称」还是「SMILES」。
 
-    不使用 RDKit 试探解析：那会对中文名称打出一串 SMILES 解析错误日志，干扰用户。
+    不使用 RDKit 试探解析：那会对中文名称打出一串 SMILES 解析错误日志。
     """
     global _SMILES_LIKE
     if _SMILES_LIKE is None:
@@ -33,30 +33,29 @@ def _looks_like_smiles(text: str) -> bool:
 
 
 def _split_candidates(text: str) -> List[str]:
-    """把文本切成「候选片段」：分隔符包括 , ; 换行 与空白。
+    """把文本切成候选片段：分隔符包括 `,` `;` 换行与空白。
 
-    为什么要切空白：聊天里最常见的写法是「华法林 CC(=O)CC(...)」，名称与 SMILES 之间是空格。
-    只按 ,;
- 切会把整句当成一个 SMILES，结果一个分子都解析不出来 —— 而系统接着会
-    悄悄退回**示例分子库**，用户看到的是别人的分子被对接（真实发生过的坑）。
+    空白也作为分隔符：聊天里常见的写法是「华法林 CC(=O)CC(...)」，名称与 SMILES 之间是空格。
+    只按 `,;` 切会把整句当成一个 SMILES，一个分子都解析不出来；受理层随后会
+    退回示例分子库，界面显示的是与本次任务无关的分子。
     """
     import re
 
     normalized = (text or "").replace("：", ":").replace("，", ",").replace("；", ";")
-    # 「、」是中文里最常见的并列顿号（"筛一下 CCO、CCN"）。不认它就会把整段当成一个片段、
-    # 一个分子都抽不出来 → 受理层误判「没有分子来源」，向用户重复索要已经给过的分子。
+    # 「、」是中文里常见的并列顿号（"筛一下 CCO、CCN"）。不认它就会把整段当成一个片段、
+    # 一个分子都抽不出来，受理层据此误判「没有分子来源」，向调用方重复索要已经给过的分子。
     normalized = normalized.replace("、", ",")
     normalized = normalized.replace("\t", " ").replace("\n", "\n")
     return [tok for tok in re.split(r"[,;\n\s]+", normalized) if tok.strip()]
 
 
 def extract_smiles(text: str, default_name_prefix: str = "MOL") -> List[Dict[str, str]]:
-    """从**自由文本**里尽力抽取 SMILES（确定性，零模型）。
+    """从自由文本里尽力抽取 SMILES（确定性，零模型）。
 
-    规则：按分隔符（含空白）切片段 → 能解析成分子的片段算 SMILES →
-    紧邻其前、且**本身不是 SMILES** 的短片段当作它的名称（如「华法林 <smiles>」）。
-    这样即使用户写成一句话（"帮我筛一下：华法林 <smiles>；布洛芬 <smiles>"）也能抽出两个分子。
-    句子性文字（较长/含句末标点）只作散文忽略，不会被当成名称。
+    规则：按分隔符（含空白）切片段，能解析成分子的片段算 SMILES；
+    紧邻其前、本身不是 SMILES 的短片段当作它的名称（如「华法林 <smiles>」）。
+    调用方写成一句话（"帮我筛一下：华法林 <smiles>；布洛芬 <smiles>"）时也能抽出两个分子。
+    句子性文字（较长或含句末标点）按散文忽略，不当作名称。
     """
     molecules: List[Dict[str, str]] = []
     seen: set = set()
@@ -67,7 +66,7 @@ def extract_smiles(text: str, default_name_prefix: str = "MOL") -> List[Dict[str
             continue
         mol = Chem.MolFromSmiles(token) if _looks_like_smiles(token) else None
         if mol is None:
-            # 不是分子 → 视作「可能的名字」：取最后一段冒号后的内容（"…：华法林" → "华法林"），
+            # 不是分子时视作可能的名字：取最后一段冒号后的内容（"…：华法林" 得到 "华法林"），
             # 并排除散文（过长或含句末标点），避免把整句话当分子名。
             raw_name = token.split(":")[-1].strip()
             pending_name = (raw_name if raw_name and len(raw_name) <= 24
@@ -92,7 +91,7 @@ def parse_smiles_text(text: str, default_name_prefix: str = "MOL") -> List[Dict[
       - '名称 SMILES'（空格分隔，如「华法林 CC(=O)CC(...)」）
       - 一句话里夹带的分子（散文会被忽略，只取能解析成分子的片段）
     返回 [{"name":..., "smiles":...}]
-    说明：RDKit 标准 SMILES 通常不含 ':'，因此可用 ':' 区分「名称:SMILES」。
+    `RDKit` 标准 SMILES 通常不含 ':'，因此可用 ':' 区分「名称:SMILES」。
     """
 
     molecules: List[Dict[str, str]] = []
@@ -142,11 +141,11 @@ def load_library_file(path: str) -> List[Dict[str, str]]:
 # --------------------------------------------------------------------------- #
 
 
-# 对接前对"特殊化学"的处理原则：**工具只报事实，判断交给 Agent**。
-# 盐/反离子属于最常见的"看起来能跑、其实跑错"的输入：
+# 对接前对"特殊化学"的处理原则：工具只报事实，判断交给 Agent。
+# 盐/反离子属于常见的"看起来能跑、实际跑错"的输入：
 # 直接把 `CC(=O)O.[Na+]` 丢给 Vina，多出来的 Na+ 会参与打分并污染结果。
-# 因此这里做**保守且可解释**的预处理：多片段时取最大的有机片段，
-# 并把原始 SMILES、被移除片段与其判定理由逐条写进 facts，绝不悄悄改动。
+# 因此这里做保守且可解释的预处理：多片段时取最大的有机片段，
+# 并把原始 SMILES、被移除片段与其判定理由逐条写进 facts，不静默改动输入。
 _METALS = {
     "Li", "Be", "Na", "Mg", "Al", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni",
     "Cu", "Zn", "Ga", "Ge", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag",
@@ -174,7 +173,7 @@ _SOLVENT_FRAGMENTS = {
 
 
 #: 质子化态策略与 pH 处理见 `core/protonation.py`（运行级口径、内置 pKa 规则表、逐分子溯源）。
-#: 这里按原路径再导出，保持既有 import/测试不漂移。
+#: 这里按原路径再导出，保持既有 import 与测试不漂移。
 from docking_agent.core.protonation import (  # noqa: E402
     DEFAULT_PH,
     PKA_RULES,
@@ -193,7 +192,7 @@ __all__ = ["PROTONATION_POLICIES", "apply_protonation", "protonation_policy", "p
 
 def describe_ligand(smiles: str, protonation: Optional[str] = None,
                     ph: Any = None) -> Dict[str, Any]:
-    """对配体 SMILES 做**事实性**体检：片段/盐、金属、电荷、大小、未定义手性、质子化态。
+    """对配体 SMILES 做事实性体检：片段/盐、金属、电荷、大小、未定义手性、质子化态。
 
     `protonation` 为运行级质子化策略（ph/neutralize/keep，缺省读 `LIGAND_PROTONATION`，默认 ph），
     `ph` 为 `ph` 策略下的目标 pH（缺省读 `LIGAND_PROTONATION_PH`，默认 7.4）：
@@ -262,9 +261,9 @@ def describe_ligand(smiles: str, protonation: Optional[str] = None,
     if protonation.get("applied"):
         facts["canonical_smiles_input"] = Chem.MolToSmiles(Chem.MolFromSmiles(input_smiles)) \
             if Chem.MolFromSmiles(input_smiles) is not None else input_smiles
-    # 两条告警彼此独立：**改动过**要说清改了什么；**仍带净电荷**要请用户确认（如无法中和的季铵）
+    # 两条告警彼此独立：改动过的要写清改了什么；仍带净电荷的要请调用方确认（如无法中和的季铵）
     if protonation.get("applied"):
-        # 质子化态调整是一次**有意的化学改动**，必须留痕并让用户能复核
+        # 质子化态调整属于有意的化学改动，需留痕以供复核
         policy = str(protonation.get("policy") or "")
         hint = ("若目标 pH 下就是以这种形式存在，这就是期望结果；"
                 "若要完全保持输入形式，请把「质子化态策略」改为 keep。"
@@ -290,7 +289,7 @@ def describe_ligand(smiles: str, protonation: Optional[str] = None,
     except Exception:  # noqa: BLE001
         logger.debug("配体描述符计算失败", exc_info=True)
     try:
-        # 7 元及以上环：meeko 会按「大环」处理；本模块统一按刚性环准备（见 smiles_to_pdbqt），
+        # 7 元及以上环由 meeko 按「大环」处理；本模块统一按刚性环准备（见 smiles_to_pdbqt），
         # 因此如实记进事实字段，供运行级 notes 与报告说明「环构象未采样」。
         ring_sizes = sorted({len(r) for r in mol.GetRingInfo().AtomRings()} or [])
         facts["max_ring_size"] = max(ring_sizes) if ring_sizes else 0
@@ -321,7 +320,7 @@ _METAL_SYMBOLS = frozenset({
 
 
 def _embed_failure_hint(mol: Any) -> str:
-    """3D 嵌入失败时给出**可操作**的原因提示（工具只报事实，判断留给 Agent/用户）。"""
+    """3D 嵌入失败时给出可操作的原因提示（工具只报事实，判断留给 Agent/调用方）。"""
     metals: List[str] = []
     try:
         for atom in mol.GetAtoms():
@@ -338,7 +337,7 @@ def _embed_failure_hint(mol: Any) -> str:
 
 
 def smiles_to_pdbqt(smiles: str, seed: int = 42) -> str:
-    """SMILES -> 3D 构象 -> PDBQT（RDKit ETKDG + meeko）。"""
+    """SMILES 经 3D 构象生成 PDBQT（RDKit ETKDG + meeko）。"""
     from meeko import MoleculePreparation, PDBQTWriterLegacy  # type: ignore
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -352,8 +351,8 @@ def smiles_to_pdbqt(smiles: str, seed: int = 42) -> str:
         params.randomSeed = seed
         embedded = AllChem.EmbedMolecule(mol, params)  # type: ignore
     if embedded != 0:
-        # 金属配合物/桥连多片段没有可用的距离几何约束，ETKDG 会失败；
-        # 随机坐标初始化不改变任何化学信息，只是换一种起点，能救回一部分（注意：Mancozeb）。
+        # 金属配合物/桥连多片段没有可用的距离几何约束，ETKDG 在此类输入上失败；
+        # 随机坐标初始化不改变化学信息，只是换一种采样起点，可救回一部分（如 Mancozeb）。
         params = AllChem.ETKDGv3()  # type: ignore
         params.randomSeed = seed
         params.useRandomCoords = True
@@ -364,10 +363,10 @@ def smiles_to_pdbqt(smiles: str, seed: int = 42) -> str:
         AllChem.MMFFOptimizeMolecule(mol, maxIters=500)  # type: ignore
     except Exception:  # 某些元素缺少力场参数时忽略
         logger.warning("MMFF 优化跳过: %s", smiles)
-    # 大环处理：meeko 默认会**切开大环**并插入两个 "glue" 伪原子（元素 G，类型 `CG0`/`G0`）。
-    # 注意：autogrid4 的参数库没有这些类型（实测 CG0/G0/G1/CG/W 全部
-    # "unknown ligand atom type"），AutoDock4 与 AutoDock-GPU 因此**必然失败**（一次 2961 条库
-    # 里 113 条栽在这里）；内置 Vina 虽能解析，却会把伪原子当原子打分，跨引擎不可比。
+    # 大环处理：meeko 默认会切开大环并插入两个 "glue" 伪原子（元素 G，类型 `CG0`/`G0`）。
+    # autogrid4 的参数库没有这些类型（`CG0`/`G0`/`G1`/`CG`/`W` 均报
+    # "unknown ligand atom type"），AutoDock4 与 AutoDock-GPU 因此必然失败（一次 2961 条库
+    # 里 113 条属于这种情况）；内置 Vina 虽能解析，却会把伪原子当原子打分，跨引擎不可比。
     # 因此统一 `rigid_macrocycles=True`：环保持刚性、不切环、无伪原子，各引擎口径一致。
     # 代价（如实记录）：7–33 元环不再采样环构象，取 ETKDG 的单一构象。
     prep = MoleculePreparation(rigid_macrocycles=True)
@@ -381,11 +380,11 @@ def smiles_to_pdbqt(smiles: str, seed: int = 42) -> str:
 
 
 def read_molecules_any(source: str) -> Tuple[str, List[Dict[str, str]], Dict[str, Any]]:
-    """读分子清单：**运行产物 JSON 与常规分子文件都支持**（Agent 之间按文件交接的统一入口）。
+    """读分子清单：运行产物 JSON 与常规分子文件都支持（Agent 之间按文件交接的统一入口）。
 
-    为什么需要：上限 1 万条时把清单塞进消息/上下文不现实，子 Agent 之间应当传**文件路径**。
+    清单上限为 1 万条，塞进消息/上下文不现实，子 Agent 之间改传文件路径。
     运行产物形如 `molecules_tool.json`（`[{...}]` 或 `{"molecules": [...]}`），
-    与用户上传的 SDF/CSV/SMI 走同一套归一化层；返回 `(格式, 分子列表, 归一化溯源)`。
+    与调用方上传的 SDF/CSV/SMI 走同一套归一化层；返回 `(格式, 分子列表, 归一化溯源)`。
     """
     text = str(source or "").strip()
     if text and os.path.isfile(text) and text.lower().endswith(".json"):
@@ -421,7 +420,7 @@ def read_molecules_any(source: str) -> Tuple[str, List[Dict[str, str]], Dict[str
 
 
 def read_molecule_file_normalized(source: str) -> Tuple[str, List[Dict[str, str]], Dict[str, Any]]:
-    """**统一输入归一化入口**：内容嗅探优先于扩展名，支持 SDF/MOL2/MOL/CSV/TSV/SMILES 文本、
+    """统一输入归一化入口：内容嗅探优先于扩展名，支持 SDF/MOL2/MOL/CSV/TSV/SMILES 文本、
     gzip/zip 压缩包、异构表头（中英文 name/smiles/inchi 别名）与自动编码判定；逐行容错。
 
     返回 `(fmt, molecules, normalization)`：
@@ -437,11 +436,11 @@ def read_molecule_file_normalized(source: str) -> Tuple[str, List[Dict[str, str]
 
 
 def read_molecule_file(source: str) -> Tuple[str, List[Dict[str, str]]]:
-    """从用户上传的小分子文件读取分子库，返回 (格式, [{name, smiles}])。
+    """从调用方上传的小分子文件读取分子库，返回 (格式, [{name, smiles}])。
 
-    兼容旧契约：内部走**统一归一化层**（`read_molecule_file_normalized`），
+    兼容旧契约：内部走统一归一化层（`read_molecule_file_normalized`），
     分子字典额外带 `id/source_file/source_index`，但 `name`/`smiles` 语义不变。
-    归一化层意外抛错时回退到旧解析器，保证单个脏文件不会让整条链路失败。
+    归一化层意外抛错时回退到旧解析器，保证单个脏文件不会中断整条链路。
     """
     try:
         fmt, molecules, _normalization = read_molecule_file_normalized(source)
@@ -449,13 +448,13 @@ def read_molecule_file(source: str) -> Tuple[str, List[Dict[str, str]]]:
         logger.warning("归一化读取失败，回退旧解析器：%s", e)
         return _read_molecule_file_legacy(source)
     if molecules:
-        # 让下游（CSV/报告/结果卡片）能直接用原始 ID：id 缺失时用 name 兜底
+        # 供下游（CSV/报告/结果卡片）直接使用原始 ID：id 缺失时用 name 兜底
         for index, mol in enumerate(molecules):
             mol.setdefault("id", mol.get("name") or f"MOL{index + 1}")
             mol.setdefault("name", mol["id"])
         return (fmt, molecules)
     if fmt and fmt != "unknown":
-        # 归一化层已明确识别格式但没有分子（空文件 / xlsx 未安装支持等）→ 如实返回空
+        # 归一化层已明确识别格式但没有分子（空文件 / xlsx 未安装支持等），如实返回空
         return (fmt, [])
     return _read_molecule_file_legacy(source)
 
@@ -498,8 +497,8 @@ def _read_molecule_file_legacy(source: str) -> Tuple[str, List[Dict[str, str]]]:
             line = raw.strip()
             if not line or line.startswith(("#", "SMILES", "Canonical")):
                 continue
-            # 「名称:SMILES」单独前置处理：直接对右侧做解析，避免把整行（含冒号）丢给 RDKit
-            # 刷出一大串 SMILES Parse Error，也避免丢掉名称。
+            # 「名称:SMILES」先单独处理：只对右侧做解析，避免把整行（含冒号）丢给 RDKit
+            # 产生大量 SMILES Parse Error，也避免丢掉名称。
             if ":" in line:
                 left, _, right = line.partition(":")
                 left, right = left.strip(), right.strip()
@@ -512,16 +511,16 @@ def _read_molecule_file_legacy(source: str) -> Tuple[str, List[Dict[str, str]]]:
             first = parts[0]
             second = parts[1] if len(parts) > 1 else ""
             smile, name = "", ""
-            # 先用字符集启发式判断哪一列是 SMILES，避免对中文名做 RDKit 探测解析（会刷错误日志）
+            # 先用字符集启发式判断哪一列是 SMILES，避免对中文名做 RDKit 探测解析（会产生错误日志）
             if _looks_like_smiles(first) and Chem.MolFromSmiles(first):
                 smile, name = first, second
             elif second and _looks_like_smiles(second) and Chem.MolFromSmiles(second):
-                # 兼容 "名称 SMILES"（中文用户常见写法）
+                # 兼容 "名称 SMILES"（中文使用者常见写法）
                 smile, name = second, first
             if smile:
                 mols.append({"name": name, "smiles": smile})
     if not mols and ":" in content:
-        # 常见写法「名称:SMILES」（本系统导出的清单就是这个格式）：
-        # 交给 parse_smiles_text 统一处理，避免把整行当成 SMILES 去解析（还会刷 RDKit 错误日志）
+        # 常见写法「名称:SMILES」（本系统导出的清单即该格式）：
+        # 交给 parse_smiles_text 统一处理，避免把整行当成 SMILES 解析（同样会产生 RDKit 错误日志）
         mols = parse_smiles_text(content)
     return ("smi", mols)

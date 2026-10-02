@@ -1,16 +1,16 @@
 """项目路径解析。
 
-以本文件位置反推项目根目录（`projects/`），因此无论从哪个 cwd 启动都能定位资源。
+以本模块文件位置反推项目根目录（`projects/`），因此从任意 cwd 启动都能定位资源。
 可用 `DOCKING_WORKSPACE`（兼容 `COZE_WORKSPACE_PATH`）覆盖工作区根目录。
 
 目录约定：
     assets/libraries/    分子库与阳性对照
     assets/receptors/    预置受体（registry/ 为可对接受体，structures/ 为原始 PDB）
     assets/cache/        在线下载与现场准备的缓存
-    assets/uploads/      用户上传文件
+    assets/uploads/      使用者上传文件
     config/              LLM 与受体注册表配置
     web/                 前端静态资源
-    var/runs/            每次运行的完整中间数据（含产物清单）
+    var/runs/            每次运行的中间数据（含产物清单）
     var/logs/            日志
 """
 from __future__ import annotations
@@ -39,22 +39,22 @@ def workspace_dir() -> Path:
 
 
 #: 运行必需的「仓库布局」目录：前端、配置、资源都在里面。
-#: wheel 安装（`pip install .`）后 `parents[2]` 落在 site-packages，那里三个目录都不存在 ——
-#: 系统会以「前端 404 / 找不到受体注册表」这类晦涩方式失败。这里显式检查并给出修复方式。
+#: wheel 安装（`pip install .`）后 `parents[2]` 落在 site-packages，这三个目录都不存在，
+#: 系统会以「前端 404 / 找不到受体注册表」这类晦涩方式失败，因此这里显式检查并给出修复方式。
 LAYOUT_DIRS = ("config", "web", "assets")
 
 
 def missing_layout_dirs() -> List[str]:
-    """返回工作区里缺失的布局目录（空列表 = 布局完整）。"""
+    """返回工作区里缺失的布局目录（空列表表示布局齐全）。"""
     base = workspace_dir()
     return [name for name in LAYOUT_DIRS if not (base / name).is_dir()]
 
 
 def assert_runtime_layout(*, strict: bool = False) -> None:
-    """启动自检：布局不完整时**明确报错或响亮告警**，而不是等到 404/KeyError。
+    """启动自检：布局不齐全时抛出异常或记录告警，避免运行期出现 404 或 KeyError。
 
-    `strict=True` 用于真正要对外提供服务的入口（`-m http`）：装错了就当场失败；
-    默认只在日志里告警 —— 部分测试/工具会把 `DOCKING_WORKSPACE` 指到临时目录。
+    `strict=True` 用于对外提供服务的入口（`-m http`）：布局缺失时直接失败；
+    默认只写日志告警，因为部分测试与工具会把 `DOCKING_WORKSPACE` 指到临时目录。
     """
     missing = missing_layout_dirs()
     if not missing:
@@ -84,7 +84,7 @@ def libraries_dir() -> Path:
 
 
 def cache_dir() -> Path:
-    """在线下载 / 现场准备（受体、配体文件）的缓存目录。"""
+    """在线下载与本地准备（受体、配体文件）的缓存目录。"""
     return _ensure(assets_dir() / "cache")
 
 

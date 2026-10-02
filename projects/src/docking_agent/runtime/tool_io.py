@@ -1,32 +1,33 @@
-"""工具大结果的「落盘 + 有界摘要」基础设施。
+"""工具大结果的落盘与有界摘要基础设施。
 
-## 为什么必须这么做
-
-Agent 的上下文会被分子数**线性撑大**，而这两头都会炸：
+工具返回的明细体积随分子数线性增长：
 
 | 数据 | 每分子 | 1 万分子 | 折算 tokens |
 | --- | --- | --- | --- |
 | 分子清单（import） | ~50 B | ~0.5 MB | ~13 万 |
-| 对接结果（docking） | ~491 B | **4.7 MB** | **~130 万** |
+| 对接结果（docking） | ~491 B | 4.7 MB | ~130 万 |
 | 理化性质（properties） | ~600 B | ~6 MB | ~160 万 |
 
-任何上下文窗口（64k/128k）都装不下，而且子 Agent 还要把结果**再输出一遍**
-（输出上限更低），必然截断 → JSON 不合法 → `agent_output_invalid`。
+64k/128k 上下文窗口均无法容纳，且子 Agent 还需把结果再输出一遍
+（输出上限更低），超限即截断，转成不合法的 JSON，触发 `agent_output_invalid`。
 
 ## 约定
 
-1. 工具把**完整结果**写到运行目录（`*_tool.json`，登记为可下载产物）并写入共享黑板；
+1. 工具把结果全量写到运行目录（`*_tool.json`，登记为可下载产物）并写入共享黑板；
 2. 返回给模型的载荷：
-   - **小结果（≤ `AGENT_TOOL_TOP_N` 条）**：保持原来的完整结构（向后兼容，历史工具契约不变）；
-   - **大结果**：只给 `summary + top N + artifacts`，并置 `detail_omitted: true` 说明明细在产物里；
-3. 落盘层（`agents/persistence.py`）与报告工具**从运行目录/共享黑板读完整数据**，
+   - 小结果（≤ `AGENT_TOOL_TOP_N` 条）：保持原有结构（向后兼容，既有工具契约不变）；
+   - 大结果：只给 `summary + top N + artifacts`，并置 `detail_omitted: true` 说明明细在产物里；
+3. 落盘层（`agents/persistence.py`）与报告工具从运行目录或共享黑板读取全量数据，
    不再依赖模型把结果搬运回上下文。
 
-**模块位置**：本模块属 `runtime/` 层（工具结果的落盘/摘要基础设施），原先在 `agents/` 下 ——
-那会让 `tools/*` 反向 import `agents`（审计 SCC-3 的一部分）。
+本模块位于 `runtime/` 层，承载工具结果的落盘与摘要基础设施，
+`tools/*` 因此不反向 import `agents`。
 
-注意：`AGENT_TOOL_TOP_N` 限制的是**给模型看的明细条数（视图大小）**，
-**不是**"最多对接多少个分子"——对接规模由任务本身决定（流式/分片/流水线都不受影响）。
+对外接口为 `record`（落盘）、`load`（读回）与 `artifact_path`（按名字取产物路径），
+`TOOL_FILES` 给出工具名到落盘文件名的映射。
+
+`AGENT_TOOL_TOP_N` 限制的是给模型看的明细条数（视图大小），
+与对接规模上限无关：对接规模由任务本身决定（流式/分片/流水线都不受影响）。
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ def summary_limit() -> int:
 
 
 def record(name: str, payload: Any, run: Any = None) -> Optional[Path]:
-    """把工具的完整结果写入运行目录；没有运行上下文时静默跳过（CLI/单测场景）。
+    """把工具的原始结果写入运行目录；没有运行上下文时静默跳过（CLI/单测场景）。
 
     `run`：显式传入的运行对象（图调用链路上由 `active_run(runtime)` 给），
     为空时回退 ContextVar（CLI / 单测直调）。
@@ -82,8 +83,8 @@ def record(name: str, payload: Any, run: Any = None) -> Optional[Path]:
     except Exception as e:  # noqa: BLE001
         logger.warning("工具原始结果落盘失败(%s)：%s", name, e)
         return None
-    # 记住「这个工具的完整明细在哪个文件」：它是 Agent 之间**按文件交接**数据的总线 ——
-    # 上万条分子/对接明细不必再经消息或黑板搬运，给下一个 Agent 一个绝对路径即可。
+    # 记录该工具明细所在的文件：该路径是 Agent 之间按文件交接数据的通道，
+    # 上万条分子或对接明细无需经消息与黑板搬运，向下一个 Agent 传绝对路径即可。
     try:
         run.data.setdefault("tool_files", {})[name] = str(path)
     except Exception as e:  # noqa: BLE001 - 记账失败不影响落盘
@@ -92,7 +93,7 @@ def record(name: str, payload: Any, run: Any = None) -> Optional[Path]:
 
 
 def artifact_path(name: str, run: Any = None) -> str:
-    """该工具**最近一次**产物文件的绝对路径（不存在则空串）。Agent 间按文件交接用它。"""
+    """该工具最近一次产物文件的绝对路径（不存在时返回空串），供 Agent 间按文件交接使用。"""
     run = run if run is not None else current_run.get()
     if run is None:
         return ""
@@ -101,7 +102,7 @@ def artifact_path(name: str, run: Any = None) -> str:
 
 
 def load(name: str, run: Any = None) -> Optional[Any]:
-    """读取工具的完整结果（优先当前运行目录；供落盘层与报告工具使用）。"""
+    """读取工具的原始结果（优先当前运行目录；供落盘层与报告工具使用）。"""
     run = run if run is not None else current_run.get()
     if run is None:
         return None
@@ -143,11 +144,11 @@ def affinity_stats(values: Sequence[Any]) -> Dict[str, Any]:
 
 
 def artifact_refs(run_id: str = "", run: Any = None) -> Dict[str, str]:
-    """告诉模型「明细在哪里」，而不是把明细塞给它。
+    """返回明细所在位置的引用，而不是把明细本身塞给模型。
 
-    同时给出**绝对路径**（`molecules_file` / `properties_file` / `docking_file` / …）：
+    同时给出绝对路径（`molecules_file` / `properties_file` / `docking_file` / …）：
     子 Agent 可以直接把路径作为参数交给下一个工具，按文件交接数据（省 token、零失真）；
-    共享黑板只用来交接**小状态**（受体、位点、阳性对照、计数）。
+    共享黑板只用来交接小状态（受体、位点、阳性对照、计数）。
     """
     refs: Dict[str, str] = {"run_id": run_id}
     run = run if run is not None else current_run.get()
@@ -171,7 +172,7 @@ def big_payload_notice(name: str, total: int, limit: int) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# 两阶段漏斗（大库的正确打法）：先全库粗筛，再对头部精算
+# 两阶段漏斗：先全库粗筛，再对头部精算（大库的默认调度方式）
 # --------------------------------------------------------------------------- #
 def funnel_settings() -> Dict[str, Any]:
     """漏斗与分片护栏参数（设置页面可改）。"""
@@ -185,7 +186,7 @@ def funnel_settings() -> Dict[str, Any]:
 
 
 def funnel_advice(total: int) -> str:
-    """给定分子数，给出该不该走漏斗、以及具体怎么打（写进给模型的提示）。"""
+    """按分子数给出是否启用两阶段漏斗以及具体参数（写入给模型的提示）。"""
     s = funnel_settings()
     if not s["funnel_min"] or total < s["funnel_min"]:
         return ""

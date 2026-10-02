@@ -4,7 +4,7 @@
     http      启动本地 HTTP 服务（交互式网页 + API）
     flow      同步跑一次多 Agent（返回 JSON）
     agent     流式跑一次多 Agent（终端实时输出）
-    runs      查看历史运行记录
+    runs      查看运行记录
     receptors 查看受体注册表与已知结合位点
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ ensure_runtime_env()
 
 from docking_agent.logging_setup import LOG_FILE, setup_logging  # noqa: E402
 
-# log_level 留空 = 由 setup_logging 在**调用时**读 LOG_LEVEL（此时 .env 与界面设置已生效）
+# log_level 留空 = 由 setup_logging 在调用时读 LOG_LEVEL（此时 .env 与界面设置已生效）
 setup_logging(log_file=LOG_FILE, console_output=True)
 logger = logging.getLogger("cli")
 
@@ -100,8 +100,8 @@ def mode_http(args: argparse.Namespace) -> int:
     from docking_agent.api.app import app
     from docking_agent.paths import assert_runtime_layout
 
-    # 布局自检**严格模式**：装成 wheel（不含 config/web/assets）就当场失败，
-    # 而不是起了一个「页面 404、注册表读不到」的服务让用户猜。
+    # 布局自检用 `strict=True`：装成 wheel（不含 config/web/assets）就当场失败，
+    # 而不是启动一个「页面 404、注册表读不到」的服务，把问题留到运行期。
     assert_runtime_layout(strict=True)
 
     host = args.host or "127.0.0.1"
@@ -119,9 +119,9 @@ def mode_http(args: argparse.Namespace) -> int:
 def _agent_message(args: argparse.Namespace) -> str:
     """把命令行参数拼成给多 Agent 的指令（`-m flow` / `-m agent` 共用）。
 
-    **这个函数曾经整体丢失**（`1e15fad` 重构删了定义、只留三处调用点），
-    于是 `-m flow` 与 `-m agent` 两个模式 100% `NameError` —— 而没有任何门禁跑到它们。
-    现在按参数拼一条明确的指令：未给出的项不写（交给系统默认/受理层判定）。
+    `1e15fad` 的重构删除了本函数的定义，只保留三处调用点，`-m flow` 与 `-m agent`
+    两个模式会抛 `NameError`，而门禁未覆盖这两个模式。
+    本函数按参数拼一条明确指令，未给出的项不写，交由系统默认值与受理层判定。
     """
     text = (getattr(args, "message", "") or "").strip() \
         or (getattr(args, "input", "") or "").strip()

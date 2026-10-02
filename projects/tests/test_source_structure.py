@@ -1,11 +1,11 @@
-"""源码结构回归：机器可判定的「冗余/遮蔽」问题。
+"""源码结构回归：机器可判定的重复定义与分层依赖问题。
 
-为什么值得一组测试：`core/docking.py` 里曾同时存在**两个**顶层 `dock_library`（前者被后者
-静默遮蔽，62 行死代码），排查时读到的可能是被遮蔽的那一份 —— 比没有文档更糟。
-这类问题静态可判定，因此永久看护：
+`core/docking.py` 曾同时存在两个顶层 `dock_library`，后一份静默遮蔽前一份，
+被遮蔽的实现共 62 行，阅读源码时得到的是失效的那一份。
+这两类问题静态可判定，因此由测试长期看护：
 
-1. 同一模块内不得出现重复的顶层函数/类名（后定义会静默覆盖前定义）；
-2. `core/` 不得反向 import `tools/agents/api`（分层单向下行，见 architecture §10.1）。
+1. 同一模块内不得出现重复的顶层函数/类名，后定义会静默覆盖前定义；
+2. `core/` 不得反向 import `tools/agents/api`，分层单向下行，见 architecture §10.1。
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _py_files() -> List[Path]:
 
 
 def test_no_duplicate_top_level_definitions() -> None:
-    """重复的顶层定义 = 后一份静默遮蔽前一份（注意：dock_library 出现两次）。"""
+    """重复的顶层定义意味着后一份静默遮蔽前一份，`dock_library` 就出现过两次。"""
     offenders: Dict[str, List[str]] = {}
     for path in _py_files():
         names = _top_level_names(path)
@@ -61,8 +61,8 @@ def test_core_does_not_import_upward(layer: str) -> None:
 def test_engine_test_file_list_has_no_rot() -> None:
     """`conftest.ENGINE_TEST_FILES`（CI 跳过的引擎相关文件）不得指向不存在的文件。
 
-    这份名单是 CI 与「本机全量」之间的唯一开关；文件被改名/删除后若忘了同步，
-    名单会静默失效 —— 要么 CI 漏跑，要么名单形同虚设却仍然全绿。
+    这份名单是 CI 与本机全量运行之间的唯一开关；文件改名或删除后未同步时，
+    名单会静默失效，CI 会漏跑相应用例，或名单失效而检查仍然全绿。
     """
     from conftest import ENGINE_TEST_FILES  # type: ignore[import-not-found]
 

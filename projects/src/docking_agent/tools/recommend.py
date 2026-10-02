@@ -1,16 +1,16 @@
 """推荐化合物排行工具（协调 Agent 用）。
 
-两个工具，分工明确、都不需要把明细搬进上下文：
+两个工具分工如下，都不需要把明细搬进上下文：
 
-1. `recommend_compounds(top_n)` —— **算**：从运行产物/共享黑板读全量对接与理化性质，
+1. `recommend_compounds(top_n)` 负责计算：从运行产物/共享黑板读全量对接与理化性质，
    算出综合分（对接亲和力 + 配体效率 + 类药性 + 理化窗口）与规则化的筛选建议，
-   把完整排行落盘、并只回传前 N 行给模型；
-2. `submit_recommendations(recommendations_json)` —— **说理由**：模型对前 N 个分子逐条给
-   自然语言理由与推进建议；工具按 smiles/name **核对分子确实存在于本次排行**，
+   排行结果整体落盘，只把前 N 行回传给模型；
+2. `submit_recommendations(recommendations_json)` 负责理由：模型为前 N 个分子逐条给
+   自然语言理由与推进建议；工具按 smiles/name 核对分子确实存在于本次排行，
    匹配不上的条目如实回传（不静默丢弃，也不允许模型凭记忆编造分子）。
 
-数值一律来自 `reporting/recommend.py` 的真实计算，模型只补"为什么"，
-报告把数值与理由并排展示 —— 数值可信、理由可核。
+数值一律取自 `reporting/recommend.py` 的计算结果，模型只补理由，
+报告把数值与理由并排展示，数值可核、理由可查。
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ _ROW_FIELDS = ("rank", "id", "name", "smiles", "composite", "grade", "grade_gate
                "affinity_kcal_mol", "ligand_efficiency", "molecular_weight", "logP",
                "tpsa", "rotatable_bonds", "lipinski_violations", "drug_likeness_pass",
                "components", "suggestions", "box_group", "missing",
-               # 已写入的理由也要回传：模型才能"接着写"而不是重复写或写反
+               # 已写入的理由也要回传：模型据此接着写，避免重复或写反
                "agent_reason", "agent_suggestion")
 
 
@@ -80,10 +80,10 @@ def _flatten_rows(payload: Any) -> List[Dict[str, Any]]:
 
 
 def current_ranking(runtime: Any = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """收集本次运行的完整排序结果（文件优先，其次共享黑板）。
+    """收集本次运行的排序结果（文件优先，其次共享黑板）。
 
     与落盘层（`agents/persistence.py`）同一口径：文件是 Agent 之间交接数据的总线，
-    黑板只用于补救「还没落盘」的中间状态。
+    黑板只用于补齐尚未落盘的中间状态。
     """
 
     molecules = _rows_from_file("molecules")
@@ -158,7 +158,7 @@ def build_for_run(run: Any = None, top_n: int = 0) -> Dict[str, Any]:
 
 @tool
 def recommend_compounds(top_n: int = 0, runtime: ToolRuntime[AgentContext] = None) -> str:
-    """计算并返回**推荐化合物排行**（对接亲和力 + 配体效率 + 类药性 + 理化性质 综合分）。
+    """计算并返回推荐化合物排行（对接亲和力 + 配体效率 + 类药性 + 理化性质 综合分）。
 
     top_n: 返回前多少名（0 = 用设置页的「推荐排行条数」，默认 10）。
 
@@ -170,9 +170,9 @@ def recommend_compounds(top_n: int = 0, runtime: ToolRuntime[AgentContext] = Non
 
     缺少某项数据的分子该分量按 0 计入并在 missing 中标注；没有对接分数的分子不进排行（计入 excluded）。
 
-    **用法**：先调用本工具拿到前 N 名的真实数值与规则化建议，然后**逐条**用
-    `submit_recommendations` 写「为什么推荐/如何推进」的理由（依据只能来自这里的数值与
-    产物文件里的事实，不要编造分子或数值）。不要把手算的综合分写进理由。
+    用法：先调用本工具拿到前 N 名的数值与规则化建议，然后逐条用
+    `submit_recommendations` 写「推荐依据与推进方式」的理由，依据只能来自这里的数值与
+    产物文件里的事实，不要编造分子或数值。不要把手算的综合分写进理由。
     """
     try:
         run = active_run(runtime)
@@ -213,9 +213,9 @@ def recommend_compounds(top_n: int = 0, runtime: ToolRuntime[AgentContext] = Non
 
 
 # --------------------------------------------------------------------------- #
-# 报告定制：让协调 Agent 按用户的具体要求组织输出（骨架不变、内容可变）
+# 报告定制：协调 Agent 按调用方的具体要求组织输出（骨架不变、内容可变）
 # --------------------------------------------------------------------------- #
-#: 允许写进报告的**真实字段**（白名单）——与报告渲染共用同一份定义（reporting/fields.py）
+#: 允许写进报告的字段白名单，与报告渲染共用同一份定义（reporting/fields.py）
 REPORT_FIELD_WHITELIST: Dict[str, str] = dict(REPORT_FIELD_LABELS)
 
 _REPORT_SPEC_MAX_HIGHLIGHTS = 5
@@ -224,7 +224,7 @@ _REPORT_SPEC_MAX_NOTES = 600
 
 
 def _report_coverage(rows: List[Dict[str, Any]], field: str) -> str:
-    """该字段在本次数据里的覆盖率（“有多少行真的有值”）——让 Agent 能如实回应用户。"""
+    """该字段在本次数据里的覆盖率，即有多少行确有取值，供 Agent 如实回应调用方。"""
     total = len(rows)
     if not total:
         return "0/0"
@@ -234,22 +234,22 @@ def _report_coverage(rows: List[Dict[str, Any]], field: str) -> str:
 
 @tool
 def customize_report(spec_json: str = "", runtime: ToolRuntime[AgentContext] = None) -> str:
-    """按**用户的具体要求**定制最终报告（固定骨架不变，内容与呈现方式可变）。
+    """按调用方的具体要求定制最终报告（固定骨架不变，内容与呈现方式可变）。
 
-    用户对输出提要求时调用（做完推荐排行之后），例如「带上小分子 ID / 分子式 / 来源文件」
-    → `extra_columns: ["id","formula","source_file"]`；「标题写成 XX」→ `title`；
-    「结论里点明为什么选 X」→ `highlights`；「说明你有没有按我说的做」→ `requirements`。
+    调用方对输出提要求时调用（做完推荐排行之后），例如「带上小分子 ID / 分子式 / 来源文件」
+    对应 `extra_columns: ["id","formula","source_file"]`；「标题写成 XX」对应 `title`；
+    「结论里点明选择 X 的依据」对应 `highlights`；「说明是否按上述要求执行」对应 `requirements`。
 
     spec_json 字段：title / extra_columns / highlights / requirements[{"ask","response"}] /
     notes（≤600 字，写进报告「本次要求与响应」一节）。
-    extra_columns **只能**从工具白名单里选（name/smiles/id/formula/molecular_weight/logP/tpsa/
+    extra_columns 只能从工具白名单里选（name/smiles/id/formula/molecular_weight/logP/tpsa/
     hbd/hba/rotatable_bonds/aromatic_rings/lipinski_violations/drug_likeness_pass/
     affinity_kcal_mol/ligand_efficiency/composite/grade/engine/exhaustiveness/box_group/
     similarity_to_positive_control/maccs_tanimoto/structural_consistency/anchor_match/
     source_index/source_file）。
 
     返回：accepted（已生效）、coverage（每个附加列的覆盖率，如 "id": "30/30"）、rejected（+原因）。
-    **覆盖率不足必须如实说明**（如「输入文件里没有 ID 字段，已按名称展示」），不得假装生效或编造字段值。
+    覆盖率不足时必须如实说明（如「输入文件里没有 ID 字段，已按名称展示」），不得假装生效或编造字段值。
     """
     try:
         run = active_run(runtime)
@@ -348,7 +348,7 @@ def customize_report(spec_json: str = "", runtime: ToolRuntime[AgentContext] = N
 
 
 def _current_ranking_rows(run: Any) -> List[Dict[str, Any]]:
-    """当前可用的排行行（优先落盘的 recommendations，其次共享黑板/产物），用于核对字段覆盖率。"""
+    """当前可用的排行行（先取落盘的 recommendations，其次共享黑板与产物），用于核对字段覆盖率。"""
     rows = [r for r in ((getattr(run, "data", None) or {}).get("recommendations") or [])
             if isinstance(r, dict)]
     if rows:
@@ -366,14 +366,14 @@ def _current_ranking_rows(run: Any) -> List[Dict[str, Any]]:
 
 @tool
 def submit_recommendations(recommendations_json: str, runtime: ToolRuntime[AgentContext] = None) -> str:
-    """提交**协调 Agent 撰写的推荐理由与推进建议**（报告「推荐化合物排行」一节使用）。
+    """提交协调 Agent 撰写的推荐理由与推进建议（报告「推荐化合物排行」一节使用）。
 
     recommendations_json 形如：
     [{"name": "Fluralaner", "reason": "亲和力 −10.14 kcal/mol 为库内最优，配体效率 0.27…",
       "suggestion": "建议提高 exhaustiveness 复算后优先做结合实验", "priority": 1}, ...]
 
-    每个条目用 `name` 或 `smiles` 指定分子（两者都给最稳）。工具会**核对分子确实在本次排行
-    里**：核对不上的条目原样回传在 unmatched 中（不写入报告），请改正后重新提交。
+    每个条目用 `name` 或 `smiles` 指定分子（两者都给最为可靠）。工具会核对分子确实在本次排行
+    里：核对不上的条目原样回传在 unmatched 中（不写入报告），请改正后重新提交。
     `reason` 必填且必须基于真实数据（工具输出的分值、分量或产物文件中的事实），
     不要写没有依据的推测；`suggestion` 选填。
     """

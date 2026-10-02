@@ -1,12 +1,12 @@
 # 多 Agent 协作分子对接筛选工作台（Docking Multi-Agent）
 
-面向虚拟筛选的**分子对接计算与多 Agent 协作编排**系统：输入蛋白质受体结构与候选分子库，
-输出可复核的候选清单（对接亲和力、配体效率、实际使用的引擎与版本、备注）。
+面向虚拟筛选的分子对接计算与多 Agent 协作编排系统。输入为蛋白质受体结构与候选分子库，
+输出为可复核的候选清单，记录对接亲和力、配体效率、实际使用的引擎与版本、备注。
 
-作品说明（对应《代码提交要求》五「特殊情形说明」）：
-本作品**不训练新的深度学习模型**。对接打分由经典物理打分函数（AutoDock Vina / AutoDock4）
-完成；大语言模型（LLM）仅用于把自然语言指令转成结构化任务、调度工具与撰写结论文字，
-不参与任何打分。因此提交内容为**算法/编排代码 + 一键运行入口 + 示例数据 + 结果示例**。
+对应《代码提交要求》五「特殊情形说明」：本项目不训练新的深度学习模型。对接打分由经典物理
+打分函数（AutoDock Vina / AutoDock4）完成；大语言模型（LLM）用于把自然语言指令转成结构化
+任务、调度工具与撰写结论文字，不参与打分。提交内容为算法与编排代码、一键运行入口、示例数据
+与结果示例。
 
 ---
 
@@ -14,9 +14,9 @@
 
 ```
 .
-├── README.md                 # 本文件：环境、命令、输入输出、模型与第三方工具、复现说明
+├── README.md                 # 环境、命令、输入输出、模型与第三方工具、复现说明
 ├── requirements.txt          # Python 依赖与版本
-├── screen.py                 # 一键主入口：受体 + 分子库 → results/results.csv
+├── screen.py                 # 一键主入口：输入受体与分子库，输出 results/results.csv
 ├── data/
 │   ├── README.md             # 数据来源、获取方式与许可
 │   └── example/              # 小规模示例数据（受体 PDB + 6 个配体）
@@ -24,14 +24,14 @@
 ├── models/
 │   └── MODEL_CARD.md         # 模型与第三方工具说明（版本、调用方式、适用范围与局限）
 ├── notebooks/
-│   └── quickstart.ipynb      # 可执行 Notebook：完整走一遍 设计/输入 → 计算 → 结果清单
+│   └── quickstart.ipynb      # 可执行 Notebook：依次执行设计输入、计算与结果清单导出
 ├── web/                      # 网页端前端（简易模式 + 高级模式）
 ├── config/                   # 网页端与 Agent 配置（提示词/工具绑定、设置默认值、受体注册表）
 ├── assets/                   # 内置资源（受体库、示例分子库、提示词模板）
 ├── run_web.sh / start.sh     # 网页端启动脚本
 ├── WEB.md                    # 网页端使用说明（启动方式、接口、配置大模型）
 ├── results/
-│   └── results_example.csv   # 示例运行输出（由 screen.py 真实运行生成）
+│   └── results_example.csv   # 示例运行输出（由 screen.py 实际运行生成）
 └── logs/
     ├── run_example.json      # 本次运行的参数、种子、引擎版本、耗时（机器可读）
     └── run_example.log       # 同上的人读日志
@@ -41,22 +41,22 @@
 
 ### 2.1 软硬件要求
 
-| 项 | 要求 | 本作品实测环境 |
+| 项 | 要求 | 实测环境 |
 | --- | --- | --- |
 | 操作系统 | Linux x86-64（macOS/Windows 未验证） | Ubuntu 24.04.3 LTS，内核 6.17 |
-| Python 解释器 | **CPython 3.12**（3.10/3.11 未验证；`requirements.txt` 按 3.12 钉版本） | CPython 3.12.3 |
+| Python 解释器 | CPython 3.12（3.10/3.11 未验证；`requirements.txt` 按 3.12 钉版本） | CPython 3.12.3 |
 | 系统库 | glibc ≥ 2.35、libgomp（OpenMP，RDKit/NumPy 用）；均为发行版自带 | glibc 2.39 |
 | CPU / 内存 | ≥ 4 核；示例数据 < 1 GB 内存。万级分子库建议 ≥ 8 核、≥ 16 GB | 32 逻辑核 / 16 物理核 |
-| GPU / CUDA / 驱动 | **不要求**（默认引擎 AutoDock Vina 为 CPU 实现）。仅当使用可选外部引擎 AutoDock-GPU 时需要：NVIDIA GPU + CUDA 运行时 + 驱动 | RTX 5090 + 驱动 590.48.01（仅用于 external 引擎实测） |
+| GPU / CUDA / 驱动 | 不要求（默认引擎 AutoDock Vina 为 CPU 实现）；仅当使用可选外部引擎 AutoDock-GPU 时需要 NVIDIA GPU、CUDA 运行时与驱动 | RTX 5090 + 驱动 590.48.01（仅用于 `external` 引擎实测） |
 | 磁盘 | 源码 + 依赖约 1.5 GB；单次运行的位姿与报告按分子数增长（千级约数百 MB） | — |
-| 网络 | **核心流程离线可跑**。仅以下场景需要网络：安装依赖（pip）、按名称/编号在线检索受体与分子、调用大模型 | — |
+| 网络 | 核心流程不需要网络；安装依赖（pip）、按名称或编号在线检索受体与分子、调用大模型需要网络 | — |
 
 ### 2.2 安装
 
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate     # 或 conda create -n docking python=3.12
 pip install -r requirements.txt                       # 依赖及版本见该文件
-python screen.py --help                               # 自检：能打印参数说明即安装成功
+python screen.py --help                               # 自检：打印出参数说明即安装成功
 ```
 
 ### 2.3 环境自检（可选）
@@ -66,16 +66,16 @@ bash run_web.sh --port 5000        # 启动网页端
 curl -s http://127.0.0.1:5000/api/health | python -m json.tool
 ```
 
-`/api/health` 返回 `status`、`version`、`engine_available`（各对接引擎是否可用）、
-`machine`（CPU 与并行预算）、`llm_configured`（是否已配置大模型）等，可用于确认环境就绪。
+`/api/health` 返回字段：`status`、`version`、`engine_available`、`machine`、`llm_configured`。
+其中 `engine_available` 给出各对接引擎的可用性，`machine` 给出 CPU 与并行预算。
 
-### 2.4 可选外部组件（不装也能跑完整流程）
+### 2.4 可选外部组件（缺失时核心流程仍可运行）
 
 | 组件 | 用途 | 未安装时的行为 |
 | --- | --- | --- |
-| AutoDock4 + AutoGrid4 | `--engine autodock`（经典 AD4 打分） | 该引擎在 `/api/health` 与设置页显示不可用；显式选择时**直接报错**，不会静默换引擎 |
+| AutoDock4 + AutoGrid4 | `--engine autodock`（经典 AD4 打分） | 该引擎在 `/api/health` 与设置页显示不可用；显式选择时报错，不静默更换引擎 |
 | AutoDock-GPU | `--engine external`（GPU 加速） | 同上（需在设置页登记可执行文件路径） |
-| P2Rank | `--auto-site` 的口袋检测 | 自动回退内置几何/已知位点法，并在结果与日志里注明位点来源 |
+| P2Rank | `--auto-site` 的口袋检测 | 回退内置几何法或已知位点法，并在结果与日志里注明位点来源 |
 | pdb2pqr + PROPKA | 受体按目标 pH 重新分配质子化态 | 按结构原有质子化态计算，并在报告中注明 |
 | Dimorphite-DL | 配体 pKa 微观态枚举 | 回退内置 pKa 规则表（近似），逐分子记录所用引擎 |
 
@@ -83,8 +83,8 @@ curl -s http://127.0.0.1:5000/api/health | python -m json.tool
 
 ## 3. 一键运行（主入口）
 
-主入口为 `screen.py`；同时提供等价的 `predict.py`（按《代码提交要求》示例命名，便于评测平台直接调用），
-两者参数完全一致：
+主入口为 `screen.py`；另有等价入口 `predict.py`（按《代码提交要求》示例命名，供评测平台直接
+调用），两者参数一致：
 
 ```bash
 # 示例数据：凝血酶受体 + 6 个配体，指定对接盒
@@ -105,7 +105,7 @@ python predict.py --receptor data/example/receptor_demo.pdb \
                   --out results/results.csv
 ```
 
-不给位点盒时自动检测结合口袋（P2Rank 可用则优先，否则内置几何法）：
+未指定位点盒时自动检测结合口袋：P2Rank 可用时优先，否则使用内置几何法。
 
 ```bash
 python screen.py --receptor receptor.pdb --ligands library.sdf --auto-site \
@@ -129,9 +129,9 @@ python screen.py --receptor receptor.pdb --ligands library.sdf --auto-site \
 
 ## 4. 输入与输出
 
-**输入**：受体结构文件 + 候选分子库（SDF/SMILES/CSV/MOL2/XLSX）；可选给定位点盒坐标。
+输入为受体结构文件与候选分子库（SDF/SMILES/CSV/MOL2/XLSX），可给定位点盒坐标。
 
-**输出** `results.csv`（UTF-8，逗号分隔；字段与《候选清单》模板对应）：
+输出文件为 `results.csv`（UTF-8，逗号分隔），字段与《候选清单》模板对应：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -144,7 +144,7 @@ python screen.py --receptor receptor.pdb --ligands library.sdf --auto-site \
 | `engine` / `engine_version` | 实际执行对接的引擎与版本 |
 | `seed` / `exhaustiveness` / `n_poses` | 随机种子与搜索参数 |
 | `box_center` / `box_size` | 对接盒（Å），记录位点来源 |
-| `receptor_file` | 本次使用的受体结构文件名（便于把清单与随附结构文件对应起来） |
+| `receptor_file` | 本次使用的受体结构文件名（用于把清单与随附结构文件对应起来） |
 | `pose_file` | 位姿文件相对路径（`--save-poses` 时非空） |
 | `status` | `ok` / `error` |
 | `remark` | 备注：输入文件附加字段、失败原因、配体告警 |
@@ -159,14 +159,14 @@ Python/平台信息、耗时与成功/失败计数，用于复核与复现。
 | 对接打分（默认） | AutoDock Vina 1.2.7（`vina` Python 包） | `screen.py --engine vina`，进程内调用 | Apache-2.0，https://github.com/ccsb-scripps/AutoDock-Vina |
 | 对接打分（可选） | AutoDock4 4.2.6 + AutoGrid4 4.2.7（CPU） | `--engine autodock` | GPL-2.0，https://autodock.scripps.edu |
 | 对接打分（可选，GPU） | AutoDock-GPU v1.6（OpenCL/CUDA） | 设置中登记后 `--engine external` | GPL-2.0，https://github.com/ccsb-scripps/AutoDock-GPU |
-| 配体准备 | Meeko 0.8.0（+ RDKit 2026.3.6） | 由 `screen.py` 内部调用（SMILES→3D→PDBQT） | Apache-2.0 / BSD-3-Clause |
+| 配体准备 | Meeko 0.8.0（+ RDKit 2026.3.6） | 由 `screen.py` 内部调用（SMILES 转 3D 构象，再转 PDBQT） | Apache-2.0 / BSD-3-Clause |
 | 口袋检测（可选） | P2Rank 2.5.1 | `--auto-site` 时优先使用，缺失则回退内置几何法 | MIT，https://github.com/rdk/p2rank |
-| 受体质子化（可选） | pdb2pqr + PROPKA | 需要按目标 pH 准备受体时调用（缺失则跳过并提示） | BSD-3-Clause |
+| 受体质子化（可选） | pdb2pqr + PROPKA | 需要按目标 pH 准备受体时调用（缺失则跳过并在报告中注明） | BSD-3-Clause |
 | 配体 pKa（可选） | Dimorphite-DL 2.0.2 | 需要按目标 pH 分配配体质子化态时调用 | Apache-2.0 |
-| 大语言模型（网页端编排，**不参与打分**） | 由运行者在 `.env` 配置（示例：DeepSeek `deepseek-flash`） | 通过 OpenAI 兼容 HTTP 接口调用 | 由模型提供方许可决定；本作品只调用，不分发权重 |
+| 大语言模型（网页端编排，不参与打分） | 由运行者在 `.env` 配置（示例：DeepSeek `deepseek-flash`） | 通过 OpenAI 兼容 HTTP 接口调用 | 由模型提供方许可决定；本项目只调用，不分发权重 |
 
-- 本作品**不包含自训练模型权重**；`models/` 目录仅提供模型说明（Model Card）与外部引擎的获取方式。
-- 第三方工具均以**外部依赖**形式调用，未修改其源码；版本与调用参数记录在 `logs/` 与结果清单中。
+- 本项目不包含自训练模型权重；`models/` 目录只提供模型说明（Model Card）与外部引擎的获取方式。
+- 第三方工具以外部依赖形式调用，其源码未修改；版本与调用参数记录在 `logs/` 与结果清单中。
 
 ## 6. 数据来源与许可
 
@@ -175,59 +175,59 @@ Python/平台信息、耗时与成功/失败计数，用于复核与复现。
 | 示例受体 `data/example/receptor_demo.pdb` | RCSB PDB（凝血酶结构，去除头部的结构记录） | 公共领域（PDB 数据可自由使用，见 https://www.rcsb.org/pages/usage-policy） |
 | 示例配体 `data/example/ligands_demo.smi` | 常见小分子（苯甲脒、阿司匹林、华法林、乙醇、萘莫司他、甲苯） | 结构信息本身不受版权保护，仅作流程演示 |
 | 可选在线检索 | RCSB PDB / UniProt / PubChem | 各站点公开数据，使用时遵守其使用条款 |
-| 隐藏评测数据 | 无（本作品不依赖任何未公开数据） | — |
+| 隐藏评测数据 | 无（本项目不依赖未公开数据） | — |
 
-数据预处理：受体仅保留蛋白质 ATOM 记录（水与杂原子按参数决定是否保留，见下）；配体由
-RDKit 读取并规范化为 canonical SMILES，重复物质按身份键去重。详见 `src/docking_agent/core/`。
+数据预处理：受体只保留蛋白质 ATOM 记录，水与杂原子由参数决定是否保留；配体由 RDKit 读取并
+规范化为 canonical SMILES，重复物质按身份键去重。实现见 `src/docking_agent/core/`。
 
 ## 7. 可复现性
 
-- **随机种子**：`--seed`（默认 42）固定 Vina 采样；同一分子单独运行与批量运行的分数一致
-  （回归测试 `tests/test_agent_context.py::test_scores_are_independent_of_batch_and_workers`）。
-- **参数留痕**：`logs/run_example.json` 记录引擎、版本、搜索强度、盒子坐标、Python/平台与耗时。
-- **计算口径**：受体与配体使用同一目标 pH 的质子化态（默认 7.4）；同一批次内参数一致。
-- **预期资源与耗时**（实测，Linux/32 核）：示例数据（6 分子，exhaustiveness=1）约 5 秒；
+- 随机种子：`--seed`（默认 42）固定 Vina 采样。同一分子单独运行与批量运行的分数一致，
+  回归测试见 `tests/test_agent_context.py::test_scores_are_independent_of_batch_and_workers`。
+- 参数留痕：`logs/run_example.json` 记录引擎、版本、搜索强度、盒子坐标、Python/平台与耗时。
+- 计算口径：受体与配体使用同一目标 pH 的质子化态（默认 7.4）；同一批次内参数一致。
+- 预期资源与耗时（实测，Linux/32 核）：示例数据（6 分子，exhaustiveness=1）约 5 秒；
   1000 分子库、exhaustiveness=8、20³ Å 盒约 20–40 分钟（CPU Vina，多进程）。
-- **离线复现**：`python screen.py ...` 不需要网络与大模型。
+- 离线复现：`python screen.py ...` 不需要网络与大模型。
 
 ## 8. 已知限制
 
-- 对接分数是**近似结合自由能**（经验打分函数 + 启发式采样），用于同一受体/同一参数下的
-  **相对排序**，不可跨受体或跨参数直接比较，也不等同于实验活性。
-- 受体准备按标准流程处理：默认剔除水与杂原子，并如实报告被剔除的残基；金属酶/辅因子体系
+- 对接分数是近似结合自由能，由经验打分函数与启发式采样得到，用于同一受体、同一参数下的
+  相对排序。分数不可跨受体或跨参数直接比较，也不等同于实验活性。
+- 受体准备按标准流程处理：默认剔除水与杂原子，被剔除的残基在结果中报告；金属酶与辅因子体系
   需通过参数显式保留（`keep_hetatm`），否则结论仅代表“去辅因子”条件。
-- 含 7 元及以上环的配体按**刚性环**准备（不切环、不采样环构象），以兼容经典 AutoDock 格点打分；
+- 含 7 元及以上环的配体按刚性环准备，不切环、不采样环构象，以兼容经典 AutoDock 格点打分；
   环构象多样性因此未被采样。
 - 未做共识打分与位姿重打分；不确定性以“失败/跳过分子计数 + 参数留痕”形式披露。
-- LLM 仅用于交互与文字撰写，其输出经结构化校验；本作品的核心结论不依赖 LLM 的数值判断。
+- LLM 只用于交互与文字撰写，其输出经结构化校验；核心结论不依赖 LLM 的数值判断。
 
 ## 8.1 网页端（交互界面）
 
-除命令行入口外，作品提供网页端（同一套计算内核）：
+除命令行入口外，本项目另提供网页端，与命令行共用同一套计算内核：
 
 ```bash
 bash run_web.sh              # 简易模式 http://127.0.0.1:5000/
 bash run_web.sh --port 8000  # 高级模式 http://127.0.0.1:<端口>/advanced
 ```
 
-- 简易模式：上传受体与分子库、表单参数或自然语言发起筛选、查看结果与下载产物。
+- 简易模式：上传受体与分子库，用表单参数或自然语言发起筛选，查看结果与下载产物。
 - 高级模式：暴露全部参数（引擎、搜索强度、位点、质子化策略、最大分子数等）、运行记录与
   报告目录，每次运行的输入/参数/结果/日志可在运行记录中追溯。
-- **不配置大模型也能使用**：表单参数、运行记录、结果与报告不依赖大模型；只有自然语言对话与
-  结论撰写需要按 `WEB.md` §3 配置。大模型不参与打分与排序。
-- 网页端与命令行共用 `src/docking_agent/core/`，因此网页端结果可用 `screen.py` 逐条复核。
+- 不配置大模型时表单参数、运行记录、结果与报告仍可用；自然语言对话与结论撰写需要按
+  `WEB.md` §3 配置。大模型不参与打分与排序。
+- 网页端与命令行共用 `src/docking_agent/core/`，网页端结果可用 `screen.py` 逐条复核。
 
 详见 `WEB.md`；接口契约见仓库 `docs/api.md`。
 
 ## 9. 本项目的创新与贡献
 
-1. **两套界面（简易/高级）+ 标准 Agent Protocol 面**共用同一执行链路与同一份产物：自然语言
-   任务与表单参数不会互相覆盖，运行记录可离线复核。
-2. **计算对象的确定性护栏**：受体未指定、位点未确定、阳性对照待用户决定时，工具**拒绝开跑**
-   并给出下一步；引擎不可用时不静默回退（结果行记录真实引擎与版本）。
-3. **可复现的批处理内核**：网格图按“受体+盒子”生成一次复用；批次/进程数不影响单分子分数；
-   两阶段漏斗（大库先粗筛全库、再精算头部）在计算层内完成并留痕。
-4. **外部引擎执行适配**：登记后可由 AutoDock-GPU 执行（自动生成格点图、解析 DLG 并转换为
-   PDBQT 位姿），结果与内置引擎同口径，失败分子如实上报。
-5. **报告与清单的可追溯性**：参数决策链、受体/配体质子化溯源、失败原因、引擎版本、随机种子
-   全部写入产物；报告固定章节结构，文字结论由 Agent 撰写。
+1. 两套界面（简易模式与高级模式）与标准 Agent Protocol 面共用同一执行链路和同一份产物：
+   自然语言任务与表单参数不互相覆盖，运行记录可离线复核。
+2. 计算对象的前置检查：受体未指定、位点未确定或阳性对照待决定时，工具不启动计算并返回缺失项；
+   引擎不可用时不静默回退，结果行记录实际执行的引擎与版本。
+3. 可复现的批处理内核：网格图按“受体与对接盒”生成一次并复用；批次数与进程数不影响单分子分数；
+   两阶段漏斗（大库先粗筛全库，再精算头部）在计算层内完成并留痕。
+4. 外部引擎执行适配：登记后可由 AutoDock-GPU 执行，自动生成格点图、解析 DLG 并转换为 PDBQT
+   位姿；结果与内置引擎同口径，失败分子在结果中上报。
+5. 报告与清单的可追溯性：参数决策链、受体与配体质子化溯源、失败原因、引擎版本、随机种子
+   写入产物；报告采用固定章节结构，文字结论由 Agent 撰写。

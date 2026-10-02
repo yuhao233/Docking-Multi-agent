@@ -1,8 +1,8 @@
-"""api 层共享支撑：进程内状态、安全边界、脱敏、模型/引擎探测、上传准备、产物下载名。
+"""api 层共享支撑：进程内状态、安全边界、脱敏、模型与引擎探测、上传准备、产物下载名。
 
-`api/app.py` 原先是一个 700+ 行的 `create_app()` 闭包，~36 条路由与全部辅助函数挤在一起。
-第 2 波按「路由模块（`api/routers/*`）+ 共享支撑（本模块）+ Agent 编排支撑（`agent_flow.py`）」
-拆分：`app.py` 只负责组装（lifespan / 安全中间件 / 挂路由 / 静态前端）。
+`api/app.py` 此前是一个 700+ 行的 `create_app()` 闭包，约 36 条路由与全部辅助函数
+放在一起；现已按「路由模块（`api/routers/*`）、共享支撑（本模块）、Agent 编排支撑
+（`agent_flow.py`）」分层，`app.py` 只负责组装（lifespan / 安全中间件 / 挂路由 / 静态前端）。
 """
 from __future__ import annotations
 
@@ -52,13 +52,13 @@ state = ServiceState()
 # --------------------------------------------------------------------------- #
 # 安全边界：同源校验 + 安全响应头
 # --------------------------------------------------------------------------- #
-# 本服务**没有鉴权**（定位是本机工具），所以浏览器侧的跨站请求必须挡住：
-# 任何网页都能对 127.0.0.1 发「简单请求」（浏览器不做预检），否则
+# 本服务没有鉴权（定位是本机工具），因此浏览器侧的跨站请求需要挡住：
+# 任何网页都能对 127.0.0.1 发「简单请求」（浏览器不做预检），
 # `PUT /api/settings`（改端点与密钥）、`POST /api/uploads`、
-# `POST /api/settings/test`（会真实消耗 LLM 额度）都可被跨站触发。
+# `POST /api/settings/test`（会消耗 LLM 额度）都可能被跨站触发。
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # CSP 按当前前端实际形态收紧：只有一个外部脚本、无内联脚本、无内联 style 属性。
-# style-src 保留 'unsafe-inline'（动态样式不影响脚本执行），script-src 必须严格。
+# style-src 保留 'unsafe-inline'（动态样式不影响脚本执行），script-src 按最小集合下发。
 _CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; "
         "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -72,8 +72,8 @@ def _allowed_origins() -> set:
 def _same_origin(request: Request) -> bool:
     """请求是否来自同源（或非浏览器客户端）。
 
-    保守取向：**只有明确不同源才拒绝**。缺 Origin 的一律放行 —— 否则 CLI、
-    测试与同源导航会被误伤（浏览器在跨站请求上一定会带 Origin）。
+    判定取向：只有明确不同源才拒绝。缺 Origin 的请求一律放行，否则 CLI、
+    测试与同源导航会被误伤（浏览器在跨站请求上会带 Origin）。
     """
     site = (request.headers.get("sec-fetch-site") or "").strip().lower()
     if site == "cross-site":
@@ -81,7 +81,7 @@ def _same_origin(request: Request) -> bool:
     origin = (request.headers.get("origin") or "").strip().lower()
     if not origin:
         return True
-    if origin == "null":                       # sandboxed iframe / file:// → 不可信
+    if origin == "null":                       # sandboxed iframe / file:// 来源不可信
         return False
     if origin in _allowed_origins():
         return True
@@ -100,11 +100,11 @@ def _same_origin(request: Request) -> bool:
 # 脱敏与引擎/模型探测
 # --------------------------------------------------------------------------- #
 def _engine_available() -> Dict[str, Any]:
-    """本机可用引擎：内置 Vina / 经典 AutoDock4 / 用户登记的外部引擎。
+    """本机可用引擎：内置 Vina、经典 AutoDock4、调用方登记的外部引擎。
 
-    路径判定一律走项目自己的定位逻辑（`AUTODOCK4_BIN`/`AUTOGRID4_BIN` → PATH），
-    因为本机的 AD4 常常**不在 PATH 上**（conda 独立前缀）；只看 `shutil.which` 会把
-    "已配置" 错报成 "不可用"。外部引擎按探测结果如实标注（登记了但不可用也不算可用）。
+    路径判定走项目自己的定位逻辑（`AUTODOCK4_BIN`、`AUTOGRID4_BIN`，再查 PATH），
+    因为本机的 AD4 通常不在 PATH 上（conda 独立前缀），只看 `shutil.which` 会把
+    "已配置" 错报成 "不可用"。外部引擎按探测结果如实标注（登记了但不可用不算可用）。
     """
     vina_ok = False
     try:
@@ -132,11 +132,11 @@ def _engine_available() -> Dict[str, Any]:
 
 def _agent_model_map() -> Dict[str, Any]:
     """各 Agent 角色实际使用的模型（每个角色一个独立 LLM 实例）。
-    来源：runtime.llm 的实例登记表（进程内、按角色记录）+ 服务端回执的模型名。
+    来源：runtime.llm 的实例登记表（进程内、按角色记录）与服务端回执的模型名。
     - `model`：构建实例时请求的模型；
     - `actual_model` / `actual_models`：服务端响应中确认的模型（运行结束后刷新）；
     - `calls`：该角色实际发起的模型调用次数；
-    - `instance_id`：实例号，不同即证明三者为独立实例。
+    - `instance_id`：实例号，不同即说明三者为独立实例。
     """
     from docking_agent.runtime.llm import llm_registry
 
@@ -155,7 +155,7 @@ def _agent_model_map() -> Dict[str, Any]:
 
 
 def _mask_secret(value: Optional[str]) -> str:
-    """密钥只回显首尾 4 位（用于确认「配的是哪一把」），绝不下发明文。"""
+    """密钥只回显首尾各 4 位（用于确认配的是哪一把），不返回明文。"""
     if not value:
         return ""
     text = str(value)
@@ -173,7 +173,7 @@ _SECRET_PATTERNS = (
 
 
 def _redact(text: str, limit: int = 200) -> str:
-    """对外错误信息必须脱敏：上游可能把请求头/密钥原样回显在错误体里。"""
+    """对外错误信息需要脱敏：上游可能把请求头或密钥原样回显在错误体里。"""
     out = str(text or "")
     for pattern in _SECRET_PATTERNS:
         out = pattern.sub(lambda m: m.group(0)[:4] + "***", out)
@@ -183,7 +183,7 @@ def _redact(text: str, limit: int = 200) -> str:
 # --------------------------------------------------------------------------- #
 # 产物下载名与 PDF 现场渲染
 # --------------------------------------------------------------------------- #
-# 产物名 → 规范下载名 key：单个产物下载与专用端点共用同一套命名规则
+# 产物名对应规范下载名 key：单个产物下载与专用端点共用同一套命名规则
 _ARTIFACT_DOWNLOAD_KEYS = {
     "report_pdf": "report_pdf",
     "report_md": "report_md",
@@ -207,7 +207,7 @@ def _artifact_filename(run_id: str, name: str, fallback: str) -> str:
 def _build_run_pdf(run_id: str) -> Optional[bytes]:
     """现场为已有运行渲染 PDF 报告字节；缺 `report.md` 时返回 None。
 
-    直接用落盘的 report.md 渲染：与页面显示的报告内容完全一致，且无需重算结果。
+    直接使用落盘的 report.md 渲染，报告内容与页面显示一致，且无需重算结果。
     """
     from docking_agent.reporting.pdf import build_report_pdf
 
@@ -234,13 +234,13 @@ def _build_run_pdf(run_id: str) -> Optional[bytes]:
 
 
 # --------------------------------------------------------------------------- #
-# 上传文件的「重活」（仅在用户主动校验 / 真正运行时执行）
+# 上传文件的耗时步骤（仅在调用方主动校验或真正运行时执行）
 # --------------------------------------------------------------------------- #
 def _receptor_upload_payload(dest: Path, name: str) -> Dict[str, Any]:
-    """受体的**重活**：现场准备 PDBQT + 标定位点盒 + 化学溯源。
+    """受体的耗时步骤：现场准备 PDBQT、标定位点盒、生成化学溯源。
 
-    为什么单独抽出来：上传接口**不再**做这件事（设计约束：不要一上传就开始处理文件），
-    只有用户主动「校验文件」或真正开始运行时才执行。
+    独立成函数的原因：上传接口不做这件事（设计约束：上传后不立即处理文件），
+    只有调用方主动校验文件或真正开始运行时才执行。
     """
     from docking_agent.core.normalize import normalize_receptor_source
     from docking_agent.paths import project_root
@@ -264,8 +264,8 @@ def _receptor_upload_payload(dest: Path, name: str) -> Dict[str, Any]:
         "input_normalization": normalization,
         "message": f"受体已现场准备为 PDBQT（{Path(str(receptor_path)).name}）",
     }
-    # 化学溯源必须在上传/校验这一步就告诉用户：等到对接结果里才发现
-    # 「金属/辅因子被剔除了」就太晚了，用户无从判断结果是否还代表真实体系。
+    # 化学溯源在上传与校验这一步就回传给调用方：等到对接结果里才暴露
+    # 「金属/辅因子被剔除了」，调用方已无法判断结果是否还代表真实体系。
     spec = normalization
     dropped = spec.get("dropped_hetatm") or {}
     if dropped:
@@ -290,7 +290,7 @@ def _receptor_upload_payload(dest: Path, name: str) -> Dict[str, Any]:
 
 
 def _ligand_upload_payload(dest: Path, name: str) -> Dict[str, Any]:
-    """小分子库的**重活**：解析分子（大 SDF 可能很慢）。上传时不做，运行时/校验时才做。"""
+    """小分子库的耗时步骤：解析分子（大 SDF 可能很慢）。上传时不做，运行时或校验时才做。"""
     from docking_agent.core.normalize import normalize_ligand_file
     from docking_agent.paths import project_root
 
@@ -318,7 +318,7 @@ def _depict(smiles: str, width: int, height: int) -> bytes:
     if mol is None:
         raise ValueError("SMILES 解析失败")
     drawer = rdMolDraw2D.MolDraw2DCairo(int(width), int(height))
-    # rdkit 的 `drawOptions()` 存根把属性读成只读，显式 Any 以免与运行时行为不符
+    # rdkit 的 `drawOptions()` 存根把属性读成只读，显式声明 Any 以匹配运行时行为
     opts: Any = drawer.drawOptions()
     opts.bondLineWidth = 2
     opts.minFontSize = 12
@@ -329,7 +329,7 @@ def _depict(smiles: str, width: int, height: int) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# 运行完整度与序列化（也被 tests 直接引用）
+# 运行完成度与序列化（也被 tests 直接引用）
 # --------------------------------------------------------------------------- #
 def _docked_smiles(result: Dict[str, Any]) -> set:
     docking = result.get("docking") or {}
@@ -339,7 +339,7 @@ def _docked_smiles(result: Dict[str, Any]) -> set:
 
 
 def _completeness(run: Run, result: Dict[str, Any], auto_completed: bool = False) -> Dict[str, Any]:
-    """记录本次实际完成了什么（**只作信息展示**：流程控制权在主管 Agent，服务端不接管）。"""
+    """记录本次实际完成了什么，只作信息展示：流程控制权在主管 Agent，服务端不接管。"""
 
     molecules = result.get("molecules") or []
     if not molecules:

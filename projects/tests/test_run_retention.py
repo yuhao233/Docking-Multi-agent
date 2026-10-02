@@ -1,9 +1,9 @@
-"""运行记录保留策略回归（审计：`var/runs` 2.2 GB / 4900+ 目录，且启动要遍历全部）。
+"""运行记录保留策略回归：`var/runs` 占用 2.2 GB / 4900+ 个目录，启动时需遍历全部记录。
 
 看护三件事：
-1. `RunStore.prune()` **默认只报告**（dry-run），`dry_run=False` 才删；
-2. 删除条件保守 —— 「不属于最近 N 个」**且**「超过 M 天」两条同时满足；
-3. `status == "running"` 永不删除；删除后检索索引失效（不会继续列出已删运行）。
+1. `RunStore.prune()` 默认只报告（dry-run），`dry_run=False` 才执行删除；
+2. 删除条件保守：「不属于最近 N 个」与「超过 M 天」两条需同时满足；
+3. `status == "running"` 的运行记录不删除；删除后检索索引失效，已删运行不再被列出。
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ ensure_runtime_env()
 
 
 def _make_run(store, run_id: str, *, status: str = "ok", age_days: float = 0.0) -> Path:
-    """建一个带 run.json 的运行目录，并把 mtime 拨到 `age_days` 天前。"""
+    """建一个带 `run.json` 的运行目录，并把 mtime 设为 `age_days` 天前。"""
     run = store.new("agent", {"message": "x"}, run_id=run_id)
     run.finish(status)
     run_dir = run.dir
@@ -66,7 +66,7 @@ def test_prune_apply_deletes_only_old_and_excess(tmp_path: Path) -> None:
 
 
 def test_prune_keeps_recent_runs_even_if_many(tmp_path: Path) -> None:
-    """数量阈值独立生效：都很旧时，最近 N 个仍然保留。"""
+    """数量阈值独立生效：记录都很旧时，最近 N 个仍然保留。"""
     from docking_agent.runs import RunStore
 
     store = RunStore(tmp_path)
@@ -94,7 +94,7 @@ def test_prune_never_deletes_running_runs(tmp_path: Path) -> None:
 
 
 def test_prune_invalidates_search_index(tmp_path: Path) -> None:
-    """清理后检索不得再列出已删除的运行（索引签名可能不变，必须显式失效）。"""
+    """清理后检索不得再列出已删除的运行；索引签名可能不变，因此需要显式失效。"""
     from docking_agent.runs import RunStore
 
     store = RunStore(tmp_path)

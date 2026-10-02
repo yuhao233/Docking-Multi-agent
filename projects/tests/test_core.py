@@ -104,10 +104,10 @@ def test_system_prompt_loaded():
 
 
 def test_coordinator_tool_list_matches_config(monkeypatch) -> None:
-    """配置声明的工具清单必须与协调 Agent **实际绑定**的工具完全一致。
+    """配置声明的工具清单须与协调 Agent 实际绑定的工具一致。
 
-    旧实现用 `inspect.getsource` + 正则数 `tools=[...]` 的行，任何格式化/换行改动都会误伤；
-    这里直接构建图并读出 ToolNode 真正绑定的工具名（同样零网络：假模型 + 假 checkpointer）。
+    静态统计 `tools=[...]` 源码行的做法对格式化与换行改动敏感；
+    这里直接构建图并读出 ToolNode 绑定的工具名（同样零网络：假模型 + 假 checkpointer）。
     """
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
@@ -147,7 +147,7 @@ def test_role_config_precedence(monkeypatch):
     for name in ("LLM_MODEL_DOCKING", "LLM_TEMPERATURE_DOCKING", "LLM_TEMPERATURE_PROPERTY"):
         monkeypatch.delenv(name, raising=False)
 
-    # 角色文件项不被全局环境变量压掉（否则 .env 里的 LLM_TEMPERATURE 会让 roles 段失效）
+    # 角色文件项不被全局环境变量覆盖（否则 .env 里的 LLM_TEMPERATURE 会压掉 roles 段）
     assert llm_mod.effective_config("property")["temperature"] == 0.0
     assert llm_mod.effective_config("docking")["temperature"] == 0.1
     # 未覆盖的角色继承全局配置
@@ -175,7 +175,7 @@ def test_describe_roles_covers_every_agent_role(monkeypatch):
 
 
 def test_build_chat_llm_creates_distinct_instance_per_role(monkeypatch):
-    """每个角色都必须拿到**独立**的模型实例，且登记表能区分它们。"""
+    """每个角色各自持有独立的模型实例，登记表能区分它们。"""
     from docking_agent.runtime import llm as llm_mod
 
     monkeypatch.setenv("LLM_API_KEY", "test-key")
@@ -365,7 +365,7 @@ def test_json_dump_no_molecules_result(tmp_path, monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 回归：结合模式检测（曾因拆分 core 时漏导出 _fingerprint 而静默回退）
+# 回归：结合模式检测（拆分 core 时漏导出 _fingerprint 会静默回退）
 # --------------------------------------------------------------------------- #
 def test_binding_mode_analysis_tool_returns_full_result():
     import json
@@ -382,7 +382,7 @@ def test_binding_mode_analysis_tool_returns_full_result():
     # 与阳性对照自身：相似度必须为 1
     assert rows["苯甲脒"]["similarity_to_positive_control"] == 1.0
     assert rows["苯甲脒"]["structural_consistency"] == "high"
-    # 完整方法学字段必须齐全（不能退化成只有相似度）
+    # 方法学字段须齐全（不能退化成只有相似度）
     for key in ("morgan_tanimoto", "maccs_tanimoto", "combined_similarity",
                 "structural_consistency", "binding_mode_hint", "pharmacophore",
                 "anchor_match", "mw_delta"):
@@ -422,7 +422,7 @@ def test_binding_tools_handle_bad_input():
 
 
 def test_all_internal_imports_resolvable():
-    """永久回归：所有 docking_agent 内部导入都必须能解析。
+    """长期回归：所有 docking_agent 内部导入都必须能解析。
 
     这条测试用于防止「拆分模块后漏导出」这类静默失败（例如 core._fingerprint）。
     """
@@ -450,9 +450,9 @@ def test_all_internal_imports_resolvable():
                     continue
                 if hasattr(mod, alias.name):
                     continue
-                # `from pkg import submodule`：子模块只有在**被导入过**之后才是 pkg 的属性。
-                # 惰性 facade（core/__init__.py 的 PEP 562）与函数内延迟导入都会让它暂时缺席，
-                # 因此这里直接尝试导入 `pkg.submodule` —— 能导入就说明引用可解析。
+                # `from pkg import submodule`：子模块在被导入过之后才成为 pkg 的属性。
+                # 惰性 facade（core/__init__.py 的 PEP 562）与函数内延迟导入都会使其暂时缺席，
+                # 因此这里直接导入 `pkg.submodule`：能导入即说明引用可解析。
                 try:
                     importlib.import_module(f"{node.module}.{alias.name}")
                 except Exception as e:  # noqa: BLE001

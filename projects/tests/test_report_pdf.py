@@ -1,6 +1,6 @@
 """PDF 报告导出、`downloads` 元信息与规范下载名的测试。
 
-全部离线：只有一次小规模真实 Vina 对接（exhaustiveness=1，2 个分子），
+全部离线：只执行一次小规模的实际 Vina 对接（exhaustiveness=1，2 个分子），
 不调用 LLM、不访问网络；其余断言直接对 `build_report_pdf` / `download_name` 做单元测试。
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def client() -> Iterator[TestClient]:
 
 
 def _run_agent(client, body: dict, monkeypatch) -> str:
-    """走标准 Agent Protocol 路径（假 LLM 驱动真实多 Agent 编排），返回业务 run_id。"""
+    """走标准 Agent Protocol 路径（假 LLM 驱动实际多 Agent 编排），返回业务 run_id。"""
     return run_agent(client, coordinator_script_for_form(body), body, monkeypatch)
 
 
@@ -77,7 +77,7 @@ def test_download_name_falls_back_when_receptor_unusable() -> None:
 
     assert download_name("R1", "report", receptor="   ", molecules=1, ext="pdf") \
         == "dock_R1_receptor_1mols_report.pdf"
-    # 截断到 24 字符：超长受体名不撑爆文件名
+    # 截断到 24 字符：超长受体名不会使文件名超限
     long_name = download_name("R1", "report", receptor="A" * 60, molecules=1, ext="pdf")
     assert long_name == f"dock_R1_{'A' * 24}_1mols_report.pdf"
 
@@ -86,7 +86,7 @@ def test_download_name_missing_molecules_and_ext() -> None:
     from docking_agent.runs import download_name, download_prefix
 
     name = download_name("R1", "report", receptor="thrombin", ext="pdf")
-    # 分子数未知时整段省略，不出现 namols 这种读不通的片段
+    # 分子数未知时整段省略，不产生 namols 这类无意义片段
     assert name == "dock_R1_thrombin_report.pdf"
     assert "namols" not in name and "mols" not in name
     assert download_prefix("R1", receptor="thrombin") == "dock_R1_thrombin"
@@ -95,7 +95,7 @@ def test_download_name_missing_molecules_and_ext() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# build_report_pdf：最小 result + 真实 PNG，离线可跑
+# build_report_pdf：最小 result 加实际 PNG，离线可跑
 # --------------------------------------------------------------------------- #
 def test_build_report_pdf_is_real_pdf_with_embedded_chart(tmp_path) -> None:
     from docking_agent.reporting import build_report_pdf
@@ -126,7 +126,7 @@ def test_build_report_pdf_is_real_pdf_with_embedded_chart(tmp_path) -> None:
 
 
 def test_tool_versions_cover_all_tools_with_unknown_fallback() -> None:
-    """封面「工具版本」必须每个工具都有一行；取不到写「未知」而不是省略。"""
+    """封面「工具版本」为每个工具各列一行；取不到版本时写「未知」，不做省略。"""
     from docking_agent.reporting.pdf import _tool_versions
 
     versions = {row[0]: row[1] for row in _tool_versions()}
@@ -136,7 +136,7 @@ def test_tool_versions_cover_all_tools_with_unknown_fallback() -> None:
 
 
 def test_report_seed_line_falls_back_to_unknown() -> None:
-    """没有 seed 字段时报告仍要写出这一行（写「未知」），保证复现信息不缺失。"""
+    """没有 seed 字段时报告仍写出该行（值为「未知」），复现信息保持齐全。"""
     from docking_agent.reporting import build_markdown_report
 
     md = build_markdown_report(
@@ -146,7 +146,7 @@ def test_report_seed_line_falls_back_to_unknown() -> None:
 
 
 def test_report_methods_limitations_and_failure_sections() -> None:
-    """「方法与局限」「失败与跳过」两节必须有内容，且失败按原因分组、结论限定覆盖范围。"""
+    """「方法与局限」「失败与跳过」两节各有内容，失败按原因分组，结论限定覆盖范围。"""
     from docking_agent.reporting import build_markdown_report
 
     result = {
@@ -167,7 +167,7 @@ def test_report_methods_limitations_and_failure_sections() -> None:
     md = build_markdown_report(result, run_id="R1")
     assert "## 6. 方法与局限" in md
     assert "## 7. 失败与跳过" in md
-    # 盒子效应实测引用（方法与局限的可比性依据）
+    # 盒子效应引用值（方法与局限的可比性依据）
     assert "1.34 kcal/mol" in md
     # 失败按原因分组，且明确结论覆盖范围
     assert "配体化学解析失败" in md and "对接失败" in md
@@ -178,7 +178,7 @@ def test_report_methods_limitations_and_failure_sections() -> None:
 
 
 def test_ranking_csv_marks_status_and_appends_failures() -> None:
-    """ranking.csv 必须带 status/error 列，并把失败行以 rank=FAIL 追加，避免「全成功」假象。"""
+    """ranking.csv 带 status 与 error 列，失败行以 rank=FAIL 追加，避免出现全部成功的表象。"""
     from docking_agent.reporting import build_ranking_csv, collect_failures
 
     docking = {"receptors": [{"results": [
@@ -196,7 +196,7 @@ def test_ranking_csv_marks_status_and_appends_failures() -> None:
 
 
 def test_write_report_pdf_does_not_break_main_flow(tmp_path) -> None:
-    """PDF 落盘失败时必须只记 warning、返回 False，而不是把主流程炸掉。"""
+    """PDF 落盘失败时只记 warning 并返回 False，不影响主流程。"""
     from docking_agent.reporting.artifacts import write_report_pdf
 
     class BrokenRun:
@@ -215,7 +215,7 @@ def test_write_report_pdf_does_not_break_main_flow(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 真实 Agent 运行：PDF 产物 + 下载端点 + 规范文件名
+# 实际 Agent 运行：PDF 产物 + 下载端点 + 规范文件名
 # --------------------------------------------------------------------------- #
 def test_agent_pdf_artifact_and_normalized_downloads(client, monkeypatch) -> None:
     run_id = _run_agent(client, {
@@ -228,7 +228,7 @@ def test_agent_pdf_artifact_and_normalized_downloads(client, monkeypatch) -> Non
     assert detail["run"]["status"] == "ok"
     assert detail["run"]["molecule_count"] == 2
 
-    # ---- 产物清单里有真实 PDF ----
+    # ---- 产物清单里有 PDF 文件 ----
     artifact = next((a for a in detail["artifacts"] if a["name"] == "report_pdf"), None)
     assert artifact is not None, f"缺少 report_pdf 产物：{sorted(a['name'] for a in detail['artifacts'])}"
     assert artifact["content_type"] == "application/pdf"
@@ -296,7 +296,7 @@ def test_agent_pdf_artifact_and_normalized_downloads(client, monkeypatch) -> Non
         assert re.fullmatch(rf"dock_{re.escape(run_id)}_[A-Za-z0-9._-]+_2mols_poses\.zip", poses_name), poses_name
         assert poses_name == downloads["poses_zip"]
     else:
-        # 没开启保存位姿时，端点必须明确 404，而不是返回一个假的 zip
+        # 未开启保存位姿时端点明确返回 404，不返回无效的 zip
         assert not poses_dir.is_dir()
         assert poses_resp.status_code == 404
 
@@ -307,7 +307,7 @@ def test_report_pdf_endpoint_404_for_unknown_run(client) -> None:
 
 
 def test_report_pdf_endpoint_generates_for_run_without_pdf_artifact(client) -> None:
-    """已有 report.md 但没有 report_pdf 产物（如旧运行）时，端点应现场生成而不是 404。"""
+    """已有 report.md 但没有 report_pdf 产物（如此前的运行）时，端点现场生成而不是返回 404。"""
     from docking_agent.runs import download_names, get_run_store
 
     store = get_run_store()

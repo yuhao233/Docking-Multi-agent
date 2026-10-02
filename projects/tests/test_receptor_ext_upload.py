@@ -1,19 +1,13 @@
-"""受体结构文件扩展名（.ent / .cif / 未知后缀）与「上传 → 对接」链路的回归测试。
+"""受体结构文件扩展名（.ent / .cif / 未知后缀）与上传到对接链路的回归测试。
 
-注意：
-  对话模式上传 `pdb2gs3.ent`（GPX4，RCSB 的 .ent 坐标文件）后：
-    1. 前端 advanced=false 时把 `receptor_file` 从请求体里丢掉（见 web/app.js 与
-       scripts/ui_e2e.js 的附件用例）；
-    2. 即使路径到了后端，`resolve_receptor_specs()` 只判断 `key.endswith(".pdb")`，
-       `.ent` 落到「未识别受体 → 回退默认 凝血酶(thrombin)」——同样的回退再次发生。
+覆盖两条契约：
+  1. 上传端点与受体解析链共用同一份扩展名定义；
+  2. `.ent` 等结构后缀现场准备，准备失败或名字无法识别时报硬错误：
+     `resolve_receptor_specs()` 抛 `ReceptorInputError`，工具层转成 `needs_user_input`
+     （给出原因与三个可选项），不启动任何对接引擎；
+     未识别的后缀不会回退到默认受体 凝血酶(thrombin)。
 
-本文件守住第 2 条，以及「上传端点与受体解析链共用同一份扩展名定义」。包含真实的
-meeko 现场准备与一次真实对接（1 个分子，exhaustiveness=1），耗时可控。
-
-** 行为变更**：`.ent` 的支持早已补齐，但「准备失败 / 名字认不出就
-静默改用预置凝血酶继续跑」这条兜底被用户判为产品底线问题 —— 现在改为**硬错误**：
-`resolve_receptor_specs()` 抛 `ReceptorInputError`，工具层转成 `needs_user_input`
-（说清原因 + 给用户三选一），且**任何引擎都不会被启动**。本文件相应改为守住新行为。
+用例包含真实的 meeko 现场准备与一次真实对接（1 个分子，exhaustiveness=1），耗时可控。
 """
 from __future__ import annotations
 
@@ -52,7 +46,7 @@ def client() -> Any:
 
 
 def _copy_as(tmp_path: Path, name: str) -> Path:
-    """把测试用 PDB 复制成指定文件名（内容不变 → 命中同一份准备缓存）。"""
+    """把测试用 PDB 复制成指定文件名（内容不变，命中同一份准备缓存）。"""
     assert RECEPTOR_PDB.is_file(), f"缺少测试用受体结构：{RECEPTOR_PDB}"
     dest = tmp_path / name
     shutil.copyfile(RECEPTOR_PDB, dest)
@@ -68,7 +62,7 @@ def _upload(client, path: Path, kind: str = "auto"):
 
 
 def _inspect(client, payload: dict):
-    """用户主动「校验文件」：这一步才做现场准备（等价于旧版上传端点的返回）。"""
+    """使用者主动「校验文件」：这一步才做现场准备（等价于旧版上传端点的返回）。"""
     return client.post("/api/uploads/inspect",
                        json={"path": payload["path"], "kind": payload.get("kind") or "auto"})
 
@@ -79,12 +73,12 @@ def _run_agent(client, body: dict, monkeypatch) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# ① .ent（及其它结构后缀）必须被当作「用户提供的结构文件」现场准备
+# ① .ent（及其它结构后缀）按「使用者提供的结构文件」现场准备
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("name", ["thrombin.ent", "thrombin.ENT", "thrombin.pdb1",
                                   "thrombin.structure"])
 def test_resolve_receptor_specs_prepares_structure_file(tmp_path, name) -> None:
-    """`.ent`（大小写不敏感）与其它结构后缀都要现场准备，**不得**落回默认受体。"""
+    """`.ent`（大小写不敏感）与其它结构后缀都现场准备，不落回默认受体。"""
     from docking_agent.core.receptors import resolve_receptor_specs
 
     source = _copy_as(tmp_path, name)
@@ -95,7 +89,7 @@ def test_resolve_receptor_specs_prepares_structure_file(tmp_path, name) -> None:
     assert spec.get("key") != "thrombin" or spec.get("user_provided"), spec
     pdbqt = Path(str(spec.get("pdbqt") or ""))
     assert pdbqt.is_file() and pdbqt.suffix == ".pdbqt", f"未生成 PDBQT：{spec.get('pdbqt')}"
-    # 位点盒来自共晶配体质心 → 证明真的走了 prepare_user_receptor，而不是默认受体
+    # 位点盒来自共晶配体质心，说明走的是 prepare_user_receptor，而不是默认受体
     assert abs(float(spec["center"][0]) - THROMBIN_SITE_X) < 1.0, spec["center"]
     joined = " ".join(notes)
     assert "已现场准备" in joined, joined
@@ -130,10 +124,10 @@ def test_ligand_extensions_are_not_guessed_as_receptor(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ② 不存在的 / 不可用的结构文件 → **硬错误**（不再回退预置受体）
+# ② 不存在的 / 不可用的结构文件按硬错误处理（不回退预置受体）
 #
-# 设计约束：旧行为「回退 凝血酶(thrombin) 继续跑完并出报告」是产品底线问题 ——
-# 用户会拿到一份以凝血酶为受体的答非所问报告。现在必须报错、说清原因、把选择权交回用户。
+# 设计约束：回退 凝血酶(thrombin) 继续跑完并出报告会产出以凝血酶为受体的结果，
+# 因此该路径报错，说明原因并把受体选择权交回调用方。
 # --------------------------------------------------------------------------- #
 def test_missing_structure_file_raises_with_reason(tmp_path) -> None:
     from docking_agent.core.receptors import ReceptorInputError, resolve_receptor_specs
@@ -147,7 +141,7 @@ def test_missing_structure_file_raises_with_reason(tmp_path) -> None:
     text = str(err)
     assert "definitely_missing.ent" in text, text
     assert "不执行任何计算" in text, text
-    # 必须给用户可选项（换文件 / 用编号或名称解析 / 修正后重试）
+    # 给出可选项（换文件 / 用编号或名称解析 / 修正后重试）
     assert err.payload.get("options") == ["replace_file", "resolve_by_name", "fix_and_retry"]
     assert "不要调用" not in text, "工具层才追加「不要重试」，异常本身只讲事实与出路"
 
@@ -165,7 +159,7 @@ def test_unusable_structure_file_raises_with_reason(tmp_path) -> None:
 
 
 def test_prepare_failure_never_falls_back_to_a_preset_receptor(tmp_path) -> None:
-    """底线回归：任何情况下都**不得**再出现「改用预置受体」的 spec。"""
+    """底线回归：解析结果中不出现「改用预置受体」的 spec。"""
     from docking_agent.core.receptors import (RECEPTOR_REGISTRY, ReceptorInputError,
                                               resolve_receptor_specs)
 
@@ -176,7 +170,7 @@ def test_prepare_failure_never_falls_back_to_a_preset_receptor(tmp_path) -> None
         try:
             specs, _notes = resolve_receptor_specs(arg)
             produced.extend(specs)
-        except ReceptorInputError:  # 允许静默：本用例断言的就是「必须抛错」，异常即期望结果
+        except ReceptorInputError:  # 允许静默：本用例断言的即是抛错，异常属于期望结果
             pass
     assert produced == [], f"不可用的输入不得产出任何受体 spec：{produced}"
     keys = {str(s.get("key") or "") for s in produced}
@@ -185,7 +179,7 @@ def test_prepare_failure_never_falls_back_to_a_preset_receptor(tmp_path) -> None
 
 
 # --------------------------------------------------------------------------- #
-# ③ 上传 .ent → /api/uploads 返回 receptor_file，且该路径能被对接工具直接用
+# ③ 上传 .ent 后 /api/uploads 返回 receptor_file，该路径可直接被对接工具使用
 # --------------------------------------------------------------------------- #
 def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path, monkeypatch) -> None:
     ent = _copy_as(tmp_path, "thrombin.ent")
@@ -201,13 +195,13 @@ def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path, monkeypatch)
     assert Path(uploaded).suffix == ".pdbqt", uploaded
     assert abs(float(body["box_center"][0]) - THROMBIN_SITE_X) < 1.0, body["box_center"]
 
-    # 运行时提交的是**原始上传文件路径**（与界面一致；准备发生在运行阶段），
-    # 必须用的就是它、绝不回退默认受体。
+    # 运行时提交的是原始上传文件路径（与界面一致；准备发生在运行阶段），
+    # 最终对接使用的即该路径，不回退默认受体。
     run_id = _run_agent(client, {
         "receptor_file": up.json()["path"],
         "ligands_text": "乙醇:CCO",
         "exhaustiveness": 1, "engine": "vina", "save_poses": False,
-        # 该受体自带共晶配体：本用例只关心"用的是上传的受体"，按用户决定跳过对照
+        # 该受体自带共晶配体：本用例只关心"用的是上传的受体"，按请求中的决定跳过对照
         # （否则按新语义会停下等点选，状态是 needs_user_input）
         "positive_control_decision": "skip",
     }, monkeypatch)
@@ -222,9 +216,9 @@ def test_upload_ent_returns_pdbqt_used_by_docking(client, tmp_path, monkeypatch)
 
 
 def test_upload_mmcif_autodetected_as_receptor(client, tmp_path) -> None:
-    """.cif 在上传端点（auto 模式）必须被认成受体，并现场准备出可用的 PDBQT。
+    """.cif 在上传端点（auto 模式）被认成受体，并现场准备出可用的 PDBQT。
 
-    这条同时证明上传端点与解析链共用同一份扩展名集合（历史上两处各写一份而漂移）。
+    该用例同时验证上传端点与解析链共用同一份扩展名集合。
     """
     gemmi = pytest.importorskip("gemmi")
     cif = tmp_path / "thrombin.cif"
@@ -243,7 +237,7 @@ def test_upload_mmcif_autodetected_as_receptor(client, tmp_path) -> None:
 
 
 def test_upload_rejects_unusable_structure_with_reason(client, tmp_path) -> None:
-    """不可用的 .ent 上传必须 400 且把原因说清（不得静默接受后按默认受体跑）。"""
+    """不可用的 .ent 上传返回 400 并说明原因（不静默接受后按默认受体执行）。"""
     broken = tmp_path / "broken.ent"
     broken.write_text("not a structure\n", encoding="utf-8")
     up = _upload(client, broken, kind="receptor")

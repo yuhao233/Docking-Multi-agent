@@ -1,7 +1,7 @@
 """报告与产物层：图表、排序 CSV、Markdown 报告、产物存储。
 
-注意：图表模块依赖 matplotlib，这里**惰性导入**——只用到 store/tables 的调用方
-（例如对接 worker、运行记录）不应被迫加载 matplotlib（会显著拖慢进程启动）。
+图表模块依赖 matplotlib，这里采用惰性导入：只用到 store/tables 的调用方
+（例如对接 worker、运行记录）不会因此加载 matplotlib，进程启动时间不受影响。
 """
 from typing import Any
 
@@ -56,7 +56,7 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """惰性暴露图表函数（首次访问时才导入 matplotlib）。"""
+    """惰性暴露图表函数，首次访问时才导入 matplotlib。"""
     if name in _CHART_EXPORTS:
         from docking_agent.reporting import charts
 

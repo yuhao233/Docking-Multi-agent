@@ -1,36 +1,36 @@
-"""对话线程（checkpointer state）自愈：把**非法的工具调用序列**修成模型端能接受的形态。
+"""对话线程（checkpointer state）自愈：把非法的工具调用序列修成模型端能接受的形态。
 
-## 注意：曾出现 HTTP 400
+## 模型端在非法序列下的返回：HTTP 400
 
     400 - An assistant message with 'tool_calls' must be followed by tool messages
           responding to each 'tool_call_id'. (insufficient tool messages …)
 
-成因：用户点「停止」或运行中途失败 / 触发限额时，模型**已经发出** `tool_calls`，而对应的
-`ToolMessage` 永远不会产生。checkpointer 把那条 AIMessage 记进了 thread 历史 —— 于是同一会话的
-下一轮请求就把非法消息序列发给模型端，直接 400，整段对话卡死。
+成因：取消运行或运行中途失败、触发限额时，模型已经发出 `tool_calls`，而对应的
+`ToolMessage` 不再产生，该次调用没有回执。checkpointer 把那条 AIMessage 记进了 thread 历史。
+同一会话的下一轮请求就把非法消息序列发给模型端，模型端直接返回 400，整段对话卡死，无法继续。
 
-两种非法形态都要修：
+两种非法形态都要修：模型端只接受「每条 `tool_calls` 都有回执、每条回执都有前置调用」的序列。
+下表列出两种形态、各自的触发条件与模型端的报错：
 
 | 形态 | 触发 | 模型端报错 |
 | --- | --- | --- |
 | 悬空 `tool_calls` | 取消 / 限额（`ToolCallLimitMiddleware(exit_behavior="end")`）/ 工具异常 | `An assistant message with 'tool_calls' must be followed by tool messages…` |
 | 孤儿 `ToolMessage` | 摘要 / 裁剪把配对的 AIMessage 切掉 | `messages with role 'tool' must be a response to a preceding message with 'tool_calls'` |
 
-## 修法（以及一个踩过的坑）
+## 修法
 
-**改写那条 AIMessage**（同 `id` → LangGraph 的 `add_messages` 会**原地替换**）：只保留有回执的
+改写那条 AIMessage（同 `id`，LangGraph 的 `add_messages` 会原地替换）：只保留有回执的
 `tool_calls`，并在正文追加一句事实说明（「上一轮有工具调用被中断、没有结果，如仍需要请重新调用」）；
 孤儿回执直接 `RemoveMessage` 掉。
 
-为什么**不是**「在 AIMessage 正后方插入一条占位 ToolMessage」——第一版就是这么写的，结果出错：
-`add_messages` 只把**新 id** 追加到列表**末尾**（同 id 才原地替换），所以占位回执落到了最新一条
-人类消息**之后**，序列依旧非法（实测模型调用拿到的顺序是
-`[Human, AI(tool_calls), Human, ToolMessage]`）。改写 AIMessage 是原地生效的，顺序天然合法。
+在 AIMessage 正后方插入一条占位 ToolMessage 的做法不可行：`add_messages` 只把新 id 追加到列表
+末尾（同 id 才原地替换），占位回执会落到最新一条人类消息之后，序列依旧非法，模型调用拿到的顺序是
+`[Human, AI(tool_calls), Human, ToolMessage]`。改写 AIMessage 是原地生效的，顺序天然合法。
 
 两条纪律：
 
-1. 追加的是**事实说明**，不是编造结果 —— 符合「工具只报事实、Agent/用户做判断」的项目准则；
-2. 修在**模型调用前**（中间件）而不是取消的那一刻：取消时工具可能仍在跑，若它稍后补回真实回执，
+1. 追加的是事实说明，不是编造结果，符合「工具只报事实、Agent/调用方做判断」的项目准则；
+2. 修在模型调用前（中间件）而不是取消的那一刻：取消时工具可能仍在跑，若它稍后补回真实回执，
    同一 `tool_call_id` 会出现两条回执，同样会被模型端拒绝。
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ INTERRUPT_NOTE = ("上一轮的工具调用在运行中被中断（用户取消 
 def dangling_tool_calls(messages: List[Any]) -> List[Tuple[str, str]]:
     """返回 `[(tool_call_id, tool_name)]`：AIMessage 已发出、但没有任何 ToolMessage 回应的调用。
 
-    按消息顺序检查每一条 AIMessage（OpenAI 校验的是**整段**历史，不只是最后一条）。
+    按消息顺序检查每一条 AIMessage，OpenAI 校验的是整段历史，不只是最后一条。
     """
     answered = set()
     for m in messages or []:
@@ -72,7 +72,7 @@ def dangling_tool_calls(messages: List[Any]) -> List[Tuple[str, str]]:
 
 
 def orphan_tool_call_ids(messages: List[Any]) -> List[str]:
-    """返回**没有对应 AI(tool_calls)** 的 ToolMessage 的 `tool_call_id`（另一种非法形态）。"""
+    """返回没有对应 AI(tool_calls) 的 ToolMessage 的 `tool_call_id`，即另一种非法形态。"""
     wanted = set()
     for m in messages or []:
         if type(m).__name__ not in ("AIMessage", "AIMessageChunk"):
@@ -102,13 +102,13 @@ def _text_of(message: Any) -> str:
 
 
 def pairing_updates(messages: List[Any]) -> Tuple[List[Any], Dict[str, int]]:
-    """算出「让这段历史对模型端合法」的最小更新（直接喂给 `messages` reducer）。
+    """计算这段历史对模型端合法所需的最小更新，结果直接喂给 `messages` reducer。
 
     返回 `(updates, stats)`：
 
-    * 悬空 `tool_calls` 的 AIMessage → **同 id 的改写版**（只留已回执的调用 + 追加事实说明）；
-    * 孤儿 `ToolMessage` → `RemoveMessage`；
-    * 其余消息**不动**（不重排、不丢内容）。
+    * 悬空 `tool_calls` 的 AIMessage：同 id 的改写版（只留已回执的调用，并追加事实说明）；
+    * 孤儿 `ToolMessage`：改记 `RemoveMessage`；
+    * 其余消息不动，不重排、不丢内容。
 
     `stats` 用于日志与测试：`{"rewritten", "dropped_calls", "removed_orphans", "skipped"}`。
     """
@@ -165,19 +165,19 @@ def repaired_messages(messages: List[Any]) -> "tuple[List[Any], Dict[str, int]]"
 
 
 class ToolCallPairingMiddleware(AgentMiddleware):
-    """模型调用前的最后一道保险：**任何**进入模型的 messages 都必须是合法的工具调用序列。
+    """模型调用前的最后一道保险：进入模型的 messages 都必须是合法的工具调用序列。
 
-    为什么光有 `repair_thread_state()` 不够（已知故障：曾出现 HTTP 400）：
-    那只在**每轮开始前**修**协调 Agent** 的 thread；而 4 个子 Agent 用的是**固定角色线程**
-    （`dispatch.py` 里 `thread_id="property"/"pocket"/"docking"/"binding"`）+ 各自的
-    `InMemorySaver`。一次取消、一次限额或一次工具异常，都会把「AI(tool_calls) 而没有回执」
-    留在**子 Agent** 的线程里 —— 下一次调用同一个子 Agent 时，这段非法历史直接发给模型 →
-    400 `insufficient tool messages`，整轮对话卡死，且当时没有任何补丁路径。
+    `repair_thread_state()` 单独使用不足以覆盖全部路径：它只在每轮开始前修协调 Agent 的
+    thread；而 4 个子 Agent 用的是固定角色线程（`dispatch.py` 里
+    `thread_id="property"/"pocket"/"docking"/"binding"`）与各自的 `InMemorySaver`。
+    一次取消、一次限额或一次工具异常，都会把「AI(tool_calls) 而没有回执」留在子 Agent 的
+    线程里，下一次调用同一个子 Agent 时这段非法历史直接发给模型，返回
+    400 `insufficient tool messages`，整轮对话卡死。
 
-    实现选 `wrap_model_call`（**包裹模型调用**）而不是 `before_model`（**图里的一个节点**）：
-    后者会为每次模型调用多消耗一个 super-step —— 协调 Agent 的 `recursion_limit` 是 60，
-    子 Agent 更是用默认值，多出来的步数会实打实地把长任务顶到
-    `GRAPH_RECURSION_LIMIT`（已知故障）。包裹式钩子不改变图结构，只改这一次请求的消息。
+    实现选 `wrap_model_call`（包裹模型调用）而不是 `before_model`（图里的一个节点）：
+    后者会为每次模型调用多消耗一个 super-step，协调 Agent 的 `recursion_limit` 是 60，
+    子 Agent 使用默认值，多出的步数会把长任务顶到 `GRAPH_RECURSION_LIMIT`。
+    包裹式钩子不改变图结构，只改这一次请求的消息。
     """
 
     name = "ToolCallPairingMiddleware"
@@ -219,7 +219,7 @@ async def repair_thread_state(graph: Any, config: Dict[str, Any]) -> Dict[str, A
     """检查并修复该 thread 的非法工具调用序列；返回 `{"repaired": n, "ids": [...]}`。
 
     `graph` 必须是带 checkpointer 的已编译图（LangGraph `aget_state` / `aupdate_state`）。
-    任何异常都只记日志并返回 `repaired=0` —— 自愈失败不该让运行起不来。
+    任何异常都只记日志并返回 `repaired=0`，自愈失败不影响运行启动。
     """
     try:
         snapshot = await graph.aget_state(config)
