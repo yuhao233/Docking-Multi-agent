@@ -97,9 +97,10 @@ def build(target: Path, *, with_zip: bool = True) -> Path:
     files += _copy_tree(PROJECT_ROOT / "src" / "docking_agent", target / "src" / "docking_agent")
     # 3) 顶层一键入口 + 网页端启动脚本
     _copy_file(PROJECT_ROOT / "screen.py", target / "screen.py")
+    _copy_file(PROJECT_ROOT / "predict.py", target / "predict.py")
     _copy_file(PROJECT_ROOT / "start.sh", target / "start.sh")
     _copy_file(SUBMISSION / "run_web.sh", target / "run_web.sh")
-    files += 3
+    files += 4
     # 4) 网页端与运行所需资源：web/（前端）、config/（含密钥的 .env 不复制）、
     #    assets/（内置受体库、示例分子库、提示词；跳过 uploads/cache/tools）
     for name in ("web", "config", "assets"):

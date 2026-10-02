@@ -54,6 +54,7 @@ RESULT_FIELDS = [
     "n_poses",             # 输出位姿数
     "box_center",          # 对接盒中心（Å）
     "box_size",            # 对接盒边长（Å）
+    "receptor_file",       # 受体结构文件（与随附结构文件对应）
     "pose_file",           # 位姿文件（相对路径；未保存时为空）
     "status",              # ok / error（失败原因见 remark）
     "remark",              # 备注：输入文件里的附加字段、失败原因、告警
@@ -182,6 +183,7 @@ def main(argv=None) -> int:
                 "n_poses": args.n_poses,
                 "box_center": ",".join(f"{float(x):.2f}" for x in center),
                 "box_size": ",".join(f"{float(x):.2f}" for x in size),
+                "receptor_file": str(args.receptor),
                 "pose_file": os.path.relpath(row["pose_file"], out_path.parent)
                 if row.get("pose_file") else "",
                 "status": "ok" if affinity is not None else "error",

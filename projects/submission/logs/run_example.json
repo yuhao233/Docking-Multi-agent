@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-10-02T12:32:13",
+  "started_at": "2026-10-02T13:03:40",
   "receptor": "data/example/receptor_demo.pdb",
   "ligands": "data/example/ligands_demo.smi",
   "molecules_total": 6,
@@ -23,7 +23,7 @@
   "site_source": "命令行给出的坐标",
   "python": "3.12.3",
   "platform": "Linux-6.17.0-19-generic-x86_64-with-glibc2.39",
-  "elapsed_sec": 2.8,
+  "elapsed_sec": 2.4,
   "notes": [
     "用户上传受体(pdb)已现场准备：receptor_demo.pdb",
     "受体 receptor_demo 质子化：受体按目标 pH 7.4 准备（pdb2pqr + PROPKA + meeko（propka3.0））；与配体同一 pH；HIS 状态 HID×3、HIE×2；氢处理：氢键网络优化；在 pH 7.4 下仍质子化的可滴定残基：CYS 8/8、LYS 22/22、TYR 12/12；剔除主链不全的残基 GLY246H、ASP1I、GLN11I；（复用已准备的受体）",

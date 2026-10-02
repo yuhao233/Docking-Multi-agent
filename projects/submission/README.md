@@ -39,23 +39,52 @@
 
 ## 2. 运行环境
 
-| 项 | 要求 |
-| --- | --- |
-| 操作系统 | Linux（x86-64）；本机实测 Ubuntu 24.04 |
-| Python | 3.12（本机 3.12.3） |
-| 依赖 | 见 `requirements.txt`（`pip install -r requirements.txt`） |
-| GPU | **不要求**。可选：NVIDIA GPU（实测 RTX 5090 / 驱动 590.48.01）用于外部引擎 AutoDock-GPU |
-| CPU/内存 | 示例数据 1 分钟内完成；万级分子库建议 ≥ 8 核、≥ 16 GB 内存 |
-| 网络 | 仅「在线解析受体 / 按名称检索分子 / 调用 LLM」需要；`screen.py` 全流程离线可跑 |
+### 2.1 软硬件要求
 
-安装（推荐虚拟环境）：
+| 项 | 要求 | 本作品实测环境 |
+| --- | --- | --- |
+| 操作系统 | Linux x86-64（macOS/Windows 未验证） | Ubuntu 24.04.3 LTS，内核 6.17 |
+| Python 解释器 | **CPython 3.12**（3.10/3.11 未验证；`requirements.txt` 按 3.12 钉版本） | CPython 3.12.3 |
+| 系统库 | glibc ≥ 2.35、libgomp（OpenMP，RDKit/NumPy 用）；均为发行版自带 | glibc 2.39 |
+| CPU / 内存 | ≥ 4 核；示例数据 < 1 GB 内存。万级分子库建议 ≥ 8 核、≥ 16 GB | 32 逻辑核 / 16 物理核 |
+| GPU / CUDA / 驱动 | **不要求**（默认引擎 AutoDock Vina 为 CPU 实现）。仅当使用可选外部引擎 AutoDock-GPU 时需要：NVIDIA GPU + CUDA 运行时 + 驱动 | RTX 5090 + 驱动 590.48.01（仅用于 external 引擎实测） |
+| 磁盘 | 源码 + 依赖约 1.5 GB；单次运行的位姿与报告按分子数增长（千级约数百 MB） | — |
+| 网络 | **核心流程离线可跑**。仅以下场景需要网络：安装依赖（pip）、按名称/编号在线检索受体与分子、调用大模型 | — |
+
+### 2.2 安装
 
 ```bash
-python3.12 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+python3.12 -m venv .venv && . .venv/bin/activate     # 或 conda create -n docking python=3.12
+pip install -r requirements.txt                       # 依赖及版本见该文件
+python screen.py --help                               # 自检：能打印参数说明即安装成功
 ```
 
+### 2.3 环境自检（可选）
+
+```bash
+bash run_web.sh --port 5000        # 启动网页端
+curl -s http://127.0.0.1:5000/api/health | python -m json.tool
+```
+
+`/api/health` 返回 `status`、`version`、`engine_available`（各对接引擎是否可用）、
+`machine`（CPU 与并行预算）、`llm_configured`（是否已配置大模型）等，可用于确认环境就绪。
+
+### 2.4 可选外部组件（不装也能跑完整流程）
+
+| 组件 | 用途 | 未安装时的行为 |
+| --- | --- | --- |
+| AutoDock4 + AutoGrid4 | `--engine autodock`（经典 AD4 打分） | 该引擎在 `/api/health` 与设置页显示不可用；显式选择时**直接报错**，不会静默换引擎 |
+| AutoDock-GPU | `--engine external`（GPU 加速） | 同上（需在设置页登记可执行文件路径） |
+| P2Rank | `--auto-site` 的口袋检测 | 自动回退内置几何/已知位点法，并在结果与日志里注明位点来源 |
+| pdb2pqr + PROPKA | 受体按目标 pH 重新分配质子化态 | 按结构原有质子化态计算，并在报告中注明 |
+| Dimorphite-DL | 配体 pKa 微观态枚举 | 回退内置 pKa 规则表（近似），逐分子记录所用引擎 |
+
+各组件的获取地址、版本与许可见 §5；资源需求与预期耗时见 §7。
+
 ## 3. 一键运行（主入口）
+
+主入口为 `screen.py`；同时提供等价的 `predict.py`（按《代码提交要求》示例命名，便于评测平台直接调用），
+两者参数完全一致：
 
 ```bash
 # 示例数据：凝血酶受体 + 6 个配体，指定对接盒
@@ -65,6 +94,15 @@ python screen.py \
   --center 31.5,13.74,24.36 --size 22,22,22 \
   --exhaustiveness 1 --n-poses 1 --seed 42 \
   --out results/results.csv --log-dir logs
+```
+
+等价入口（与上面命令参数相同）：
+
+```bash
+python predict.py --receptor data/example/receptor_demo.pdb \
+                  --ligands data/example/ligands_demo.smi \
+                  --center 31.5,13.74,24.36 --exhaustiveness 1 --seed 42 \
+                  --out results/results.csv
 ```
 
 不给位点盒时自动检测结合口袋（P2Rank 可用则优先，否则内置几何法）：
@@ -106,6 +144,7 @@ python screen.py --receptor receptor.pdb --ligands library.sdf --auto-site \
 | `engine` / `engine_version` | 实际执行对接的引擎与版本 |
 | `seed` / `exhaustiveness` / `n_poses` | 随机种子与搜索参数 |
 | `box_center` / `box_size` | 对接盒（Å），记录位点来源 |
+| `receptor_file` | 本次使用的受体结构文件名（便于把清单与随附结构文件对应起来） |
 | `pose_file` | 位姿文件相对路径（`--save-poses` 时非空） |
 | `status` | `ok` / `error` |
 | `remark` | 备注：输入文件附加字段、失败原因、配体告警 |
