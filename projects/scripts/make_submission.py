@@ -12,9 +12,10 @@
     dist/Docking-Multi-Agent.zip         # 同上的压缩包
 
 打包内容：`submission/` 下维护的提交材料（README、requirements.txt、示例数据、Model Card、
-Notebook、结果与日志示例）+ 仓库源码 `src/docking_agent`（排除 __pycache__/.pyc）+ 顶层入口
-`screen.py`。网页端（`web/`）与开发脚本不进入提交包：作品的核心计算与一键入口自包含，
-完整工作区见代码仓库。
+Notebook、结果与日志示例、网页端说明）+ 仓库源码 `src/docking_agent`（排除 __pycache__/.pyc）
++ 顶层入口 `screen.py` 与 `run_web.sh` + 网页端运行所需资源（`web/` 前端、`config/` 配置、
+`assets/` 内置受体库与示例分子库）。**不打包**：使用者上传数据 `assets/uploads`、缓存
+`assets/cache`、第三方工具二进制 `assets/tools`、含密钥的 `.env`、`var/` 运行记录。
 """
 from __future__ import annotations
 
@@ -29,6 +30,27 @@ SUBMISSION = PROJECT_ROOT / "submission"
 DIST = PROJECT_ROOT / "dist"
 PACKAGE_NAME = "Docking-Multi-Agent"
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".DS_Store", "*.egg-info")
+#: 网页端运行所需、但**不能**进提交包的内容：
+#  `assets/uploads` 是使用者上传的数据、`assets/cache` 与 `assets/tools` 是缓存与第三方二进制、
+#  `.env` 含密钥。提交包只带配置模板（`.env.example`）与内置资源（受体库/示例库/提示词）。
+RUNTIME_SKIP = {"uploads", "cache", "tools", ".venv", "var", "dist", "__pycache__"}
+
+
+def _copy_runtime_dir(src: Path, dst: Path) -> int:
+    """按白名单复制运行期目录（web/ config/ assets/ scripts/），跳过数据与缓存。"""
+    if not src.is_dir():
+        return 0
+    count = 0
+    for path in src.rglob("*"):
+        rel = path.relative_to(src)
+        if any(part in RUNTIME_SKIP for part in rel.parts):
+            continue
+        if path.is_file():
+            if path.name == ".env" or path.suffix in (".pyc", ".pyo"):
+                continue
+            _copy_file(path, dst / rel)
+            count += 1
+    return count
 
 
 def _copy_file(src: Path, dst: Path) -> None:
@@ -53,9 +75,15 @@ def build(target: Path, *, with_zip: bool = True) -> Path:
     files += _copy_tree(SUBMISSION, target)
     # 2) 源码（核心计算 + 工具层 + Agent 编排 + 服务接口）
     files += _copy_tree(PROJECT_ROOT / "src" / "docking_agent", target / "src" / "docking_agent")
-    # 3) 顶层一键入口
+    # 3) 顶层一键入口 + 网页端启动脚本
     _copy_file(PROJECT_ROOT / "screen.py", target / "screen.py")
-    files += 1
+    _copy_file(PROJECT_ROOT / "start.sh", target / "start.sh")
+    _copy_file(SUBMISSION / "run_web.sh", target / "run_web.sh")
+    files += 3
+    # 4) 网页端与运行所需资源：web/（前端）、config/（含密钥的 .env 不复制）、
+    #    assets/（内置受体库、示例分子库、提示词；跳过 uploads/cache/tools）
+    for name in ("web", "config", "assets"):
+        files += _copy_runtime_dir(PROJECT_ROOT / name, target / name)
 
     readme = target / "README.md"
     if not readme.is_file():
@@ -66,7 +94,10 @@ def build(target: Path, *, with_zip: bool = True) -> Path:
     shutil.rmtree(target / "__pycache__", ignore_errors=True)   # py_compile 的副产物不进提交包
     for required in ("requirements.txt", "data/example/receptor_demo.pdb",
                      "data/example/ligands_demo.smi", "models/MODEL_CARD.md",
-                     "notebooks/quickstart.ipynb", "results/results_example.csv"):
+                     "notebooks/quickstart.ipynb", "results/results_example.csv",
+                     "web/simple.html", "web/index.html", "web/app.js",
+                     "config/agent_llm_config.json", ".env.example",
+                     "run_web.sh", "WEB.md"):
         if not (target / required).is_file():
             raise SystemExit(f"提交包缺少必备文件：{required}")
 
